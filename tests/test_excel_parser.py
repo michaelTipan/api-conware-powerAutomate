@@ -1,21 +1,18 @@
-import asyncio
 import base64
 import io
 
 import pandas as pd
 
-from app.excel_parser import parse_excel_from_bytes
-from app.main import parse_excel_json
-from app.models import ParseExcelJsonBody
+from app.excel_parser import parse_excel_names
 
 
-def _df_to_xlsx_bytes(df: pd.DataFrame) -> bytes:
+def _to_excel_b64(df: pd.DataFrame) -> str:
     buffer = io.BytesIO()
-    df.to_excel(buffer, index=False, engine="openpyxl")
-    return buffer.getvalue()
+    df.to_excel(buffer, index=False)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def test_parse_excel_reads_all_columns_and_rows():
+def test_parse_excel_names_column_c_and_duplicates():
     dataframe = pd.DataFrame(
         {
             "A": [1, 2, 3, 4],
@@ -23,30 +20,11 @@ def test_parse_excel_reads_all_columns_and_rows():
             "C": [" Ana ", "BRUNO", "ana", None],
         }
     )
-    excel_bytes = _df_to_xlsx_bytes(dataframe)
+    excel_b64 = _to_excel_b64(dataframe)
 
-    columns, rows = parse_excel_from_bytes(excel_bytes)
+    unique_names, duplicates, total_rows, in_order = parse_excel_names(excel_b64, "C")
 
-    assert columns == ["A", "B", "C"]
-    assert len(rows) == 4
-    assert rows[0]["C"] == " Ana "
-    assert rows[1]["C"] == "BRUNO"
-    assert rows[3]["C"] is None
-
-
-def test_parse_excel_json_endpoint_accepts_base64_body():
-    dataframe = pd.DataFrame({"A": [1, 2], "B": ["a", "b"]})
-    excel_bytes = _df_to_xlsx_bytes(dataframe)
-    b64 = base64.b64encode(excel_bytes).decode("ascii")
-
-    async def _call() -> None:
-        result = await parse_excel_json(
-            ParseExcelJsonBody(file_name="test.xlsx", excel_base64=b64, run_id="r1")
-        )
-        assert result.status == "ok"
-        assert result.file_name == "test.xlsx"
-        assert result.run_id == "r1"
-        assert result.row_count == 2
-        assert result.columns == ["A", "B"]
-
-    asyncio.run(_call())
+    assert unique_names == ["ana", "bruno"]
+    assert duplicates == ["ana"]
+    assert total_rows == 4
+    assert in_order == ["ana", "bruno", "ana"]

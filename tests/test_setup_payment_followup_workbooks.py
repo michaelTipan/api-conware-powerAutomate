@@ -8,7 +8,6 @@ import openpyxl
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from app.adapters.primary.http.deps import get_graph_client
 from app.adapters.primary.http.routers.payment_validation import router
 from app.application.use_cases import setup_payment_followup_workbooks as spfw
@@ -18,10 +17,6 @@ from app.application.use_cases.setup_payment_followup_workbooks import (
     FILENAME_INCOMPLETOS,
     SHEET_HISTORICO,
     SHEET_PENDIENTES,
-    TABLE_ADELANTADOS_HISTORICO,
-    TABLE_ADELANTADOS_PENDIENTES,
-    TABLE_INCOMPLETOS_HISTORICO,
-    TABLE_INCOMPLETOS_PENDIENTES,
     _build_followup_workbook_bytes,
     setup_payment_followup_workbooks,
 )
@@ -88,19 +83,26 @@ def env_site(monkeypatch):
     monkeypatch.setenv("GRAPH_PAYMENT_VALIDATION_CONTROL_PATH", CONTROL_FOLDER)
 
 
-def test_build_workbook_has_pendientes_historico_no_registros():
-    raw = _build_followup_workbook_bytes(
-        columns=ADELANTADOS_COLUMNS,
-        pendientes_table=TABLE_ADELANTADOS_PENDIENTES,
-        historico_table=TABLE_ADELANTADOS_HISTORICO,
-    )
+def _assert_sheet_fully_locked(ws) -> None:
+    assert ws.protection.sheet is True
+    for row in ws.iter_rows(min_row=1, max_row=max(ws.max_row, 1), max_col=len(ADELANTADOS_COLUMNS)):
+        for cell in row:
+            assert cell.protection.locked is True
+
+
+def test_build_workbook_has_pendientes_historico_no_registros_no_tables():
+    raw = _build_followup_workbook_bytes(columns=ADELANTADOS_COLUMNS)
     wb = openpyxl.load_workbook(io.BytesIO(raw))
     assert SHEET_PENDIENTES in wb.sheetnames
     assert SHEET_HISTORICO in wb.sheetnames
     assert "Registros" not in wb.sheetnames
-    ws = wb[SHEET_PENDIENTES]
-    assert TABLE_ADELANTADOS_PENDIENTES in ws.tables
-    assert ws.cell(1, 1).value == ADELANTADOS_COLUMNS[0]
+    ws_p = wb[SHEET_PENDIENTES]
+    ws_h = wb[SHEET_HISTORICO]
+    assert not ws_p.tables
+    assert not ws_h.tables
+    assert ws_p.cell(1, 1).value == ADELANTADOS_COLUMNS[0]
+    _assert_sheet_fully_locked(ws_p)
+    _assert_sheet_fully_locked(ws_h)
 
 
 def test_setup_creates_both_when_missing(mock_resolve):
@@ -132,38 +134,13 @@ def test_force_recreate_replaces(mock_resolve):
     assert out["pagos_incompletos"]["recreated"] is True
 
 
-def test_incompletos_table_names():
-    raw = _build_followup_workbook_bytes(
-        columns=(
-            "ID Pago",
-            "Cliente",
-            "Crédito",
-            "FechaPago",
-            "FechaLimitePago",
-            "MontoBanco",
-            "ValorExtracto",
-            "AplicarAExtracto",
-            "MoraAAplicar",
-            "OtrosValores",
-            "TotalAplicado",
-            "SaldoPorAsignar",
-            "TablaAmortizacionPath",
-            "RutaUnidadCredito",
-            "RutaExtracto",
-            "AsientoPdfPath",
-            "HistoricalFilePath",
-            "EstadoAplicacionPago",
-            "EstadoFinal",
-            "Observacion",
-            "CreatedAt",
-            "UpdatedAt",
-        ),
-        pendientes_table=TABLE_INCOMPLETOS_PENDIENTES,
-        historico_table=TABLE_INCOMPLETOS_HISTORICO,
-    )
+def test_incompletos_workbook_structure():
+    from app.application.use_cases.setup_payment_followup_workbooks import INCOMPLETOS_COLUMNS
+
+    raw = _build_followup_workbook_bytes(columns=INCOMPLETOS_COLUMNS)
     wb = openpyxl.load_workbook(io.BytesIO(raw))
-    assert TABLE_INCOMPLETOS_PENDIENTES in wb[SHEET_PENDIENTES].tables
-    assert TABLE_INCOMPLETOS_HISTORICO in wb[SHEET_HISTORICO].tables
+    assert not wb[SHEET_PENDIENTES].tables
+    assert wb[SHEET_PENDIENTES].cell(1, 1).value == "ID Pago"
 
 
 def test_router_payment_followup_setup(mock_resolve):

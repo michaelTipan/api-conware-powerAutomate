@@ -28,11 +28,13 @@ from app.application.services.payment_helpers import (
 from app.application.services.review_schema import (
     CasosPagoCols,
     ControlCols,
+    DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS,
     DistribucionCols,
     ErroresCols,
     EstadoPago,
     ReviewSheets,
     ValidarPago,
+    normalize_credito_digits,
 )
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.domain.ports.graph import GraphApiPort
@@ -780,6 +782,8 @@ def _build_distribution_rows(payment: dict[str, Any], candidates: list[dict[str,
             DistribucionCols.LINK_CARPETA_CREDITO: candidate.get("link_carpeta_credito", ""),
             DistribucionCols.RUTA: candidate.get("ruta_extracto_pdf") or "",
             DistribucionCols.RUTA_UNIDAD_CREDITO: candidate.get("ruta_unidad_credito") or "",
+            DistribucionCols.RUTA_TABLA_AMORTIZACION: candidate.get("ruta_tabla_amortizacion") or "",
+            DistribucionCols.CREDITO_NORMALIZADO: candidate.get("credito_normalizado") or "",
         }
 
         def finalize_line(row: dict[str, Any]) -> None:
@@ -1125,8 +1129,8 @@ def _set_cell_locked(ws: Any, row: int, col: int, locked: bool) -> None:
 
 
 def _configure_distrib_technical_path_columns(ws_distribution: Any) -> None:
-    """Oculta columnas de rutas técnicas (Ruta, RutaUnidadCredito)."""
-    for col_name in (DistribucionCols.RUTA, DistribucionCols.RUTA_UNIDAD_CREDITO):
+    """Oculta columnas técnicas de amortización (RutaTablaAmortizacion, CreditoNormalizado)."""
+    for col_name in DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS:
         try:
             cidx = DistribucionCols.HEADERS.index(col_name) + 1
             letter = get_column_letter(cidx)
@@ -2064,9 +2068,12 @@ async def _load_credit_candidates(
             if table_item is not None and table_path:
                 link_tabla_val = _item_link(table_item, table_path)
 
+            cred_norm = normalize_credito_digits(credit_id) or str(credit_id)
+            ruta_tabla = table_path.replace("\\", "/").strip("/") if table_path else ""
             candidates.append(
                 {
                     "credito": str(credit_id),
+                    "credito_normalizado": cred_norm,
                     "fecha_limite": fecha_limite_pdf,
                     "valor_extracto": extract_value,
                     "link_extracto": _item_link(statement_item, statement_path),
@@ -2074,6 +2081,7 @@ async def _load_credit_candidates(
                     "link_carpeta_credito": carpeta_link_url,
                     "ruta_extracto_pdf": statement_path.replace("\\", "/"),
                     "ruta_unidad_credito": credit_path.replace("\\", "/"),
+                    "ruta_tabla_amortizacion": ruta_tabla,
                     **({"observacion_extra": obs_extra} if obs_extra else {}),
                 }
             )
@@ -2114,9 +2122,12 @@ async def _load_credit_candidates(
                 raise ValueError("pending_installment_not_found")
 
             obs_extra = _possibly_finalized_observation(credit_name)
+            cred_norm = normalize_credito_digits(credit_id) or str(credit_id)
+            ruta_tabla = table_path.replace("\\", "/").strip("/") if table_path else ""
             candidates.append(
                 {
                     "credito": str(credit_id),
+                    "credito_normalizado": cred_norm,
                     "fecha_limite": due_date,
                     "valor_extracto": extract_value,
                     "link_extracto": _item_link(statement_item, statement_path),
@@ -2124,6 +2135,7 @@ async def _load_credit_candidates(
                     "link_carpeta_credito": carpeta_link_url,
                     "ruta_extracto_pdf": statement_path.replace("\\", "/"),
                     "ruta_unidad_credito": credit_path.replace("\\", "/"),
+                    "ruta_tabla_amortizacion": ruta_tabla,
                     **({"observacion_extra": obs_extra} if obs_extra else {}),
                 }
             )

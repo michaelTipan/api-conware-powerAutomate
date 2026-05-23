@@ -44,3 +44,15 @@ class NotifyValidarExtractosRequest(BaseModel):
     )
     to: str | None = None
     cc: str | None = None
+
+
+class MergeCompositeValidadoRequest(BaseModel):
+    """Opciones para POST merge-composite-validado-pdfs. Body opcional (compatibilidad PA)."""
+
+    force_rebuild: bool = Field(
+        default=False,
+        description=(
+            "Si true, regenera el PDF consolidado aunque ya exista en la carpeta de salida "
+            "(útil para corregir consolidados con extractos duplicados)."
+        ),
+    )

@@ -24,7 +24,7 @@ from app.application.use_cases.merge_composite_validado_pdfs import merge_compos
 from app.application.use_cases.validate_payment_report import validate_payment_report_and_replace_excel
 from app.application.job_status_enrichment import enrich_job_for_http_response
 from app.domain.exceptions import GraphConfigError
-from app.models import GraphUploadRequest, NotifyValidarExtractosRequest
+from app.models import GraphUploadRequest, MergeCompositeValidadoRequest, NotifyValidarExtractosRequest
 
 router = APIRouter(prefix="/graph/sharepoint", tags=["sharepoint"])
 logger = logging.getLogger(__name__)
@@ -161,7 +161,12 @@ async def _run_notify_validar_extractos_job(
         logger.exception("job %s: notify_validar_extractos falló: %s", job_id, exc)
 
 
-async def _run_merge_composite_validado_pdfs_job(job_id: str, graph: GraphClientDep) -> None:
+async def _run_merge_composite_validado_pdfs_job(
+    job_id: str,
+    graph: GraphClientDep,
+    *,
+    force_rebuild: bool = False,
+) -> None:
     await _set_job(
         job_id,
         {
@@ -174,7 +179,7 @@ async def _run_merge_composite_validado_pdfs_job(job_id: str, graph: GraphClient
     logger.info("job %s: merge_composite_validado_pdfs iniciado", job_id)
     started_ts = perf_counter()
     try:
-        result = await merge_composite_validado_pdfs(graph)
+        result = await merge_composite_validado_pdfs(graph, force_rebuild=force_rebuild)
         elapsed_ms = round((perf_counter() - started_ts) * 1000, 2)
         await _set_job(
             job_id,
@@ -193,6 +198,13 @@ async def _run_merge_composite_validado_pdfs_job(job_id: str, graph: GraphClient
                     "outputs": [
                         {
                             "id_pago": o.id_pago,
+                            "cliente": o.cliente,
+                            "credito": o.credito,
+                            "email_pdf_path": o.email_pdf_path,
+                            "asiento_pdf_path": o.asiento_pdf_path,
+                            "asiento_pdf_paths": list(o.asiento_pdf_paths),
+                            "extracto_pdf_path": o.extracto_pdf_path,
+                            "credit_items": [dict(ci) for ci in o.credit_items],
                             "output_relative_path": o.output_relative_path,
                             "bytes_written": o.bytes_written,
                             "sources_summary": o.sources_summary,
@@ -203,6 +215,7 @@ async def _run_merge_composite_validado_pdfs_job(job_id: str, graph: GraphClient
                     "merge_control_file_path": result.merge_control_file_path,
                     "merge_control_updated": result.merge_control_updated,
                     "merge_control_status": result.merge_control_status,
+                    "merge_manifest_path": result.merge_manifest_path,
                     "outputs_count": result.outputs_count,
                     "skipped_count": result.skipped_count,
                 },
@@ -513,14 +526,17 @@ async def merge_composite_validado_pdfs_job_status(job_id: str) -> dict:
 
 
 @router.post("/merge-composite-validado-pdfs", status_code=202)
-async def post_merge_composite_validado_pdfs(graph: GraphClientDep) -> dict[str, Any]:
+async def post_merge_composite_validado_pdfs(
+    graph: GraphClientDep,
+    body: MergeCompositeValidadoRequest | None = Body(default=None),
+) -> dict[str, Any]:
     """
     Une PDFs por cada ID Pago (Estado línea según GRAPH_VALIDAR_EXTRACTO_ESTADO_CONTAINS):
-    todos los asientos contables (uno por extracto/crédito), PDF del correo (05 EMAIL, una vez),
-    luego todos los extractos. Mismo ID Pago = un solo PDF. Nombre con todos los créditos (columna Crédito), coma.
-    Sube un PDF por grupo en ``…/06 ASIENTO CONTABLES GENERADOS`` (configurable).
+    PDF del correo (05 EMAIL, una vez), luego por crédito todos los asientos y un extracto único.
+    Mismo ID Pago = un solo PDF. ``force_rebuild=true`` regenera el consolidado aunque ya exista.
     Consulta ``GET …/merge-composite-validado-pdfs/jobs/{job_id}``.
     """
+    payload = body or MergeCompositeValidadoRequest()
     job_id = str(uuid.uuid4())
     async with _job_lock:
         _validation_jobs[job_id] = {
@@ -533,8 +549,13 @@ async def post_merge_composite_validado_pdfs(graph: GraphClientDep) -> dict[str,
             "finished_at": None,
             "result": None,
             "error": None,
+            "force_rebuild": payload.force_rebuild,
         }
-    create_task(_run_merge_composite_validado_pdfs_job(job_id, graph))
+    create_task(
+        _run_merge_composite_validado_pdfs_job(
+            job_id, graph, force_rebuild=payload.force_rebuild
+        )
+    )
     logger.info("job %s: encolado merge_composite_validado_pdfs", job_id)
     return {
         "status": "queued",

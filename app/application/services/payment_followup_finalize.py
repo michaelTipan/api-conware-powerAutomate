@@ -12,7 +12,6 @@ from typing import Any
 
 import httpx
 import openpyxl
-from openpyxl.utils import get_column_letter
 
 from app.application.sharepoint_resolution import encode_graph_drive_path
 from app.application.services.review_schema import (
@@ -25,8 +24,6 @@ from app.application.use_cases.setup_payment_followup_workbooks import (
     INCOMPLETOS_COLUMNS,
     SHEET_HISTORICO,
     SHEET_PENDIENTES,
-    TABLE_ADELANTADOS_PENDIENTES,
-    TABLE_INCOMPLETOS_PENDIENTES,
     adelantados_workbook_relative_path,
     incompletos_workbook_relative_path,
 )
@@ -116,20 +113,11 @@ def _composite_key(row_map: dict[str, Any]) -> tuple[str, str]:
     return (_s(row_map, "ID Pago"), _s(row_map, "Crédito"))
 
 
-def _expand_table(ws: Any, table_name: str, ncols: int) -> None:
-    if table_name not in ws.tables:
-        return
-    tab = ws.tables[table_name]
-    last_r = ws.max_row or 1
-    tab.ref = f"A1:{get_column_letter(ncols)}{last_r}"
-
-
 async def _upsert_pendientes(
     client: GraphApiPort,
     site_id: str,
     drive_id: str,
     rel_path: str,
-    table_name: str,
     columns: tuple[str, ...],
     row_maps: list[dict[str, Any]],
 ) -> bool:
@@ -209,7 +197,6 @@ async def _upsert_pendientes(
             changed = True
 
     if changed:
-        _expand_table(ws, table_name, ncols)
         out = io.BytesIO()
         wb.save(out)
         await client.put_bytes(
@@ -254,7 +241,6 @@ async def register_payment_followups_after_finalize(
             site_id,
             drive_id,
             path_ad,
-            TABLE_ADELANTADOS_PENDIENTES,
             ADELANTADOS_COLUMNS,
             adel_maps,
         )
@@ -267,7 +253,6 @@ async def register_payment_followups_after_finalize(
             site_id,
             drive_id,
             path_in,
-            TABLE_INCOMPLETOS_PENDIENTES,
             INCOMPLETOS_COLUMNS,
             inc_maps,
         )

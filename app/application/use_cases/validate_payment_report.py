@@ -383,6 +383,37 @@ async def _graph_download_by_path(
     return await graph.get_bytes(endpoint)
 
 
+async def _graph_get_item_metadata_by_path(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    path: str,
+) -> dict[str, Any]:
+    """Metadatos del ítem (eTag, size, lastModifiedDateTime) sin descargar contenido."""
+    encoded = encode_graph_drive_path(path)
+    endpoint = f"/sites/{site_id}/drives/{drive_id}/root:/{encoded}:"
+    try:
+        return await graph.get(endpoint)
+    except Exception:
+        return {}
+
+
+async def _graph_upload_by_path(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    path: str,
+    content: bytes,
+    *,
+    content_type: str = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ),
+) -> dict[str, Any]:
+    encoded = encode_graph_drive_path(path)
+    endpoint = f"/sites/{site_id}/drives/{drive_id}/root:/{encoded}:/content"
+    return await graph.put_bytes(endpoint, content, content_type=content_type)
+
+
 async def _graph_download_by_item_id(
     graph: GraphApiPort,
     drive_id: str,

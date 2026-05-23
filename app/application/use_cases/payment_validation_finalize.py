@@ -17,6 +17,7 @@ from app.domain.ports.graph import GraphApiPort
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.application.services.payment_followup_finalize import register_payment_followups_after_finalize
 from app.application.services.review_schema import (
+    DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS,
     ReviewSheets,
     ControlCols,
     CasosPagoCols,
@@ -922,8 +923,7 @@ def _configure_hist_distrib_technical_path_columns(
 ) -> None:
     colmap = _dist_column_map(ws_distribution, dist_header_row)
     for col_name in (
-        DistribucionCols.RUTA,
-        DistribucionCols.RUTA_UNIDAD_CREDITO,
+        *DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS,
         DistribucionCols.RUTA_ASIENTOS_CONTABLES,
     ):
         cidx = colmap.get(col_name)
@@ -1123,7 +1123,6 @@ async def finalize_payment_validation(
     history_path = os.getenv("GRAPH_PAYMENT_VALIDATION_HISTORY_PATH", "").strip()
     validation_prefix = os.getenv("GRAPH_VALIDATION_FILE_PREFIX", "").strip()
     clients_path = os.getenv("GRAPH_CLIENTS_BASE_PATH", "").strip()
-    pending_path = os.getenv("GRAPH_PENDING_PAYMENTS_FILE_PATH", "").strip()
     extract_keyword = os.getenv("GRAPH_EXTRACT_KEYWORD", "Extracto").strip() or "Extracto"
     effective_process_date = _normalize_process_date(process_date)
 
@@ -1258,10 +1257,7 @@ async def finalize_payment_validation(
         if id_pago not in monto_casos:
             monto_casos[id_pago] = safe_float(dist.get(DistribucionCols.MONTO_BANCO))
 
-        if estado == EstadoPago.ADELANTADO and vp_si:
-            if total_f > 0:
-                raise ValueError("reprogramar_requires_zero_total")
-        elif estado in (EstadoPago.NORMAL, EstadoPago.INCOMPLETO) and not vp_si:
+        if estado in (EstadoPago.NORMAL, EstadoPago.INCOMPLETO) and not vp_si:
             if not obs or str(obs).strip() == "":
                 raise ValueError("no_validar_requires_observation")
         elif estado in EstadoPago.COUNTERS_POSITIVE_TOTAL and vp_si:
@@ -1343,114 +1339,23 @@ async def finalize_payment_validation(
         historical_relative_path=hist_full_path,
     )
 
-    pending_uploads: list[dict[str, Any]] = []
-
-    p_bytes: bytes = b""
-    pend_info: dict[str, str] | None = None
-    if pending_path:
-        pend_info = await resolve_sharepoint_path(client, site_search, drive_name, pending_path)
-        # Bandeja «PAGOS_PENDIENTES» (distinta de pagos_adelantados / pagos_incompletos operativos).
-        # Si el libro aún no existe en SharePoint, Graph devuelve 404: se omite la actualización sin fallar Finalize.
-        try:
-            p_bytes = await client.get_bytes(
-                _build_content_endpoint(pend_info["site_id"], pend_info["drive_id"], pending_path)
-            )
-        except httpx.HTTPStatusError as exc:
-            code = exc.response.status_code if exc.response else 0
-            if code == 404:
-                logger.warning(
-                    "finalize: libro de pendientes no encontrado (404), se omite bandeja PAGOS_PENDIENTES: %s",
-                    pending_path,
-                )
-            else:
-                raise
-
-    if p_bytes:
-        wb_p = openpyxl.load_workbook(io.BytesIO(p_bytes))
-        if "Pendientes" in wb_p.sheetnames:
-            ws_p = wb_p["Pendientes"]
-            ws_hist_p = wb_p["Historico"] if "Historico" in wb_p.sheetnames else wb_p.create_sheet("Historico")
-
-            pendientes_ids: dict[str, int] = {}
-            for p_row_idx in range(2, ws_p.max_row + 1):
-                val = ws_p.cell(row=p_row_idx, column=1).value
-                if val:
-                    pendientes_ids[str(val)] = p_row_idx
-
-            rows_to_delete: list[int] = []
-            for dist in distributions:
-                est = str(dist.get(DistribucionCols.ESTADO_PAGO, "")).strip().upper()
-                idp = str(dist.get(DistribucionCols.ID_PAGO))
-                vp_si = is_validar_pago_si(dist)
-                if est in EstadoPago.CLEARS_PENDING and vp_si and idp in pendientes_ids:
-                    p_row = pendientes_ids[idp]
-                    row_vals = [ws_p.cell(row=p_row, column=c).value for c in range(1, ws_p.max_column + 1)]
-                    ws_hist_p.append(row_vals)
-                    rows_to_delete.append(p_row)
-
-            for r in sorted(rows_to_delete, reverse=True):
-                ws_p.delete_rows(r)
-
-            for dist in distributions:
-                if (
-                    str(dist.get(DistribucionCols.ESTADO_PAGO, "")).strip().upper() == EstadoPago.ADELANTADO
-                    and is_validar_pago_si(dist)
-                ):
-                    idp = str(dist.get(DistribucionCols.ID_PAGO))
-                    if idp not in pendientes_ids:
-                        ws_p.append([idp, EstadoPago.ADELANTADO])
-            out_p = io.BytesIO()
-            wb_p.save(out_p)
-            pending_uploads.append(
-                {
-                    "site": pend_info["site_id"],
-                    "drive": pend_info["drive_id"],
-                    "path": pending_path,
-                    "bytes": out_p.getvalue(),
-                    "name": "PAGOS_PENDIENTES.xlsx",
-                    "kind": "pendientes",
-                }
-            )
-
-    pending_uploads.append(
-        {
-            "site": hist_info["site_id"],
-            "drive": hist_info["drive_id"],
-            "path": hist_full_path,
-            "bytes": hist_bytes,
-            "name": "HISTORICO_COMPLETO",
-            "kind": "historical",
-        }
-    )
-    pending_uploads.append(
-        {
-            "site": hist_info["site_id"],
-            "drive": hist_info["drive_id"],
-            "path": sec_full_path,
-            "bytes": sec_bytes,
-            "name": "SECRETARY",
-            "kind": "secretary",
-        }
-    )
-
     historical_file_url: str | None = None
     secretary_file_url: str | None = None
-
-    successful: list[str] = []
     try:
-        for upload in pending_uploads:
-            resp = await client.put_bytes(
-                _build_content_endpoint(upload["site"], upload["drive"], upload["path"]),
-                upload["bytes"],
-                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            successful.append(upload["name"])
-            if upload.get("kind") == "historical":
-                historical_file_url = resp.get("webUrl") if isinstance(resp, dict) else None
-            elif upload.get("kind") == "secretary":
-                secretary_file_url = resp.get("webUrl") if isinstance(resp, dict) else None
+        hist_resp = await client.put_bytes(
+            _build_content_endpoint(hist_info["site_id"], hist_info["drive_id"], hist_full_path),
+            hist_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        historical_file_url = hist_resp.get("webUrl") if isinstance(hist_resp, dict) else None
+        sec_resp = await client.put_bytes(
+            _build_content_endpoint(hist_info["site_id"], hist_info["drive_id"], sec_full_path),
+            sec_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        secretary_file_url = sec_resp.get("webUrl") if isinstance(sec_resp, dict) else None
     except Exception as e:
-        raise Exception(f"upload_failed|{upload['name']}|{successful}|{str(e)}") from e
+        raise Exception(f"upload_failed|{hist_full_path}|{sec_full_path}|{str(e)}") from e
 
     return {
         "status": "success",

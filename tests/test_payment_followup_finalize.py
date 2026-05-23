@@ -23,10 +23,6 @@ from app.application.use_cases.setup_payment_followup_workbooks import (
     SHEET_HISTORICO,
     SHEET_PENDIENTES,
     _build_followup_workbook_bytes,
-    TABLE_ADELANTADOS_PENDIENTES,
-    TABLE_ADELANTADOS_HISTORICO,
-    TABLE_INCOMPLETOS_PENDIENTES,
-    TABLE_INCOMPLETOS_HISTORICO,
 )
 
 
@@ -99,16 +95,8 @@ def _dist(estado: str, id_pago: str = "P1", credito: str = "C1") -> dict:
 
 
 def _seed_workbooks(g: MockGraphFollowup) -> None:
-    g.files[PATH_AD] = _build_followup_workbook_bytes(
-        columns=ADELANTADOS_COLUMNS,
-        pendientes_table=TABLE_ADELANTADOS_PENDIENTES,
-        historico_table=TABLE_ADELANTADOS_HISTORICO,
-    )
-    g.files[PATH_IN] = _build_followup_workbook_bytes(
-        columns=INCOMPLETOS_COLUMNS,
-        pendientes_table=TABLE_INCOMPLETOS_PENDIENTES,
-        historico_table=TABLE_INCOMPLETOS_HISTORICO,
-    )
+    g.files[PATH_AD] = _build_followup_workbook_bytes(columns=ADELANTADOS_COLUMNS)
+    g.files[PATH_IN] = _build_followup_workbook_bytes(columns=INCOMPLETOS_COLUMNS)
 
 
 def _pendientes_rows(path: str, files: dict[str, bytes]) -> list[tuple[str, str]]:
@@ -147,14 +135,14 @@ def test_adelantado_upsert_en_pagos_adelantados(env_paths):
     )
     wb = openpyxl.load_workbook(io.BytesIO(g.files[PATH_AD]))
     ws = wb[SHEET_PENDIENTES]
-    assert ws.max_row == 3
-    assert ws.cell(3, 1).value == "P1"
+    assert ws.max_row == 2
+    assert ws.cell(2, 1).value == "P1"
     estado_app_col = ADELANTADOS_COLUMNS.index("EstadoAplicacionPago") + 1
-    assert ws.cell(3, estado_app_col).value == ESTADO_APLICACION_PENDIENTE_TABLA
+    assert ws.cell(2, estado_app_col).value == ESTADO_APLICACION_PENDIENTE_TABLA
     estado_ibr_col = ADELANTADOS_COLUMNS.index("EstadoIBR") + 1
-    assert ws.cell(3, estado_ibr_col).value == ESTADO_IBR_PENDIENTE
-    assert ws.cell(3, ADELANTADOS_COLUMNS.index("EstadoFinal") + 1).value == ESTADO_FINAL_ABIERTO
-    assert wb[SHEET_HISTORICO].max_row == 2
+    assert ws.cell(2, estado_ibr_col).value == ESTADO_IBR_PENDIENTE
+    assert ws.cell(2, ADELANTADOS_COLUMNS.index("EstadoFinal") + 1).value == ESTADO_FINAL_ABIERTO
+    assert wb[SHEET_HISTORICO].max_row == 1
 
 
 def test_incompleto_upsert_en_pagos_incompletos(env_paths):
@@ -195,7 +183,7 @@ def test_no_duplica_id_pago_credito(env_paths):
         )
     assert _pendientes_rows(PATH_AD, g.files).count(("P1", "C1")) == 1
     wb = openpyxl.load_workbook(io.BytesIO(g.files[PATH_AD]))
-    assert wb[SHEET_PENDIENTES].max_row == 3
+    assert wb[SHEET_PENDIENTES].max_row == 2
 
 
 def test_historico_sin_filas_nuevas(env_paths):
@@ -212,4 +200,4 @@ def test_historico_sin_filas_nuevas(env_paths):
         )
     )
     wb = openpyxl.load_workbook(io.BytesIO(g.files[PATH_IN]))
-    assert wb[SHEET_HISTORICO].max_row == 2
+    assert wb[SHEET_HISTORICO].max_row == 1

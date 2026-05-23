@@ -219,7 +219,6 @@ def make_pdf_extractor_mock(client: "MockGraphClient"):
 
 def set_env_vars():
     os.environ["GRAPH_BANK_PAYMENTS_FILE_PATH"] = "banco.xlsx"
-    os.environ["GRAPH_PENDING_PAYMENTS_FILE_PATH"] = "pendientes.xlsx"
     os.environ["GRAPH_CLIENTS_BASE_PATH"] = "clientes"
     os.environ["GRAPH_SHAREPOINT_SITE_SEARCH"] = "SITIO"
     os.environ["GRAPH_SHAREPOINT_DRIVE_NAME"] = "DRIVE"
@@ -357,7 +356,6 @@ def run_generate(bank_rows, process_date, include_web_urls=False):
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             bank_rows,
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         extractor = make_pdf_extractor_mock(client)
         fake_fecha = _fake_fecha_limite_from_marker_bytes()
         with mock.patch(
@@ -700,7 +698,6 @@ def test_generate_proposes_all_pending_installments_geoexcon():
             [date(2025, 12, 30), 500000, "GEOEXCON", ""],
         ]
         client.downloaded_files["banco.xlsx"] = create_excel(headers, data)
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         
         client.downloaded_files["clientes/GEOEXCON/254/Tabla amortizacion GEOEXCON 254.xlsx"] = create_amortization_excel([
             [date(2025, 12, 23), None, None, 12000000, None],
@@ -769,7 +766,6 @@ def test_generate_proposes_all_future_installments_equinorte():
             [date(2025, 12, 30), 500000, "EQUINORTE", ""],
         ]
         client.downloaded_files["banco.xlsx"] = create_excel(headers, data)
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         
         client.downloaded_files["clientes/EQUINORTE/900/Tabla amortizacion EQUINORTE 900.xlsx"] = create_amortization_excel([
             [date(2026, 1, 22), None, None, 1000, None],
@@ -861,7 +857,6 @@ def test_generate_no_pending_installment_error_for_realistic_hbi_table():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 23), 5000, "HBI", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
 
         with _run_with_pdf_mock(client):
             result = await generate_payment_validation(client, date(2026, 1, 1))
@@ -934,7 +929,6 @@ def _make_single_client_setup(client, credit_id: str, tabla_cuota: float, pdf_to
         ["Fecha", "Crédito", "Concepto", "Transacción"],
         [[banco_date, 500000, "TESTCLIENT", ""]],
     )
-    client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
 
 
 def _fake_fecha_limite_from_marker_bytes():
@@ -1065,7 +1059,6 @@ def test_generate_extract_not_found_when_pdf_missing():
         client.downloaded_files["banco.xlsx"] = create_excel(
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 30), 100000, "NOPDF", ""]])
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         # Este test no necesita mock de PDF porque no hay PDF — testea extract_not_found
         await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1130,7 +1123,6 @@ def test_phase1_extractos_subfolder_priority_over_parent_pdf():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 23), 100000, "MIXCLI", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1145,8 +1137,6 @@ def test_phase1_extractos_subfolder_priority_over_parent_pdf():
             "clientes/MIXCLI/100/EXTRACTOS/Extracto interno CREDITO # 100.pdf"
         ).replace("\\", "/")
         assert ws.cell(dr, c_ruta).value.replace("\\", "/") == expected
-        rut_letter = get_column_letter(c_ruta)
-        assert ws.column_dimensions[rut_letter].hidden is True
         c_le = DistribucionCols.HEADERS.index(DistribucionCols.LINK_EXTRACTO) + 1
         assert ws.cell(dr, c_le).value in ("", None)
 
@@ -1178,7 +1168,6 @@ def test_phase1_empty_extractos_fallback_to_credit_folder():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 6, 1), 500000, "FALLB", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1217,7 +1206,6 @@ def test_generate_flat_acimor_style_writes_ruta_for_root_extract():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "ACIMRU", "pago"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1250,7 +1238,6 @@ def test_phase1_strict_name_rejects_pdf_without_extracto_in_name():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 23), 100000, "STRICT", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1290,7 +1277,6 @@ def test_phase1_selects_extract_with_max_fecha_limite():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 15), 100000, "MAXDT", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1328,7 +1314,6 @@ def test_phase1_no_selection_when_fecha_limite_unreadable():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 15), 100000, "NODTE", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         extractor = make_pdf_extractor_mock(client)
         with mock.patch(
             "app.application.use_cases.payment_validation_generate.extract_total_a_pagar_from_pdf",
@@ -1378,7 +1363,6 @@ def test_phase1_tie_max_fecha_limite_does_not_pick_silently():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 15), 100000, "TIECL", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1414,7 +1398,6 @@ def test_phase1_possibly_finalized_observation_on_folder_name():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 1), 500000, "PFCLI", "concepto-trx"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1451,7 +1434,6 @@ def test_phase11_flat_client_without_credit_subfolders_acimor_style():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "ACIMOR", "pago acimor"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1494,7 +1476,6 @@ def test_phase11_mixed_candidates_one_illegible_fecha_still_selects_max():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 15), 100000, "MIXRO", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1535,7 +1516,6 @@ def test_phase11_fecha_limite_unreadable_in_errores_includes_payment_context():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 15), 100000, "NODTE2", "ref-banco-123"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1609,7 +1589,6 @@ def test_errores_extract_not_found_friendly_message_and_code_column():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 30), 100000, "NOPDF", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
         errs = sheet_to_dicts(wb[ReviewSheets.ERRORES])
@@ -1651,7 +1630,6 @@ def test_errores_flat_client_extract_not_found_carpeta_hyperlink():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "MINCIVIL", "pago"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1699,7 +1677,6 @@ def test_errores_flat_client_illegible_extract_both_hyperlinks():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "MINCIVIL2", "pago"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1746,7 +1723,6 @@ def test_errores_sin_url_no_muestra_ver_carpeta_enganoso():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "NOURL", "pago"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1781,7 +1757,6 @@ def test_errores_extract_tie_max_fecha_friendly_message():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2025, 12, 15), 100000, "TIECLX", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1816,7 +1791,6 @@ def test_phase12_v2_fecha_limite_column_comes_from_pdf_not_amortization_table():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 8, 10), 100000, "PDFLIM", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1854,7 +1828,6 @@ def test_phase12_valid_extract_ambiguous_excel_tables_still_distrib_and_warns():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 2, 1), 100000, "AMBIV", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1888,7 +1861,6 @@ def test_phase12_valid_extract_without_excel_table_still_distrib_and_warns():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 3, 15), 50000, "NOTAB", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1923,7 +1895,6 @@ def test_phase12_acimor_pdf_informativo_no_interfiere_con_tabla_xlsx():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "ACIMOR2", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1959,7 +1930,6 @@ def test_phase12_flat_client_ambiguous_tables_valid_extract_distrib():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 5, 10), 50000, "FLAMB", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -1993,7 +1963,6 @@ def test_phase12_flat_infer_credito_from_pdf_obligacion_gb():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 5000, "ROOT82", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -2032,7 +2001,6 @@ def test_phase12_auxiliary_compare_fecha_limite_vs_last_fecha_pago_observations(
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[pdf_fecha, 50000, "CMPRV", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -2071,7 +2039,6 @@ def test_phase12_auxiliary_compare_extract_fecha_before_last_pay_warns():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[pdf_fecha, 50000, "CMPBF", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -2109,7 +2076,6 @@ def test_phase12_auxiliary_compare_when_extract_after_last_pay_no_compare_warnin
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[pdf_fecha, 50000, "CMPAF", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -2953,7 +2919,6 @@ def test_generate_result_includes_validation_file_url_when_graph_returns_weburl(
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         extractor = make_pdf_extractor_mock(client)
         fake_fecha = _fake_fecha_limite_from_marker_bytes()
         with mock.patch(
@@ -2983,7 +2948,6 @@ def test_generate_result_sets_validation_file_url_null_when_graph_does_not_retur
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         extractor = make_pdf_extractor_mock(client)
         fake_fecha = _fake_fecha_limite_from_marker_bytes()
         with mock.patch(
@@ -3028,7 +2992,6 @@ def test_credit_unit_inversiones_empty_credit_root_extract():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "INVPRO", "pago"]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -3075,7 +3038,6 @@ def test_credit_unit_agrecar_root_and_credit_folders():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 3, 1), 500000, "AGRECAR", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -3110,7 +3072,6 @@ def test_credit_unit_ericcol_non_standard_folder_infers_credit():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "AGRECAR", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -3150,7 +3111,6 @@ def test_infra_extractos_folder_not_credit_unit():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 1, 1), 100000, "ONLYX", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -3181,7 +3141,6 @@ def test_credit_folder_vigente_no_terminal_observation():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "VIGCLI", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -3213,7 +3172,6 @@ def test_credit_folder_pagado_terminal_observation():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "PAGCLI", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -3311,7 +3269,6 @@ def test_distrib_observation_warning_fill_only_on_observation_cell():
             ["Fecha", "Crédito", "Concepto", "Transacción"],
             [[date(2026, 4, 1), 100000, "WARNCLI", ""]],
         )
-        client.downloaded_files["pendientes.xlsx"] = create_excel(["A"], [])
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
@@ -3432,12 +3389,12 @@ def test_distribucion_link_carpeta_credito_column_position_and_ruta_hidden():
     )
     ws = wb[ReviewSheets.DISTRIBUCION]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
-    rut_letter = get_column_letter(DistribucionCols.HEADERS.index(DistribucionCols.RUTA) + 1)
-    rut_uc_letter = get_column_letter(
-        DistribucionCols.HEADERS.index(DistribucionCols.RUTA_UNIDAD_CREDITO) + 1
-    )
-    assert ws.column_dimensions[rut_letter].hidden is True
-    assert ws.column_dimensions[rut_uc_letter].hidden is True
+    for col_name in (
+        DistribucionCols.RUTA_TABLA_AMORTIZACION,
+        DistribucionCols.CREDITO_NORMALIZADO,
+    ):
+        letter = get_column_letter(DistribucionCols.HEADERS.index(col_name) + 1)
+        assert ws.column_dimensions[letter].hidden is True
     col_ruta = ix_ruta + 1
     col_ruta_uc = ix_ruta_uc + 1
     ruta_pdf = str(ws.cell(dr, col_ruta).value or "")
@@ -3503,9 +3460,11 @@ def test_distribucion_headers_order_and_link_carpeta_before_ruta():
     assert DistribucionCols.HEADERS[3] == DistribucionCols.MONTO_BANCO
     assert DistribucionCols.RUTA in DistribucionCols.HEADERS
     assert DistribucionCols.LINK_CARPETA_CREDITO in DistribucionCols.HEADERS
-    assert DistribucionCols.HEADERS[-1] == DistribucionCols.RUTA_UNIDAD_CREDITO
-    assert DistribucionCols.HEADERS[-2] == DistribucionCols.RUTA
-    assert DistribucionCols.HEADERS[-3] == DistribucionCols.LINK_CARPETA_CREDITO
+    assert DistribucionCols.HEADERS[-1] == DistribucionCols.CREDITO_NORMALIZADO
+    assert DistribucionCols.HEADERS[-2] == DistribucionCols.RUTA_TABLA_AMORTIZACION
+    assert DistribucionCols.HEADERS[-3] == DistribucionCols.RUTA_UNIDAD_CREDITO
+    assert DistribucionCols.HEADERS[-4] == DistribucionCols.RUTA
+    assert DistribucionCols.HEADERS[-5] == DistribucionCols.LINK_CARPETA_CREDITO
 
 
 def _medium_border_color(cell, side: str = "top") -> str | None:

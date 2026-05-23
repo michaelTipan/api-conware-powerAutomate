@@ -16,6 +16,7 @@ ENRICHABLE_JOB_TYPES = frozenset(
         "finalize",
         "notify_validar_extractos",
         "merge_composite_validado_pdfs",
+        "amortization_dry_run",
     }
 )
 
@@ -182,11 +183,6 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
         "Hay varias carpetas posibles para el mismo crédito; el sistema no puede elegir una.",
         "Deje una sola carpeta por crédito (nombres únicos en SharePoint). Vuelva a finalizar.",
     ),
-    "reprogramar_requires_zero_total": (
-        "Un pago ADELANTADO con Validar Pago = SI debe llevar cero en los tres importes de aplicación.",
-        "Deje en 0 Aplicar a extracto, Mora a aplicar y Otros valores, o cambie Estado Pago o Validar Pago si el caso es otro. "
-        "Guarde y vuelva a finalizar.",
-    ),
     "validar_requires_positive_total": (
         "Marcó Validar Pago = SI pero el total aplicado es cero o negativo (NORMAL, INCOMPLETO o ATRASADO).",
         "Ingrese los montos a aplicar o cambie Validar Pago a NO con observación. Guarde y vuelva a finalizar.",
@@ -256,83 +252,135 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
             "missing_historical_file_path|"
         ):
             return (
-                "No se recibió el archivo histórico de validación.",
-                "Ejecute primero la finalización de pagos y asegúrese de pasar el historical_file_path generado por Finalize al proceso de envío de correo.",
+                "El envío de correo no arrancó porque Power Automate no indicó qué archivo histórico usar "
+                "(falta la ruta del Excel de cartera validada del día).",
+                "Ejecute primero Finalize del mismo día. En el flujo de correo, envíe exactamente la ruta "
+                "que devolvió Finalize en historical_file_path (carpeta 02 HISTORICO), no la URL de SharePoint.",
                 "missing_historical_file_path",
             )
         if mstripped.startswith("historical_file_not_found"):
             return (
-                "No se encontró el archivo histórico de validación.",
-                "Verifique que la finalización haya terminado correctamente y que el archivo histórico siga existiendo en SharePoint.",
+                "No se pudo abrir el archivo histórico de validación en SharePoint (no existe, fue movido o sin permiso).",
+                "Confirme que Finalize terminó bien y que el archivo cartera_validada_....xlsx sigue en 02 HISTORICO. "
+                "Si lo borraron o renombraron, vuelva a ejecutar Finalize y reintente el correo con la ruta nueva.",
                 "historical_file_not_found",
             )
         if "no hay excel" in mlow and "hist" in mlow:
             return (
-                "No se encontró el archivo histórico de validación.",
-                "Verifique que la finalización haya terminado correctamente y que el archivo histórico siga existiendo en SharePoint.",
+                "No se encontró el Excel histórico del día en la carpeta de histórico de validación de pagos.",
+                "Verifique en 02 HISTORICO que exista cartera_validada con la fecha del reporte. "
+                "Si falta, ejecute Finalize de nuevo antes del correo.",
                 "historical_file_not_found",
             )
         if mstripped == "missing_distribucion_headers" or mstripped.startswith(
             "missing_distribucion_headers|"
+        ) or (
+            "no se encontró una hoja llamada" in mlow and "distribución" in mlow
         ):
             return (
-                "No se encontraron los encabezados requeridos en la hoja Distribución del histórico.",
-                "Verifique que el archivo histórico provenga de una finalización correcta.",
+                "El archivo histórico no tiene la hoja Distribución que el correo necesita leer.",
+                "Use el histórico generado por Finalize del mismo flujo (no un Excel copiado a mano). "
+                "Si el archivo es antiguo, vuelva a ejecutar Finalize y reintente el correo.",
                 "missing_distribucion_headers",
             )
         if mstripped == "missing_distribucion_status_column" or mstripped.startswith(
             "missing_distribucion_status_column|"
         ):
             return (
-                "No se encontró la columna Estado Pago / Validar Pago (o columna Estado en históricos antiguos) en el histórico.",
-                "Vuelva a ejecutar la finalización con el Excel de revisión actualizado o contacte soporte.",
+                "En el histórico falta la columna para saber qué pagos van en el correo "
+                "(Estado Pago / Validar Pago, o Estado en archivos viejos).",
+                "Vuelva a ejecutar Finalize con el Excel de revisión actual del sistema. "
+                "No edite manualmente los encabezados de Distribución.",
                 "missing_distribucion_status_column",
             )
         if mstripped == "missing_distribucion_route_column" or mstripped.startswith(
             "missing_distribucion_route_column|"
         ):
             return (
-                "No se encontró la columna técnica Ruta en el histórico de validación.",
-                "Vuelva a ejecutar Finalize con el Excel de revisión actualizado. "
-                "Si el problema persiste, contacte soporte.",
+                "En el histórico falta la columna Ruta, necesaria para adjuntar los PDF de extractos.",
+                "Ejecute de nuevo Generate y Finalize del día para regenerar la columna Ruta. "
+                "Luego reintente el envío de correo.",
                 "missing_distribucion_route_column",
             )
         if "no se encontraron encabezados" in mlow and "distribución" in mlow:
             return (
-                "No se encontraron los encabezados requeridos en la hoja Distribución del histórico.",
-                "Verifique que el archivo histórico provenga de una finalización correcta.",
+                "La hoja Distribución del histórico no tiene la fila de encabezados que el sistema espera.",
+                "No modifique la primera fila de títulos del histórico. Regenere el archivo con Finalize.",
                 "missing_distribucion_headers",
             )
         if "faltan columnas" in mlow or (
             "estado" in mlow and "línea" in mlow and "ruta" in mlow and "requeridas" in mlow
         ):
             return (
-                "El archivo histórico no tiene la columna Ruta o la estructura esperada.",
-                "Ejecute nuevamente Finalize o revise el archivo histórico.",
+                "El histórico no tiene todas las columnas necesarias (estado y ruta de extractos).",
+                "Ejecute Finalize otra vez con la plantilla actual. Revise que Distribución conserve Ruta y Estado Pago.",
                 "missing_ruta_column",
             )
         if "no hay filas" in mlow and ("estado" in mlow or "línea" in mlow or "linea" in mlow):
             return (
-                "No hay filas con Validar Pago=SI (o filas VALIDAR en históricos antiguos) para enviar.",
-                "Revise la hoja Distribución del archivo histórico.",
+                "En el histórico no hay filas marcadas para enviar en el correo "
+                "(Validar Pago = SI o estado VALIDAR según configuración).",
+                "Abra el histórico en Distribución y confirme que haya pagos validados para el día. "
+                "Si la secretaría no marcó filas, corrija el Excel de revisión y vuelva a Finalize.",
                 "no_validated_rows",
             )
-        if "descarg" in mlow or ("no se pudo" in mlow and "pdf" in mlow):
+        if "no hay destinatarios" in mlow or (
+            "receptores" in mlow and "vacía" in mlow
+        ):
             return (
-                "No se encontró uno de los extractos a adjuntar.",
-                "Verifique que el PDF exista en la ruta indicada en la columna Ruta.",
-                "extract_pdf_not_found",
+                "El correo no se envió porque no hay destinatarios válidos (columna RECEPTORES vacía o correos mal escritos).",
+                "Abra 00 CONTROL / CORREOS.xlsx: columna RECEPTORES debe tener al menos un correo por fila. "
+                "Si usó destinatarios fijos en Power Automate, revise el campo to del body.",
+                "recipients_not_configured",
             )
         if "emisor" in mlow or "receptores" in mlow or "correos" in mlow or "remitente" in mlow:
             return (
-                "No hay destinatarios o remitente configurados para el correo.",
-                "Revise CORREOS.xlsx o la configuración de destinatarios.",
+                "Falta configurar quién envía o quién recibe el correo en CORREOS.xlsx (EMISOR y RECEPTORES).",
+                "En 00 CONTROL / CORREOS.xlsx complete EMISOR (un correo) y RECEPTORES (uno o más correos). "
+                "Guarde el archivo en SharePoint y reintente.",
                 "recipients_not_configured",
+            )
+        if "no hay columna fecha" in mlow and "banco" in mlow:
+            return (
+                "El reporte del banco BANCO_BOGOTA.xlsx no tiene columna Fecha; el correo no puede saber el día del abono.",
+                "Revise el Excel del banco en 00 COMWARE - CARGA TRANSACCIONES BANCO y agregue la columna Fecha "
+                "como en días anteriores. Suba el archivo y reintente.",
+                "bank_report_missing_date_column",
+            )
+        if "ninguna fecha válida" in mlow and "fecha" in mlow:
+            return (
+                "El reporte del banco tiene columna Fecha pero ninguna fecha se pudo leer (celdas vacías o formato distinto).",
+                "Revise que las filas de pagos tengan fecha en formato habitual (dd/mm/aaaa o similar). "
+                "Corrija BANCO_BOGOTA.xlsx y reintente el correo.",
+                "bank_report_no_valid_dates",
+            )
+        if "banco bogotá" in mlow or "banco bogota" in mlow:
+            if "filas" in mlow or "columnas" in mlow:
+                return (
+                    "El reporte del banco no tiene datos completos para armar la tabla del correo "
+                    "(filas vacías, columnas faltantes o celdas incompletas).",
+                    "Abra BANCO_BOGOTA.xlsx: cada fila del correo debe tener todos los campos llenos según la plantilla. "
+                    "Suba el archivo corregido a SharePoint y reintente.",
+                    "bank_report_invalid_data",
+                )
+        if "define graph" in mlow or "graphconfigerror" in mlow.replace(" ", ""):
+            return (
+                "Falta configuración del sistema para ubicar carpetas de histórico o correo.",
+                "Contacte a soporte técnico (no es un error de la secretaría). Indique que falló el envío de correo de extractos.",
+                "notify_config_missing",
+            )
+        if "descarg" in mlow or ("no se pudo" in mlow and "pdf" in mlow):
+            return (
+                "Uno de los PDF de extractos que debían adjuntarse al correo no se encontró o no se pudo descargar.",
+                "En el histórico, columna Ruta: abra cada enlace y confirme que el PDF existe en SharePoint. "
+                "Suba el extracto faltante y reintente.",
+                "extract_pdf_not_found",
             )
         if "sendmail" in mlow or ("graph" in mlow and ("401" in msg or "403" in msg or "error" in mlow)):
             return (
-                "No se pudo enviar el correo por Microsoft Graph.",
-                "Revise permisos, destinatarios, buzón remitente o el detalle técnico.",
+                "Microsoft no aceptó el envío del correo (permisos del buzón, remitente o destinatarios).",
+                "Verifique en CORREOS.xlsx que EMISOR sea un buzón autorizado para enviar. "
+                "Confirme que los destinatarios son correos válidos. Si persiste, contacte soporte con la hora del fallo.",
                 "graph_sendmail_failed",
             )
 
@@ -340,122 +388,191 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
         mstripped = msg.strip()
         if mstripped == "merge_control_no_pending_process":
             return (
-                "No hay un proceso pendiente de consolidación de PDFs.",
-                "Ejecute primero la validación y el envío de correo de extractos antes de consolidar.",
+                "No se puede unir PDFs porque el sistema no tiene un proceso activo registrado tras el correo del día.",
+                "Ejecute en este orden: Finalize → envío de correo de extractos (debe quedar registrado en "
+                "control_merge_pdfs.xlsx con estado pendiente de asientos). Luego ejecute Unir PDFs. "
+                "Si el correo de hoy no actualizó el control, reenvíe el correo o pida a soporte.",
                 "merge_control_no_pending_process",
             )
         if mstripped == "missing_historical_file_path":
             return (
-                "No se encontró la ruta del histórico de validación.",
-                "Vuelva a ejecutar el proceso de envío de correo o revise el archivo de control.",
+                "El archivo de control no tiene la ruta del histórico de validación necesaria para unir PDFs.",
+                "Vuelva a ejecutar el envío de correo del día (debe registrar historical_file_path en control_merge_pdfs). "
+                "Si el control está vacío o dañado, pida a soporte restaurar control_merge_pdfs.xlsx en 00 CONTROL.",
                 "missing_historical_file_path",
             )
         if mstripped == "missing_email_pdf_path":
             return (
-                "No se encontró el PDF del correo de extractos.",
-                "Vuelva a ejecutar el envío de correo de extractos antes de consolidar.",
+                "Falta en el control la ruta del PDF copia del correo (carpeta 05 EMAIL).",
+                "Ejecute de nuevo el envío de correo y confirme que en 05 EMAIL quede el PDF del día "
+                "(ABONOS BANCO BOGOTA ...). Después reintente Unir PDFs.",
                 "missing_email_pdf_path",
             )
         if mstripped == "merge_control_workbook_not_found":
             return (
-                "No se encontró el archivo de control de consolidación en SharePoint.",
-                "Ejecute primero el setup del workbook de control o verifique GRAPH_MERGE_CONTROL_WORKBOOK_PATH.",
+                "No existe control_merge_pdfs.xlsx en 00 CONTROL; sin ese archivo no puede iniciar la unión de PDFs.",
+                "Pida a soporte crear el archivo de control una sola vez (setup). "
+                "Luego: correo del día → Unir PDFs.",
                 "merge_control_workbook_not_found",
             )
         if mstripped == "merge_control_invalid_structure":
             return (
-                "El archivo de control de consolidación no tiene el formato esperado.",
-                "Vuelva a ejecutar el setup del workbook de control o restaure la plantilla.",
+                "control_merge_pdfs.xlsx está dañado o fue editado (falta hoja Procesos, encabezados o fila 2).",
+                "No modifique ese Excel a mano. Pida a soporte restaurar la plantilla en 00 CONTROL y repita correo + Unir PDFs.",
                 "merge_control_invalid_structure",
             )
         if "no se encontró pdf de correo" in mlow:
             return (
-                "Falta el PDF exportado del correo para la fecha del reporte.",
-                "Ejecute primero el endpoint de correo o verifique la carpeta 05 EMAIL.",
+                "No se encontró en 05 EMAIL el PDF del correo para la fecha del reporte del banco.",
+                "Ejecute primero el envío de correo del día y verifique que el PDF se guarde en "
+                "02 COMWARE - VALIDACION PAGOS / 05 EMAIL. Luego reintente Unir PDFs.",
                 "email_pdf_not_found",
             )
         if mstripped == "missing_distribucion_headers" or mstripped.startswith(
             "missing_distribucion_headers|"
+        ) or (
+            "no se encontró una hoja llamada" in mlow and "distribución" in mlow
         ):
             return (
-                "No se encontraron los encabezados requeridos en la hoja Distribución del histórico.",
-                "Verifique que el archivo histórico provenga de una finalización correcta.",
+                "El histórico del día no tiene la hoja Distribución que se necesita para saber qué pagos unir.",
+                "Use el cartera_validada generado por Finalize del mismo flujo. Si el archivo es copia manual, "
+                "vuelva a ejecutar Finalize y reintente.",
                 "missing_distribucion_headers",
             )
         if mstripped == "missing_distribucion_status_column" or mstripped.startswith(
             "missing_distribucion_status_column|"
+        ) or (
+            "estado pago" in mlow and "requieren columnas" in mlow
         ):
             return (
-                "No se encontró la columna Estado Pago / Validar Pago (o columna Estado en históricos antiguos) en el histórico.",
-                "Vuelva a ejecutar la finalización con el Excel de revisión actualizado o contacte soporte.",
+                "El histórico no indica qué pagos deben consolidarse (falta Estado Pago / Validar Pago o Estado línea).",
+                "Ejecute de nuevo Generate y Finalize del día. No altere encabezados de Distribución en el histórico.",
                 "missing_distribucion_status_column",
             )
         if mstripped == "missing_distribucion_route_column" or mstripped.startswith(
             "missing_distribucion_route_column|"
+        ) or (
+            "rutaasientoscontables" in mlow.replace(" ", "")
+            and "requieren" in mlow
         ):
             return (
-                "No se encontró la columna técnica Ruta en el histórico de validación.",
-                "Vuelva a ejecutar Finalize con el Excel de revisión actualizado. "
-                "Si el problema persiste, contacte soporte.",
+                "Al histórico le faltan columnas obligatorias: Ruta (extractos), RutaAsientosContables e ID Pago.",
+                "Regenere el histórico con Finalize actual (incluye rutas técnicas). Luego correo y Unir PDFs.",
                 "missing_distribucion_route_column",
             )
         if "en distribución se requieren columnas" in mlow:
             return (
-                "El histórico no tiene las columnas necesarias para consolidar PDFs.",
-                "Verifique que el histórico generado por Finalize tenga Estado Pago, Validar Pago, Ruta e ID Pago.",
+                "El histórico no tiene todas las columnas para armar los PDF unidos (estado, rutas, ID Pago).",
+                "Vuelva a Finalize con la plantilla vigente. Revise Distribución: Ruta, RutaAsientosContables, ID Pago.",
                 "missing_distribucion_columns",
             )
         if "no hay filas cuyo estado" in mlow or "estado línea contenga" in mlow or "estado linea contenga" in mlow:
             return (
-                "No hay pagos marcados para consolidar.",
-                "Revise que el histórico tenga filas con Validar Pago=SI (o VALIDAR en históricos antiguos) en Distribución.",
+                "No hay pagos en el histórico marcados para consolidar (ninguna fila coincide con VALIDAR / Validar Pago = SI).",
+                "En el histórico, hoja Distribución, confirme que haya filas validadas para el día. "
+                "Si la secretaría no cerró bien la revisión, corrija el Excel y vuelva a Finalize antes del correo y este paso.",
                 "no_validated_rows_merge",
             )
-        if "extract_routes_missing" in msg or "sin rutas de extracto" in mlow:
+        if "extract_routes_missing" in msg or "sin rutas de extracto" in mlow or "extract_routes_missing" in mlow:
             return (
-                "Un pago no tiene rutas de extractos para consolidar.",
-                "Revise la columna Ruta en el histórico.",
+                "Un pago no tiene ruta de extracto en el histórico o el PDF no está en SharePoint.",
+                "En Distribución, columna Ruta: abra el enlace y confirme que el extracto exista. "
+                "Si falta, corrija con Generate/Finalize o suba el PDF al crédito.",
                 "extract_routes_missing",
             )
         if mstripped == "missing_ruta_asientos_contables" or "missing_ruta_asientos_contables" in msg:
             return (
-                "Falta la ruta de la carpeta de asientos contables en el histórico.",
-                "Ejecute Finalize para generar la columna RutaAsientosContables antes de consolidar.",
+                "Un pago no tiene carpeta de asientos contables registrada en el histórico (columna RutaAsientosContables).",
+                "Ejecute Finalize de nuevo para regenerar esa columna. La secretaría debe haber completado la revisión antes.",
                 "missing_ruta_asientos_contables",
             )
         if "credit_number_not_resolved" in msg:
             return (
-                "No se pudo determinar el número de crédito para un extracto.",
-                "Revise que la ruta del extracto incluya la carpeta CREDITO # n o que el histórico tenga una sola fila de crédito por pago.",
+                "No se pudo identificar el número de crédito de un extracto para buscar su asiento contable.",
+                "Revise que la ruta del extracto pase por una carpeta CREDITO # número o que la columna Crédito "
+                "en Distribución tenga el número correcto.",
                 "credit_number_not_resolved",
             )
-        if (
-            "asiento_contable_not_found" in msg
-            or "asiento_contable_ambiguous" in msg
-            or "asiento_contable_credit_mismatch" in msg
-        ):
+        if "asiento_folder_list_failed" in msg:
             return (
-                "Falta el PDF de asiento contable para uno o más pagos o no coincide con el crédito.",
-                "Suba un único PDF en ASIENTOS CONTABLES del crédito cuyo nombre contenga el número de crédito aislado.",
+                "No se pudo abrir la carpeta de asientos contables de un crédito en SharePoint.",
+                "Verifique que la ruta RutaAsientosContables del histórico sea correcta y que tenga permiso de lectura. "
+                "Confirme que la carpeta ASIENTOS CONTABLES del crédito exista.",
+                "asiento_folder_list_failed",
+            )
+        if "asiento_contable_not_found" in msg:
+            return (
+                "Falta al menos un PDF de asiento contable válido en la carpeta del crédito.",
+                "En la carpeta ASIENTOS CONTABLES del crédito suba al menos un PDF cuyo nombre incluya el número "
+                "de crédito (sin confundir con otros números, ej. 264 vs 1264). Vuelva a ejecutar Unir PDFs.",
                 "missing_asiento_contable_pdf",
+            )
+        if "asiento_contable_credit_mismatch" in msg:
+            return (
+                "Hay PDF de asiento en la carpeta del crédito que no coincide con el número de crédito esperado.",
+                "Renombre o retire los PDF que no correspondan al crédito; los válidos deben incluir el número de "
+                "crédito en el nombre. Vuelva a ejecutar Unir PDFs.",
+                "asiento_contable_credit_mismatch",
+            )
+        if "asiento_contable_ambiguous" in msg:
+            return (
+                "No se pudo determinar qué PDF de asiento usar para el crédito.",
+                "Revise los archivos en la carpeta ASIENTOS CONTABLES y vuelva a ejecutar Unir PDFs.",
+                "asiento_contable_ambiguous",
             )
         if "extracto_download_failed" in msg or "no se descargó extracto" in mlow:
             return (
-                "No se pudo descargar uno de los extractos.",
-                "Verifique que la ruta del extracto exista y que la API tenga permisos.",
+                "No se pudo descargar el PDF de un extracto indicado en el histórico.",
+                "Compruebe que el archivo siga en SharePoint en la ruta de la columna Ruta y que no esté borrado o renombrado.",
                 "extract_pdf_download_failed",
             )
         if "asiento_download_failed" in msg or "no se descargó asiento" in mlow:
             return (
-                "No se pudo descargar el PDF de asiento contable.",
-                "Verifique que el archivo exista en la carpeta ASIENTOS CONTABLES del crédito.",
+                "No se pudo descargar el PDF de asiento contable aunque la carpeta existe.",
+                "Verifique que el archivo no esté corrupto, bloqueado o sin permisos. Vuelva a subir el asiento en "
+                "ASIENTOS CONTABLES del crédito.",
                 "asiento_pdf_download_failed",
             )
-        if "consolidated_upload_failed" in msg or "put_bytes" in mlow or "upload" in mlow or "423" in msg or "locked" in mlow:
+        if "consolidated_upload_failed" in msg or "put_bytes" in mlow or ("upload" in mlow and "423" in msg) or "locked" in mlow:
             return (
-                "No se pudo subir el PDF consolidado.",
-                "Revise permisos de SharePoint, carpeta de salida o bloqueo de archivos.",
+                "Se armó el PDF unido pero no se pudo guardarlo en 06 ASIENTO CONTABLES GENERADOS (permisos o archivo bloqueado).",
+                "Cierre PDFs abiertos en SharePoint. Verifique espacio y permisos de escritura en la carpeta de salida. "
+                "Reintente Unir PDFs.",
                 "consolidated_upload_failed",
+            )
+        if "upload" in mlow and "consolidated" not in mlow:
+            return (
+                "No se pudo subir uno de los PDF consolidados a SharePoint.",
+                "Revise permisos en 06 ASIENTO CONTABLES GENERADOS y que ningún PDF consolidado esté abierto en el navegador.",
+                "consolidated_upload_failed",
+            )
+
+    if job_type == "amortization_dry_run":
+        mstripped = msg.strip()
+        if mstripped == "report_date_iso_required" or mstripped.startswith("report_date_iso_required"):
+            return (
+                "No se indicó la fecha del reporte ni una ruta de manifest de Merge.",
+                "Vuelva a ejecutar el dry-run enviando report_date_iso (YYYY-MM-DD) o merge_manifest_path.",
+                "report_date_iso_required",
+            )
+        if mstripped.startswith("merge_manifest_not_found"):
+            return (
+                "No se encontró el archivo merge_manifest en SharePoint para la fecha indicada.",
+                "Confirme que Merge se ejecutó para ese día y que el JSON está en la carpeta de logs "
+                "(GRAPH_PAYMENT_VALIDATION_LOGS_PATH). Corrija report_date_iso o pase merge_manifest_path explícito.",
+                "merge_manifest_not_found",
+            )
+        if mstripped.startswith("invalid_merge_manifest_json"):
+            return (
+                "El manifest de Merge existe pero no es un JSON válido.",
+                "Revise el archivo en SharePoint o vuelva a ejecutar Merge para regenerar el manifest.",
+                "invalid_merge_manifest_json",
+            )
+        if "graph_config" in mlow or "missing environment variable" in mlow:
+            return (
+                "Faltan variables de configuración de SharePoint para leer el manifest o los archivos.",
+                "Contacte a soporte técnico con el detalle del error (GRAPH_SHAREPOINT_SITE_SEARCH, rutas de logs, etc.).",
+                "graph_config_error",
             )
 
     return _UNKNOWN_USER, _UNKNOWN_NEXT, "unknown_error"
@@ -506,66 +623,112 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
         wtxt = str(result.get("merge_control_warning") or "").strip()
         if ec == "merge_control_active_process_exists":
             return (
-                "El correo con los extractos validados fue enviado correctamente.",
-                "Ya existe un proceso pendiente de consolidación de PDFs. Termine o cancele ese proceso "
-                "antes de registrar uno nuevo en el archivo de control.",
+                "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
+                "Para el siguiente paso (unir PDFs): en 00 CONTROL / control_merge_pdfs.xlsx ya hay un proceso "
+                "pendiente. Termine o cancele ese proceso antes de volver a registrar uno nuevo.",
                 "warning",
             )
         if ec == "missing_email_pdf_path_for_merge_control":
             return (
-                "El correo con los extractos validados fue enviado correctamente.",
-                "No se generó el PDF del correo necesario para registrar el proceso de consolidación en el "
-                "archivo de control. Revise la exportación del PDF antes de ejecutar Merge.",
+                "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
+                "No se guardó el PDF copia del correo en 05 EMAIL ni se registró el paso para unir PDFs después. "
+                "Revise en SharePoint la carpeta 05 EMAIL y que la exportación del PDF esté activa; luego reintente "
+                "solo el registro en control o contacte soporte antes de ejecutar Unir PDFs.",
                 "warning",
             )
-        if ec in (
-            "merge_control_workbook_not_found",
-            "merge_control_invalid_structure",
-            "merge_control_read_failed",
-            "merge_control_write_failed",
-        ):
+        if ec == "merge_control_workbook_not_found":
             return (
-                "El correo con los extractos validados fue enviado correctamente.",
-                wtxt or "No se pudo actualizar el archivo de control de Merge. Revise la ruta, permisos o ejecute el "
-                "setup del workbook.",
+                "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
+                "No se actualizó control_merge_pdfs.xlsx porque el archivo no existe en 00 CONTROL. "
+                "Pida a soporte ejecutar una sola vez el setup del archivo de control; después el flujo de correo "
+                "quedará listo para el paso de unir PDFs.",
+                "warning",
+            )
+        if ec == "merge_control_invalid_structure":
+            return (
+                "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
+                "No se pudo actualizar control_merge_pdfs.xlsx porque el formato del archivo no es el esperado "
+                "(hoja Procesos, encabezados o fila 2). Pida a soporte restaurar o recrear el archivo de control.",
+                "warning",
+            )
+        if ec in ("merge_control_read_failed", "merge_control_write_failed"):
+            return (
+                "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
+                wtxt
+                or "No se pudo leer o guardar control_merge_pdfs.xlsx (permisos o archivo abierto). "
+                "Cierre ese Excel en SharePoint y reintente; si persiste, contacte soporte.",
                 "warning",
             )
         if not result.get("merge_control_updated") and wtxt and not ec:
             return (
-                "El correo con los extractos validados fue enviado correctamente.",
+                "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
                 wtxt,
                 "warning",
             )
         return (
-            "El correo con los extractos validados fue enviado correctamente.",
-            "Verifique que los destinatarios reciban el mensaje, cargue los asientos contables en las carpetas "
-            "indicadas y luego ejecute la consolidación de PDFs.",
+            "El correo de abonos del banco se envió correctamente con la tabla del día y los extractos configurados.",
+            "Revise la bandeja de los destinatarios (y correo no deseado). Siguiente paso operativo: la secretaría "
+            "carga los asientos en las carpetas del soporte; cuando termine, ejecute la unión de PDFs.",
             "success",
         )
     if job_type == "merge_composite_validado_pdfs":
         outputs = result.get("outputs") or []
         skipped = result.get("skipped") or []
+        out_count = result.get("outputs_count")
+        if out_count is None and isinstance(outputs, list):
+            out_count = len(outputs)
+        skip_count = result.get("skipped_count")
+        if skip_count is None and isinstance(skipped, list):
+            skip_count = len(skipped)
         if isinstance(outputs, list) and len(outputs) == 0 and isinstance(skipped, list) and len(skipped) > 0:
             return (
-                "El proceso terminó, pero no se generó ningún PDF consolidado porque faltan archivos requeridos.",
-                "Revise la lista de pagos omitidos, cargue los asientos contables o corrija las rutas faltantes y vuelva a ejecutar la consolidación.",
+                "La unión de PDFs terminó sin generar ningún archivo: a todos los pagos les faltó el asiento contable, "
+                "el extracto u otro requisito.",
+                "Abra result.skipped en Power Automate (cada línea indica id_pago y motivo). "
+                "La secretaría debe subir los PDF en ASIENTOS CONTABLES de cada crédito según el soporte de asientos. "
+                "Corrija y ejecute Unir PDFs de nuevo.",
                 "warning",
             )
         if isinstance(outputs, list) and len(outputs) > 0:
             if isinstance(skipped, list) and len(skipped) > 0:
                 return (
-                    "Se generaron los PDFs de soporte consolidados para los pagos que tenían todos los archivos necesarios.",
-                    "Revise la carpeta de salida de PDFs consolidados y verifique la lista de pagos omitidos si existe.",
+                    f"Unió correctamente {out_count or len(outputs)} pago(s) en PDF consolidados; "
+                    f"{skip_count or len(skipped)} pago(s) se omitieron por archivos faltantes.",
+                    "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS los PDF generados. "
+                    "En result.skipped vea qué pagos faltan (asiento o extracto). Suba lo pendiente y reintente solo "
+                    "para esos pagos si el flujo lo permite.",
                     "warning",
                 )
             return (
-                "Se generaron los PDFs de soporte consolidados para los pagos que tenían todos los archivos necesarios.",
-                "Revise la carpeta de salida de PDFs consolidados y verifique la lista de pagos omitidos si existe.",
+                "La unión de PDFs terminó correctamente: cada pago validado quedó en un solo PDF "
+                "(correo del día + asientos + extractos). Los asientos contables permanecen en sus carpetas.",
+                "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS. Siguiente paso: ejecutar la "
+                "actualización de tablas de amortización cuando esa API exista (los asientos deben seguir disponibles).",
                 "success",
             )
         return (
-            "Se generaron los PDFs de soporte consolidados para los pagos que tenían todos los archivos necesarios.",
-            "Revise la carpeta de salida de PDFs consolidados y verifique la lista de pagos omitidos si existe.",
+            "La unión de PDFs terminó; revise en result cuántos archivos se generaron y si hay pagos omitidos.",
+            "Abra la carpeta 06 ASIENTO CONTABLES GENERADOS en SharePoint y, si aparece skipped en la respuesta, "
+            "atienda los pagos listados antes de considerar el cierre completo.",
+            "success",
+        )
+    if job_type == "amortization_dry_run":
+        summary = result.get("summary") or {}
+        total_events = summary.get("total_events") or summary.get("total") or 0
+        errors = summary.get("errors") or 0
+        if errors and total_events:
+            return (
+                f"El análisis preliminar terminó con {total_events} evento(s) revisados; "
+                f"{errors} con error (revise items y error_code).",
+                "Corrija asientos, tablas o manifest según cada ítem en result.items. "
+                "No se modificó ninguna tabla de amortización.",
+                "warning",
+            )
+        return (
+            "El análisis preliminar de amortización terminó correctamente. No se modificó ninguna tabla.",
+            "Revise el detalle del dry-run en result (items por asiento, application_status, filas destino). "
+            "Si los valores, asientos y filas son correctos, el siguiente paso será ejecutar la "
+            "actualización real cuando esté disponible.",
             "success",
         )
 

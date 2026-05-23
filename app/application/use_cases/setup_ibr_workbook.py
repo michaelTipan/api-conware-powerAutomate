@@ -1,5 +1,6 @@
 """
 Setup idempotente de IBR_DIARIO.xlsx (hoja IBR: Inicio, Fin, Valor).
+Sin Table/ListObject; encabezados bloqueados y filas de datos editables.
 """
 
 from __future__ import annotations
@@ -11,11 +12,11 @@ from typing import Any
 
 import httpx
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.styles.colors import Color
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
 
+from app.application.services.workbook_setup_helpers import (
+    configure_secretary_editable_sheet,
+    sheet_headers_match,
+)
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.application.use_cases.setup_merge_control_workbook import (
     MERGE_CONTROL_FOLDER_RELATIVE_PATH,
@@ -30,20 +31,7 @@ logger = logging.getLogger(__name__)
 
 IBR_SHEET_NAME = "IBR"
 IBR_COLUMNS: tuple[str, ...] = ("Inicio", "Fin", "Valor")
-TABLE_IBR = "tblIbrDiario"
 FILENAME_IBR = "IBR_DIARIO.xlsx"
-
-_FILL_HEADER = PatternFill(fill_type="solid", fgColor="002060")
-_FONT_HEADER = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
-_FONT_BODY = Font(name="Calibri", size=11)
-_BORDER = Border(
-    left=Side(style="thin", color="C8C8C8"),
-    right=Side(style="thin", color="C8C8C8"),
-    top=Side(style="thin", color="C8C8C8"),
-    bottom=Side(style="thin", color="C8C8C8"),
-)
-_ALIGN_HEADER = Alignment(vertical="center", horizontal="center", wrap_text=True)
-_ALIGN_BODY = Alignment(vertical="center", horizontal="left", wrap_text=True)
 
 
 class IbrWorkbookSetupError(Exception):
@@ -103,74 +91,35 @@ def _build_new_ibr_workbook_bytes() -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = IBR_SHEET_NAME
-    _apply_ibr_sheet_structure(ws, preserve_data_from_row=2)
+    configure_secretary_editable_sheet(ws, IBR_COLUMNS)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-def _apply_ibr_sheet_structure(ws: Any, *, preserve_data_from_row: int) -> list[str]:
-    """Asegura encabezados y tabla; preserva filas >= preserve_data_from_row."""
+def _validate_ibr_workbook(data: bytes) -> tuple[bool, list[str]]:
     warnings: list[str] = []
-    ncols = len(IBR_COLUMNS)
-    existing_headers: list[str] = []
-    max_c = ws.max_column or 0
-    for c in range(1, max(max_c, ncols) + 1):
-        existing_headers.append(str(ws.cell(1, c).value or "").strip())
-
-    present = {h for h in existing_headers if h}
-    for col_name in IBR_COLUMNS:
-        if col_name not in present:
-            next_col = len([h for h in existing_headers if h]) + 1
-            while len(existing_headers) < next_col:
-                existing_headers.append("")
-            existing_headers[next_col - 1] = col_name
-            warnings.append(f"column_added:{col_name}")
-
-    for col_idx, name in enumerate(IBR_COLUMNS, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=name)
-        cell.fill = _FILL_HEADER
-        cell.font = _FONT_HEADER
-        cell.alignment = _ALIGN_HEADER
-        cell.border = _BORDER
-
-    if ws.max_row < 2:
-        for col_idx in range(1, ncols + 1):
-            cell = ws.cell(row=2, column=col_idx, value=None)
-            cell.font = _FONT_BODY
-            cell.alignment = _ALIGN_BODY
-            cell.border = _BORDER
-
-    last_col = get_column_letter(ncols)
-    last_row = max(ws.max_row or 2, 2)
-    ws.auto_filter.ref = f"A1:{last_col}{last_row}"
-    ws.freeze_panes = "A2"
-
-    if TABLE_IBR in ws.tables:
-        del ws.tables[TABLE_IBR]
-    ref = f"A1:{last_col}{last_row}"
-    tab = Table(displayName=TABLE_IBR, ref=ref)
-    tab.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    ws.add_table(tab)
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=False)
     try:
-        ws.sheet_view.showGridLines = False
-    except Exception:
-        pass
-    try:
-        ws.sheet_properties.tabColor = Color(rgb="002060")
-    except Exception:
-        pass
-    return warnings
+        if IBR_SHEET_NAME not in wb.sheetnames:
+            warnings.append(f"needs_manual_review: falta la hoja {IBR_SHEET_NAME!r}")
+            return False, warnings
+        ws = wb[IBR_SHEET_NAME]
+        if not sheet_headers_match(ws, IBR_COLUMNS):
+            warnings.append("needs_manual_review: encabezados IBR no coinciden")
+            return False, warnings
+        if ws.tables:
+            warnings.append("needs_manual_review: hoja IBR contiene Table/ListObject; use force_recreate")
+            return False, warnings
+        return True, warnings
+    finally:
+        closer = getattr(wb, "close", None)
+        if callable(closer):
+            closer()
 
 
 def _repair_existing_workbook(data: bytes) -> tuple[bytes, list[str], bool]:
-    """Añade hoja/columnas IBR sin borrar otras hojas ni filas de datos."""
+    """Añade hoja/columnas IBR sin borrar datos; quita tablas si existían."""
     warnings: list[str] = []
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=False)
     modified = False
@@ -182,9 +131,15 @@ def _repair_existing_workbook(data: bytes) -> tuple[bytes, list[str], bool]:
         else:
             ws = wb[IBR_SHEET_NAME]
 
-        w = _apply_ibr_sheet_structure(ws, preserve_data_from_row=2)
-        if w:
-            warnings.extend(w)
+        if ws.tables:
+            for name in list(ws.tables.keys()):
+                del ws.tables[name]
+            modified = True
+            warnings.append("removed_tables:IBR")
+
+        before_headers = sheet_headers_match(ws, IBR_COLUMNS)
+        configure_secretary_editable_sheet(ws, IBR_COLUMNS)
+        if not before_headers or ws.tables:
             modified = True
 
         buf = io.BytesIO()
@@ -196,7 +151,26 @@ def _repair_existing_workbook(data: bytes) -> tuple[bytes, list[str], bool]:
             closer()
 
 
-async def setup_ibr_workbook(graph: GraphApiPort) -> dict[str, Any]:
+async def _upload_workbook(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    file_path: str,
+    payload: bytes,
+) -> str | None:
+    resp = await graph.put_bytes(
+        _content_endpoint(site_id, drive_id, file_path),
+        payload,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    if isinstance(resp, dict):
+        wu = resp.get("webUrl")
+        if isinstance(wu, str) and wu.strip():
+            return wu.strip()
+    return await _drive_item_web_url(graph, site_id, drive_id, file_path)
+
+
+async def setup_ibr_workbook(graph: GraphApiPort, *, force_recreate: bool = False) -> dict[str, Any]:
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
     drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
     if not site_search:
@@ -222,53 +196,57 @@ async def setup_ibr_workbook(graph: GraphApiPort) -> dict[str, Any]:
     exists = await _file_exists(graph, site_id, drive_id, file_path)
 
     try:
-        if not exists:
+        if not exists or force_recreate:
+            if exists and force_recreate:
+                warnings.append("force_recreate: IBR_DIARIO.xlsx reemplazado")
             payload = _build_new_ibr_workbook_bytes()
-            resp = await graph.put_bytes(
-                _content_endpoint(site_id, drive_id, file_path),
-                payload,
-                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            file_url = None
-            if isinstance(resp, dict):
-                wu = resp.get("webUrl")
-                file_url = str(wu).strip() if isinstance(wu, str) and wu.strip() else None
-            if not file_url:
-                file_url = await _drive_item_web_url(graph, site_id, drive_id, file_path)
+            file_url = await _upload_workbook(graph, site_id, drive_id, file_path, payload)
             return {
                 "status": "success",
+                "force_recreate": force_recreate,
                 "file_path": file_path,
-                "created": True,
-                "repaired": False,
+                "created": not exists,
+                "recreated": exists and force_recreate,
                 "file_url": file_url,
                 "sheet_name": IBR_SHEET_NAME,
                 "columns": list(IBR_COLUMNS),
+                "sheet_protection": "header_locked_data_editable",
                 "warnings": warnings,
             }
 
         raw = await graph.get_bytes(_content_endpoint(site_id, drive_id, file_path))
+        ok, val_warnings = _validate_ibr_workbook(raw)
+        warnings.extend(val_warnings)
+        if ok:
+            return {
+                "status": "success",
+                "force_recreate": False,
+                "file_path": file_path,
+                "created": False,
+                "recreated": False,
+                "file_url": await _drive_item_web_url(graph, site_id, drive_id, file_path),
+                "sheet_name": IBR_SHEET_NAME,
+                "columns": list(IBR_COLUMNS),
+                "sheet_protection": "header_locked_data_editable",
+                "warnings": warnings,
+            }
+
         payload, repair_warnings, modified = _repair_existing_workbook(raw)
         warnings.extend(repair_warnings)
         file_url = await _drive_item_web_url(graph, site_id, drive_id, file_path)
         if modified:
-            resp = await graph.put_bytes(
-                _content_endpoint(site_id, drive_id, file_path),
-                payload,
-                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            if isinstance(resp, dict):
-                wu = resp.get("webUrl")
-                if isinstance(wu, str) and wu.strip():
-                    file_url = wu.strip()
+            file_url = await _upload_workbook(graph, site_id, drive_id, file_path, payload) or file_url
 
         return {
             "status": "success",
+            "force_recreate": False,
             "file_path": file_path,
             "created": False,
-            "repaired": modified,
+            "recreated": modified,
             "file_url": file_url,
             "sheet_name": IBR_SHEET_NAME,
             "columns": list(IBR_COLUMNS),
+            "sheet_protection": "header_locked_data_editable",
             "warnings": warnings,
         }
     except httpx.HTTPStatusError as exc:

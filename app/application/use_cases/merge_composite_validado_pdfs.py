@@ -1,8 +1,10 @@
 """
 Por cada ID Pago con filas cuyo Estado línea coincide con GRAPH_VALIDAR_EXTRACTO_ESTADO_CONTAINS
 (p. ej. VALIDAR), descarga y concatena PDFs: primero el PDF del correo (ruta exacta en el archivo de
-control), luego por cada extracto el asiento contable en la ruta de **RutaAsientosContables** (histórico Finalize)
-y el extracto. Varios extractos del mismo ID Pago = un solo PDF.
+control), luego por cada par asiento+extracto (puede haber varios asientos por crédito y extracto)
+y el extracto. Varios extractos del mismo ID Pago = un solo PDF consolidado.
+En cada carpeta ASIENTOS CONTABLES del crédito debe existir al menos un PDF válido; si hay varios,
+todos deben corresponder al crédito y se incluyen en orden estable por nombre.
 
 La fecha del reporte es la mínima de la columna Fecha del Excel de reporte (GRAPH_SHAREPOINT_FILE_PATH),
 solo para nombrar salidas. El histórico y el PDF del correo se leen desde ``control_merge_pdfs.xlsx``
@@ -11,6 +13,7 @@ solo para nombrar salidas. El histórico y el PDF del correo se leen desde ``con
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -28,7 +31,6 @@ from pypdf import PdfReader, PdfWriter
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_from_env
 from app.application.use_cases.merge_control_workbook_merge import (
     MergeControlValidationError,
-    graph_delete_drive_item_by_path,
     merge_control_download_workbook_bytes,
     merge_control_parse_row2_validate_for_merge,
     merge_control_set_consolidado_success,
@@ -84,10 +86,40 @@ def _ruta_asientos_from_cell(cell: Any) -> str:
     return _excel_cell_display(cell).strip().replace("\\", "/").strip("/")
 
 
+_IGNORED_ASIENTO_SUBFOLDER_NAMES = frozenset({"PROCESADOS", "PROCESADO"})
+
+
+def normalize_sharepoint_path(path: str) -> str:
+    """Clave de deduplicación: sin espacios extremos, barras unificadas, casefold."""
+    return str(path or "").strip().strip("/").replace("\\", "/").casefold()
+
+
+def unique_paths_preserve_order(paths: list[str]) -> list[str]:
+    """Deduplica por path normalizado; conserva la primera aparición y el casing original."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in paths:
+        canonical = str(raw or "").strip().strip("/").replace("\\", "/")
+        if not canonical:
+            continue
+        key = normalize_sharepoint_path(canonical)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(canonical)
+    return out
+
+
 def _pdf_names_in_children(children: list[dict[str, Any]]) -> list[str]:
+    """PDF en el nivel actual de la carpeta; ignora subcarpetas (p. ej. PROCESADOS)."""
     out: list[str] = []
     for it in children:
-        if "folder" in it or "file" not in it:
+        if "folder" in it:
+            folder_name = str(it.get("name", "")).strip().casefold()
+            if folder_name in _IGNORED_ASIENTO_SUBFOLDER_NAMES:
+                continue
+            continue
+        if "file" not in it:
             continue
         name = str(it.get("name", "")).strip()
         if name.lower().endswith(".pdf") and not name.startswith("~$"):
@@ -225,18 +257,38 @@ async def _drive_item_exists(
         raise
 
 
+def _finalize_credit_item(
+    credit_digits: str,
+    asiento_paths: list[str],
+    extract_paths: list[str],
+    *,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    asientos = unique_paths_preserve_order(asiento_paths)
+    extractos = unique_paths_preserve_order(extract_paths)
+    w = list(warnings or [])
+    if len(extractos) > 1:
+        w.append("MULTIPLE_EXTRACTS_FOR_CREDIT")
+    return {
+        "credito": credit_digits,
+        "asiento_pdf_paths": asientos,
+        "extracto_pdf_paths": extractos,
+        "extracto_pdf_path": extractos[0] if extractos else "",
+        "warnings": w,
+    }
+
+
 async def _prevalidate_id_pago_group(
     graph: GraphApiPort,
     site_id: str,
     drive_id: str,
     id_pago: str,
     rows: list[dict[str, Any]],
-) -> tuple[list[tuple[str, str]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """
-    Valida todas las filas del ID Pago antes de generar el PDF.
-    Devuelve (pares asiento+extracto, líneas skipped). Si hay cualquier fallo, pairs vacío.
+    Valida filas del ID Pago y devuelve credit_items (un bloque por crédito) y líneas skipped.
     """
-    pair_asientos: list[tuple[str, str]] = []
+    credit_accum: dict[str, dict[str, Any]] = {}
     skip_lines: list[str] = []
 
     for row in rows:
@@ -245,13 +297,10 @@ async def _prevalidate_id_pago_group(
         row_cred = str(row.get("credito_digits") or "").strip()
 
         extract_paths: list[str] = []
-        seen_ep: set[str] = set()
         ruta_cell = row.get("ruta_cell")
         for p in await _collect_pdf_paths_from_ruta_cell(graph, site_id, drive_id, ruta_cell):
-            key = p.strip().strip("/")
-            if key and key not in seen_ep:
-                seen_ep.add(key)
-                extract_paths.append(key)
+            extract_paths.append(p.strip().strip("/").replace("\\", "/"))
+        extract_paths = unique_paths_preserve_order(extract_paths)
 
         if not extract_paths:
             skip_lines.append(
@@ -266,6 +315,21 @@ async def _prevalidate_id_pago_group(
             )
             continue
 
+        credit_digits = row_cred or _resolve_credit_digits_for_extract(extract_paths[0], "")
+        if not credit_digits:
+            credit_digits = _resolve_credit_digits_for_extract(extract_paths[0], row_cred)
+        if not credit_digits:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "credit_number_not_resolved",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    extracto_path=extract_paths[0],
+                )
+            )
+            continue
+
         asientos_dir_ep = _ruta_asientos_from_cell(row.get("ruta_asientos_cell"))
         if not asientos_dir_ep:
             skip_lines.append(
@@ -274,78 +338,170 @@ async def _prevalidate_id_pago_group(
                     "missing_ruta_asientos_contables",
                     cliente=cliente,
                     credito_label=credito_label,
-                    credit_number_expected=row_cred or "-",
-                    extracto_path=extract_paths[0] if extract_paths else "-",
+                    credit_number_expected=credit_digits,
+                    extracto_path=extract_paths[0],
                 )
             )
             continue
 
-        for ep in extract_paths:
-            credit_digits = _resolve_credit_digits_for_extract(ep, row_cred)
-            if not credit_digits:
-                skip_lines.append(
-                    _merge_skip_line(
-                        id_pago,
-                        "credit_number_not_resolved",
-                        cliente=cliente,
-                        credito_label=credito_label,
-                        extracto_path=ep,
-                    )
+        try:
+            asiento_children = await _list_drive_folder_children(
+                graph, site_id, drive_id, asientos_dir_ep
+            )
+        except Exception as exc:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "asiento_folder_list_failed",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    credit_number_expected=credit_digits,
+                    asiento_folder_path=asientos_dir_ep,
+                    extracto_path=extract_paths[0],
+                    names_seen=str(exc)[:800],
                 )
-                continue
+            )
+            continue
 
+        names = _pdf_names_in_children(asiento_children)
+        valid_names, rejected_names = _classify_asiento_pdf_names(names, credit_digits)
+        for rej in rejected_names:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "asiento_contable_credit_mismatch",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    credit_number_expected=credit_digits,
+                    asiento_pdf_found=rej,
+                    asiento_folder_path=asientos_dir_ep,
+                    extracto_path=extract_paths[0],
+                    names_seen=", ".join(names) if names else "-",
+                )
+            )
+        if not valid_names:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "asiento_contable_not_found",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    credit_number_expected=credit_digits,
+                    asiento_folder_path=asientos_dir_ep,
+                    extracto_path=extract_paths[0],
+                    names_seen=", ".join(names) if names else "-",
+                )
+            )
+            continue
+
+        bucket = credit_accum.setdefault(
+            credit_digits,
+            {
+                "asiento_pdf_paths": [],
+                "extracto_pdf_paths": [],
+                "warnings": [],
+            },
+        )
+        for asiento_name in valid_names:
+            asiento_rel = f"{asientos_dir_ep}/{asiento_name}".replace("//", "/")
+            bucket["asiento_pdf_paths"].append(asiento_rel)
+        bucket["extracto_pdf_paths"].extend(extract_paths)
+
+    credit_items: list[dict[str, Any]] = []
+    for credit_digits in sorted(credit_accum.keys(), key=lambda x: (len(x), x)):
+        raw = credit_accum[credit_digits]
+        item = _finalize_credit_item(
+            credit_digits,
+            raw["asiento_pdf_paths"],
+            raw["extracto_pdf_paths"],
+            warnings=raw.get("warnings"),
+        )
+        if not item["asiento_pdf_paths"] or not item["extracto_pdf_paths"]:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "asiento_contable_not_found"
+                    if not item["asiento_pdf_paths"]
+                    else "extract_routes_missing",
+                    credit_number_expected=credit_digits,
+                    extracto_path=item["extracto_pdf_path"] or "-",
+                )
+            )
+            continue
+        credit_items.append(item)
+
+    if not credit_items:
+        if not skip_lines:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "extract_routes_missing",
+                    extracto_path="-",
+                )
+            )
+        return [], skip_lines
+    return credit_items, skip_lines
+
+
+async def _build_consolidated_pdf_parts(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    id_pago: str,
+    email_bytes: bytes,
+    email_rel: str,
+    credit_items: list[dict[str, Any]],
+) -> tuple[list[bytes], list[str], list[str]]:
+    """
+    Orden: email, luego por crédito (estable): todos los asientos, luego extracto(s) deduplicados.
+    Devuelve (parts, labels, líneas skipped si falla una descarga).
+    """
+    parts: list[bytes] = [email_bytes]
+    labels: list[str] = [f"email:{email_rel}"]
+    build_skips: list[str] = []
+
+    for item in sorted(credit_items, key=lambda x: str(x.get("credito") or "")):
+        credito = str(item.get("credito") or "")
+        for asiento_rel in item.get("asiento_pdf_paths") or []:
             try:
-                asiento_children = await _list_drive_folder_children(
-                    graph, site_id, drive_id, asientos_dir_ep
+                asiento_bytes = await _graph_download_by_path(
+                    graph, site_id, drive_id, str(asiento_rel)
                 )
             except Exception as exc:
-                skip_lines.append(
+                build_skips.append(
                     _merge_skip_line(
                         id_pago,
-                        "asiento_folder_list_failed",
-                        cliente=cliente,
-                        credito_label=credito_label,
-                        credit_number_expected=credit_digits,
-                        asiento_folder_path=asientos_dir_ep,
-                        extracto_path=ep,
+                        "asiento_download_failed",
+                        credito_label=credito,
+                        credit_number_expected=credito,
+                        asiento_folder_path=_parent_dir(str(asiento_rel)),
+                        asiento_pdf_found=str(asiento_rel).rsplit("/", 1)[-1],
                         names_seen=str(exc)[:800],
                     )
                 )
-                continue
+                return parts, labels, build_skips
+            parts.append(asiento_bytes)
+            labels.append(f"asiento:{asiento_rel}")
 
-            names = _pdf_names_in_children(asiento_children)
-            asiento_name, reason = _pick_single_asiento_pdf(names, credit_digits)
-            if reason:
-                pdf_found = names[0] if len(names) == 1 else "-"
-                skip_lines.append(
+        for ep in item.get("extracto_pdf_paths") or []:
+            try:
+                extract_bytes = await _graph_download_by_path(graph, site_id, drive_id, str(ep))
+            except Exception as exc:
+                build_skips.append(
                     _merge_skip_line(
                         id_pago,
-                        reason,
-                        cliente=cliente,
-                        credito_label=credito_label,
-                        credit_number_expected=credit_digits,
-                        asiento_pdf_found=pdf_found,
-                        asiento_folder_path=asientos_dir_ep,
-                        extracto_path=ep,
-                        names_seen=", ".join(names) if names else "-",
+                        "extracto_download_failed",
+                        credito_label=credito,
+                        credit_number_expected=credito,
+                        extracto_path=str(ep),
+                        names_seen=str(exc)[:800],
                     )
                 )
-                continue
+                return parts, labels, build_skips
+            parts.append(extract_bytes)
+            labels.append(f"extracto:{ep}")
 
-            asiento_rel_ep = f"{asientos_dir_ep}/{asiento_name}".replace("//", "/")
-            pair_asientos.append((asiento_rel_ep, ep))
-
-    if skip_lines:
-        return [], skip_lines
-    if not pair_asientos:
-        return [], [
-            _merge_skip_line(
-                id_pago,
-                "extract_routes_missing",
-                extracto_path="-",
-            )
-        ]
-    return pair_asientos, []
+    return parts, labels, build_skips
 
 
 def _unique_creditos_from_group(g: dict[str, Any]) -> list[str]:
@@ -367,19 +523,46 @@ def _group_is_multi_credit(g: dict[str, Any], extract_paths: list[str]) -> bool:
     return len(_unique_creditos_from_group(g)) > 1
 
 
+def _classify_asiento_pdf_names(
+    names: list[str],
+    credit_digits: str,
+) -> tuple[list[str], list[str]]:
+    """
+    Clasifica PDFs de la carpeta de asientos del crédito.
+    Devuelve (válidos ordenados, rechazados por no coincidir con el crédito).
+    """
+    valid: list[str] = []
+    rejected: list[str] = []
+    for name in sorted(names):
+        if _filename_contains_credit_isolated(name, credit_digits):
+            valid.append(name)
+        else:
+            rejected.append(name)
+    return valid, rejected
+
+
 def _pick_single_asiento_pdf(names: list[str], credit_digits: str) -> tuple[str | None, str | None]:
     """
-    Devuelve (nombre_pdf, código_motivo).
-    Motivos: asiento_contable_not_found, asiento_contable_ambiguous, asiento_contable_credit_mismatch.
+    Compatibilidad tests/helpers: primer PDF válido o motivo de fallo.
+    Varios PDF válidos del mismo crédito no son ambiguos; use ``_classify_asiento_pdf_names``.
     """
-    if len(names) == 0:
-        return None, "asiento_contable_not_found"
-    if len(names) > 1:
-        return None, "asiento_contable_ambiguous"
-    name = names[0]
-    if not _filename_contains_credit_isolated(name, credit_digits):
+    valid, rejected = _classify_asiento_pdf_names(names, credit_digits)
+    if valid:
+        return valid[0], None
+    if rejected:
         return None, "asiento_contable_credit_mismatch"
-    return name, None
+    return None, "asiento_contable_not_found"
+
+
+def _unique_asiento_paths_from_pairs(pair_asientos: list[tuple[str, str]]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for asiento_rel, _ep in pair_asientos:
+        key = asiento_rel.strip().strip("/")
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 _MESES_ES = (
@@ -503,6 +686,13 @@ class MergeCompositePdfOutput:
     output_relative_path: str
     bytes_written: int
     sources_summary: str
+    cliente: str = ""
+    credito: str = ""
+    email_pdf_path: str = ""
+    asiento_pdf_path: str = ""
+    asiento_pdf_paths: tuple[str, ...] = ()
+    extracto_pdf_path: str = ""
+    credit_items: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -518,9 +708,81 @@ class MergeCompositeValidadoPdfsResult:
     merge_control_status: str | None = None
     outputs_count: int = 0
     skipped_count: int = 0
+    merge_manifest_path: str = ""
 
 
-async def merge_composite_validado_pdfs(graph: GraphApiPort) -> MergeCompositeValidadoPdfsResult:
+def _merge_logs_folder_relative() -> str:
+    p = os.getenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "").strip().rstrip("/")
+    if p:
+        return p
+    return "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/04 LOGS"
+
+
+def _legacy_paths_from_credit_items(credit_items: list[dict[str, Any]]) -> tuple[list[str], str]:
+    asiento_paths: list[str] = []
+    extract_paths: list[str] = []
+    for item in credit_items:
+        asiento_paths.extend(item.get("asiento_pdf_paths") or [])
+        extract_paths.extend(item.get("extracto_pdf_paths") or [])
+    asiento_paths = unique_paths_preserve_order(asiento_paths)
+    extract_paths = unique_paths_preserve_order(extract_paths)
+    extracto_legacy = " | ".join(extract_paths)
+    return asiento_paths, extracto_legacy
+
+
+def _merge_output_record(
+    *,
+    id_pago: str,
+    output_relative_path: str,
+    bytes_written: int,
+    sources_summary: str,
+    cliente: str,
+    credito: str,
+    email_pdf_path: str,
+    credit_items: list[dict[str, Any]],
+) -> MergeCompositePdfOutput:
+    asiento_paths, extracto_path = _legacy_paths_from_credit_items(credit_items)
+    legacy_asiento = asiento_paths[0] if asiento_paths else ""
+    frozen_items = tuple(dict(ci) for ci in credit_items)
+    return MergeCompositePdfOutput(
+        id_pago=id_pago,
+        output_relative_path=output_relative_path,
+        bytes_written=bytes_written,
+        sources_summary=sources_summary,
+        cliente=cliente,
+        credito=credito,
+        email_pdf_path=email_pdf_path,
+        asiento_pdf_path=legacy_asiento,
+        asiento_pdf_paths=tuple(asiento_paths),
+        extracto_pdf_path=extracto_path,
+        credit_items=frozen_items,
+    )
+
+
+async def _upload_merge_manifest(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    report_date_iso: str,
+    payload: dict[str, Any],
+) -> str:
+    folder = _merge_logs_folder_relative()
+    rel = f"{folder}/merge_manifest_{report_date_iso}.json".replace("//", "/")
+    enc = encode_graph_drive_path(rel)
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    await graph.put_bytes(
+        f"/sites/{site_id}/drives/{drive_id}/root:/{enc}:/content",
+        body,
+        content_type="application/json",
+    )
+    return rel
+
+
+async def merge_composite_validado_pdfs(
+    graph: GraphApiPort,
+    *,
+    force_rebuild: bool = False,
+) -> MergeCompositeValidadoPdfsResult:
     estado = os.getenv("GRAPH_VALIDAR_EXTRACTO_ESTADO_CONTAINS", "VALIDAR").strip()
     if not estado:
         estado = "VALIDAR"
@@ -673,34 +935,51 @@ async def merge_composite_validado_pdfs(graph: GraphApiPort) -> MergeCompositeVa
         outputs: list[MergeCompositePdfOutput] = []
         skipped: list[str] = []
         out_name_tallies: dict[str, int] = {}
-        asientos_pending_delete: list[str] = []
 
         for id_pago, group_rows in sorted(groups.items(), key=lambda x: x[0]):
-            pair_asientos, pre_skips = await _prevalidate_id_pago_group(
+            credit_items, pre_skips = await _prevalidate_id_pago_group(
                 graph, site_id, drive_id, id_pago, group_rows
             )
             if pre_skips:
                 skipped.extend(pre_skips)
+            if not credit_items:
                 continue
 
-            extract_paths = [ep for _a, ep in pair_asientos]
-            credit_tokens = _credit_tokens_ordered_for_rows(group_rows, extract_paths)
+            all_extract_paths = [
+                ep for item in credit_items for ep in (item.get("extracto_pdf_paths") or [])
+            ]
+            credit_tokens = _credit_tokens_ordered_for_rows(group_rows, all_extract_paths)
+            if not credit_tokens:
+                credit_tokens = [str(item.get("credito") or "") for item in credit_items]
             credit_for_filename = ", ".join(credit_tokens)
 
             client_from_cells = next((str(r.get("cliente") or "").strip() for r in group_rows if r.get("cliente")), "")
-            client_display = client_from_cells or _client_folder_before_credit(extract_paths[0])
+            first_extract = all_extract_paths[0] if all_extract_paths else ""
+            client_display = client_from_cells or _client_folder_before_credit(first_extract)
             if not client_display:
                 client_display = "CLIENTE"
 
             out_base = _merge_composite_output_basename(report_d, client_display, credit_for_filename)
             base_rel = f"{out_folder}/{out_base}".replace("//", "/")
-            if await _drive_item_exists(graph, site_id, drive_id, base_rel):
+            already_exists = await _drive_item_exists(graph, site_id, drive_id, base_rel)
+
+            if already_exists and not force_rebuild:
+                labels_preview: list[str] = [f"email:{email_rel}"]
+                for item in sorted(credit_items, key=lambda x: str(x.get("credito") or "")):
+                    for a in item.get("asiento_pdf_paths") or []:
+                        labels_preview.append(f"asiento:{a}")
+                    for ep in item.get("extracto_pdf_paths") or []:
+                        labels_preview.append(f"extracto:{ep}")
                 outputs.append(
-                    MergeCompositePdfOutput(
+                    _merge_output_record(
                         id_pago=id_pago,
                         output_relative_path=base_rel,
                         bytes_written=0,
-                        sources_summary="already_consolidated",
+                        sources_summary="already_consolidated | " + " | ".join(labels_preview[1:]),
+                        cliente=client_display,
+                        credito=credit_for_filename,
+                        email_pdf_path=email_rel,
+                        credit_items=credit_items,
                     )
                 )
                 logger.info(
@@ -710,58 +989,19 @@ async def merge_composite_validado_pdfs(graph: GraphApiPort) -> MergeCompositeVa
                 )
                 continue
 
-            parts: list[bytes] = [email_bytes]
-            labels: list[str] = [f"email:{email_rel}"]
-            download_failed = False
-
-            for asiento_rel_ep, ep in pair_asientos:
-                try:
-                    asiento_bytes = await _graph_download_by_path(
-                        graph, site_id, drive_id, asiento_rel_ep
-                    )
-                except Exception as exc:
-                    skipped.extend(
-                        [
-                            _merge_skip_line(
-                                id_pago,
-                                "asiento_download_failed",
-                                extracto_path=ep,
-                                asiento_folder_path=_parent_dir(asiento_rel_ep),
-                                asiento_pdf_found=asiento_rel_ep.rsplit("/", 1)[-1],
-                                names_seen=str(exc)[:800],
-                            )
-                        ]
-                    )
-                    download_failed = True
-                    break
-                parts.append(asiento_bytes)
-                labels.append(f"asiento:{asiento_rel_ep}")
-
-                try:
-                    extract_bytes = await _graph_download_by_path(graph, site_id, drive_id, ep)
-                except Exception as exc:
-                    skipped.extend(
-                        [
-                            _merge_skip_line(
-                                id_pago,
-                                "extracto_download_failed",
-                                extracto_path=ep,
-                                names_seen=str(exc)[:800],
-                            )
-                        ]
-                    )
-                    download_failed = True
-                    break
-                parts.append(extract_bytes)
-                labels.append(f"extracto:{ep}")
-
-            if download_failed:
+            parts, labels, build_skips = await _build_consolidated_pdf_parts(
+                graph, site_id, drive_id, id_pago, email_bytes, email_rel, credit_items
+            )
+            if build_skips:
+                skipped.extend(build_skips)
                 continue
 
             merged = _merge_pdf_bytes(parts)
             out_base = _merge_composite_output_basename(report_d, client_display, credit_for_filename)
             out_name = _allocate_duplicate_pdf_name(out_base, out_name_tallies)
             out_rel = f"{out_folder}/{out_name}".replace("//", "/")
+            if already_exists and force_rebuild:
+                out_rel = base_rel
             enc = encode_graph_drive_path(out_rel)
             try:
                 await graph.put_bytes(
@@ -774,28 +1014,31 @@ async def merge_composite_validado_pdfs(graph: GraphApiPort) -> MergeCompositeVa
                     _merge_skip_line(
                         id_pago,
                         "consolidated_upload_failed",
-                        extracto_path=extract_paths[0] if extract_paths else "-",
+                        extracto_path=first_extract or "-",
                         names_seen=str(exc)[:800],
                     )
                 )
                 continue
 
             outputs.append(
-                MergeCompositePdfOutput(
+                _merge_output_record(
                     id_pago=id_pago,
                     output_relative_path=out_rel,
                     bytes_written=len(merged),
                     sources_summary=" | ".join(labels),
+                    cliente=client_display,
+                    credito=credit_for_filename,
+                    email_pdf_path=email_rel,
+                    credit_items=credit_items,
                 )
             )
-            for as_rel, _ep in pair_asientos:
-                asientos_pending_delete.append(as_rel)
 
             logger.info(
-                "merge_composite_validado: subido %s (%s bytes) id_pago=%s",
+                "merge_composite_validado: subido %s (%s bytes) id_pago=%s force_rebuild=%s",
                 out_rel,
                 len(merged),
                 id_pago,
+                force_rebuild,
             )
 
         if not outputs and not skipped:
@@ -807,14 +1050,8 @@ async def merge_composite_validado_pdfs(graph: GraphApiPort) -> MergeCompositeVa
         oc = len(outputs)
         sc = len(skipped)
         merge_control_updated = True
+
         if oc > 0 and sc == 0:
-            for as_rel in dict.fromkeys(asientos_pending_delete):
-                try:
-                    await graph_delete_drive_item_by_path(graph, site_id, drive_id, as_rel)
-                except Exception as del_exc:
-                    logger.warning(
-                        "merge_composite_validado: no se eliminó asiento usado %s: %s", as_rel, del_exc
-                    )
             await merge_control_set_consolidado_success(
                 graph, site_id, drive_id, control_rel, outputs_count=oc
             )
@@ -838,6 +1075,38 @@ async def merge_composite_validado_pdfs(graph: GraphApiPort) -> MergeCompositeVa
             )
             final_status = "MERGE_PARCIAL"
 
+        manifest_path = ""
+        try:
+            manifest_payload: dict[str, Any] = {
+                "report_date_iso": iso,
+                "historico_excel_path": historico_rel,
+                "email_pdf_used": email_rel,
+                "merge_control_status": final_status,
+                "outputs": [
+                    {
+                        "id_pago": o.id_pago,
+                        "cliente": o.cliente,
+                        "credito": o.credito,
+                        "email_pdf_path": o.email_pdf_path,
+                        "asiento_pdf_path": o.asiento_pdf_path,
+                        "asiento_pdf_paths": list(o.asiento_pdf_paths),
+                        "extracto_pdf_path": o.extracto_pdf_path,
+                        "credit_items": [dict(ci) for ci in o.credit_items],
+                        "output_relative_path": o.output_relative_path,
+                        "bytes_written": o.bytes_written,
+                        "sources_summary": o.sources_summary,
+                    }
+                    for o in outputs
+                ],
+                "skipped": list(skipped),
+            }
+            manifest_path = await _upload_merge_manifest(
+                graph, site_id, drive_id, iso, manifest_payload
+            )
+            logger.info("merge_composite_validado: manifest %s", manifest_path)
+        except Exception as man_exc:
+            logger.warning("merge_composite_validado: no se pudo subir manifest: %s", man_exc)
+
         return MergeCompositeValidadoPdfsResult(
             report_date_iso=iso,
             historico_excel_path=historico_rel,
@@ -850,6 +1119,7 @@ async def merge_composite_validado_pdfs(graph: GraphApiPort) -> MergeCompositeVa
             merge_control_status=final_status,
             outputs_count=oc,
             skipped_count=sc,
+            merge_manifest_path=manifest_path,
         )
 
     except MergeControlValidationError as e:

@@ -16,7 +16,6 @@ from app.application.use_cases.setup_ibr_workbook import (
     FILENAME_IBR,
     IBR_COLUMNS,
     IBR_SHEET_NAME,
-    TABLE_IBR,
     _build_new_ibr_workbook_bytes,
     _repair_existing_workbook,
     setup_ibr_workbook,
@@ -80,12 +79,20 @@ def env_site(monkeypatch):
     monkeypatch.setenv("GRAPH_IBR_DIARIO_PATH", PATH_IBR)
 
 
-def test_build_ibr_has_sheet_and_columns():
+def _assert_ibr_protection(ws) -> None:
+    assert ws.protection.sheet is True
+    for c in range(1, 4):
+        assert ws.cell(1, c).protection.locked is True
+        assert ws.cell(2, c).protection.locked is False
+
+
+def test_build_ibr_has_sheet_and_columns_no_tables():
     raw = _build_new_ibr_workbook_bytes()
     wb = openpyxl.load_workbook(io.BytesIO(raw))
     ws = wb[IBR_SHEET_NAME]
     assert [ws.cell(1, i).value for i in range(1, 4)] == list(IBR_COLUMNS)
-    assert TABLE_IBR in ws.tables
+    assert not ws.tables
+    _assert_ibr_protection(ws)
 
 
 def test_setup_creates_when_missing(mock_resolve):
@@ -102,6 +109,15 @@ def test_setup_idempotent_second_call(mock_resolve):
     out2 = asyncio.run(setup_ibr_workbook(g))
     assert out2["created"] is False
     assert g.put_count == puts
+
+
+def test_force_recreate_replaces(mock_resolve):
+    g = MockGraphIbr()
+    asyncio.run(setup_ibr_workbook(g))
+    puts = g.put_count
+    out = asyncio.run(setup_ibr_workbook(g, force_recreate=True))
+    assert g.put_count == puts + 1
+    assert out["recreated"] is True
 
 
 def test_repair_preserves_data_rows(mock_resolve):
@@ -138,7 +154,25 @@ def test_repair_adds_missing_ibr_sheet():
     assert any("sheet_added" in w for w in warnings)
 
 
-def test_router_setup_ibr(mock_resolve):
+def test_existing_with_data_force_recreate_false_not_destroyed(mock_resolve):
+    g = MockGraphIbr()
+    raw = _build_new_ibr_workbook_bytes()
+    wb = openpyxl.load_workbook(io.BytesIO(raw))
+    ws = wb[IBR_SHEET_NAME]
+    ws.cell(3, 1, value="2026-02-01")
+    ws.cell(3, 2, value="2026-02-28")
+    ws.cell(3, 3, value=0.15)
+    buf = io.BytesIO()
+    wb.save(buf)
+    g.files[PATH_IBR] = buf.getvalue()
+
+    out = asyncio.run(setup_ibr_workbook(g, force_recreate=False))
+    assert out["created"] is False
+    wb2 = openpyxl.load_workbook(io.BytesIO(g.files[PATH_IBR]))
+    assert wb2[IBR_SHEET_NAME].cell(3, 1).value == "2026-02-01"
+
+
+def test_router_setup_ibr_empty_body_and_force_recreate(mock_resolve):
     g = MockGraphIbr()
     app = FastAPI()
     app.include_router(router)
@@ -147,3 +181,11 @@ def test_router_setup_ibr(mock_resolve):
     r = client.post("/graph/sharepoint/payment-validation/setup/ibr-workbook")
     assert r.status_code == 200
     assert r.json()["created"] is True
+
+    r2 = client.post(
+        "/graph/sharepoint/payment-validation/setup/ibr-workbook",
+        json={"force_recreate": True},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["force_recreate"] is True
+    assert r2.json()["recreated"] is True

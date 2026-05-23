@@ -152,7 +152,6 @@ class MockGraphClient:
 
 def set_env_vars():
     os.environ["GRAPH_BANK_PAYMENTS_FILE_PATH"] = "banco.xlsx"
-    os.environ["GRAPH_PENDING_PAYMENTS_FILE_PATH"] = "pendientes.xlsx"
     os.environ["GRAPH_CLIENTS_BASE_PATH"] = "clientes"
     os.environ["GRAPH_SHAREPOINT_SITE_SEARCH"] = "SITIO"
     os.environ["GRAPH_SHAREPOINT_DRIVE_NAME"] = "DRIVE"
@@ -220,6 +219,8 @@ def make_distrib_row(
         DistribucionCols.LINK_CARPETA_CREDITO: "",
         DistribucionCols.RUTA: ruta_pdf_internal,
         DistribucionCols.RUTA_UNIDAD_CREDITO: ruta_unidad_credito or _default_ruta_unidad_credito(),
+        DistribucionCols.RUTA_TABLA_AMORTIZACION: "",
+        DistribucionCols.CREDITO_NORMALIZADO: "",
     }
     row = [vals[c] for c in DistribucionCols.HEADERS]
     return row, tabla_hyperlink_target
@@ -311,18 +312,6 @@ def create_review_workbook(
                 ctab.hyperlink = tabla_hl
                 if not ctab.value:
                     ctab.value = "Tabla"
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
-
-
-def create_pendientes_file():
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Pendientes"
-    ws.append(["ID Pago", "Estado"])
-    ws.append(["ID_EXISTENTE", "PENDIENTE"])
-    wb.create_sheet("Historico").append(["ID Pago", "Estado"])
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -457,22 +446,6 @@ def test_finalize_validar_accepts_zero_intereses_mora():
         client = MockGraphClient()
         r, _ = make_distrib_row(mora=0, valor_int=100, abono_k=0)
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
-        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
-        assert res["status"] == "success"
-
-    _run(run_test())
-
-
-def test_finalize_succeeds_when_pendientes_returns_404():
-    """Si Graph devuelve 404 al leer PAGOS_PENDIENTES, Finalize no debe abortar (bandeja opcional)."""
-
-    async def run_test():
-        set_env_vars()
-        client = MockGraphClient()
-        client.get_bytes_404_substring = "pendientes"
-        r, _ = make_distrib_row()
-        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
 
@@ -501,7 +474,6 @@ def test_finalize_accepts_legacy_estado_linea_header():
         out = io.BytesIO()
         wb.save(out)
         client.downloaded_files["revision/val_latest.xlsx"] = out.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
 
@@ -521,7 +493,6 @@ def test_finalize_accepts_legacy_distrib_column_headers():
         out = io.BytesIO()
         wb.save(out)
         client.downloaded_files["revision/val_latest.xlsx"] = out.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
 
@@ -547,9 +518,10 @@ def test_finalize_reprogramar_expired_allows_blank_mora():
         r, _ = make_distrib_row(
             fecha_banco=date(2026, 5, 22),
             fecha_limite=date(2026, 5, 15),
-            valor_int=0,
-            abono_k=0,
-            mora=0,
+            valor_int=70,
+            abono_k=20,
+            mora=10,
+            monto_banco=100,
             estado=EstadoLinea.REPROGRAMAR,
             observacion="Rep",
             extract_route="clientes/CLI/CRED/extractos/e1.pdf",
@@ -560,7 +532,6 @@ def test_finalize_reprogramar_expired_allows_blank_mora():
             ],
         }
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
 
@@ -582,7 +553,6 @@ def test_finalize_no_validar_expired_allows_blank_mora_with_observation():
             extract_route="",
         )
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
 
@@ -625,14 +595,125 @@ def test_finalize_fails_on_amount_mismatch():
     _run(run_test())
 
 
-def test_finalize_reprogramar_requires_zero_total():
+def test_finalize_adelantado_positive_total_succeeds():
+    """ADELANTADO + Validar Pago = SI con importes reales cuadra como pago aplicable."""
+
     async def run_test():
         set_env_vars()
         client = MockGraphClient()
-        r, _ = make_distrib_row(valor_int=10, abono_k=0, mora=0, estado=EstadoLinea.REPROGRAMAR, observacion="x")
+        r, _ = make_distrib_row(
+            estado=EstadoPago.ADELANTADO,
+            validar_pago=ValidarPago.SI,
+            valor_int=49118143,
+            abono_k=881857,
+            mora=0,
+            monto_banco=50000000,
+            extract_route="clientes/CLI/CRED/extractos/e1.pdf",
+        )
+        client.children_overrides = {
+            "clientes/CLI/CRED/extractos": [
+                {"name": "e1.pdf", "file": {}, "webUrl": "https://mock/e1.pdf"},
+            ],
+        }
+        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
+            casos_data=[["ID1", None, "CLI", "concepto", 50000000, ""]],
+            distrib_specs=[(r, None)],
+        )
+        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        assert res["status"] == "success"
+        assert res["validated_rows"] >= 1
+
+    _run(run_test())
+
+
+def test_finalize_legacy_reprogramar_migrates_with_positive_total():
+    """REPROGRAMAR migra a ADELANTADO + SI y ya no exige total en cero."""
+
+    async def run_test():
+        set_env_vars()
+        client = MockGraphClient()
+        r, _ = make_distrib_row(
+            valor_int=50,
+            abono_k=30,
+            mora=20,
+            monto_banco=100,
+            estado=EstadoLinea.REPROGRAMAR,
+            observacion="Adelanto",
+            extract_route="clientes/CLI/CRED/extractos/e1.pdf",
+        )
+        client.children_overrides = {
+            "clientes/CLI/CRED/extractos": [
+                {"name": "e1.pdf", "file": {}, "webUrl": "https://mock/e1.pdf"},
+            ],
+        }
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        with pytest.raises(ValueError, match="reprogramar_requires_zero_total"):
+        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        assert res["status"] == "success"
+
+    _run(run_test())
+
+
+def test_finalize_adelantado_amount_mismatch():
+    async def run_test():
+        set_env_vars()
+        client = MockGraphClient()
+        r, _ = make_distrib_row(
+            estado=EstadoPago.ADELANTADO,
+            validar_pago=ValidarPago.SI,
+            valor_int=49118143,
+            abono_k=881857,
+            mora=0,
+            monto_banco=50000000,
+        )
+        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
+            casos_data=[["ID1", None, "CLI", "concepto", 100, ""]],
+            distrib_specs=[(r, None)],
+        )
+        with pytest.raises(ValueError, match="amount_mismatch"):
             await finalize_payment_validation(client, "val_latest.xlsx")
+
+    _run(run_test())
+
+
+def test_finalize_adelantado_registers_in_pagos_adelantados():
+    async def run_test():
+        from app.application.use_cases.setup_merge_control_workbook import MERGE_CONTROL_FOLDER_RELATIVE_PATH
+        from app.application.use_cases.setup_payment_followup_workbooks import (
+            ADELANTADOS_COLUMNS,
+            FILENAME_ADELANTADOS,
+            SHEET_PENDIENTES,
+            _build_followup_workbook_bytes,
+        )
+
+        set_env_vars()
+        path_ad = f"{MERGE_CONTROL_FOLDER_RELATIVE_PATH}/{FILENAME_ADELANTADOS}"
+        client = MockGraphClient()
+        client.downloaded_files[path_ad] = _build_followup_workbook_bytes(columns=ADELANTADOS_COLUMNS)
+        r, _ = make_distrib_row(
+            estado=EstadoPago.ADELANTADO,
+            validar_pago=ValidarPago.SI,
+            valor_int=49118143,
+            abono_k=881857,
+            mora=0,
+            monto_banco=50000000,
+            extract_route="clientes/CLI/CRED/extractos/e1.pdf",
+        )
+        client.children_overrides = {
+            "clientes/CLI/CRED/extractos": [
+                {"name": "e1.pdf", "file": {}, "webUrl": "https://mock/e1.pdf"},
+            ],
+        }
+        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
+            casos_data=[["ID1", None, "CLI", "concepto", 50000000, ""]],
+            distrib_specs=[(r, None)],
+        )
+        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        assert res["status"] == "success"
+        assert path_ad in client.uploaded_files
+        wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[path_ad]))
+        ws = wb[SHEET_PENDIENTES]
+        assert ws.cell(2, 1).value == "ID1"
+        assert not res.get("payment_followup_warnings")
 
     _run(run_test())
 
@@ -669,14 +750,13 @@ def test_finalize_no_validar_requires_observation():
 
 
 def test_finalize_pendiente_mora_atrasado_can_complete():
-    """PENDIENTE_MORA → ATRASADO: se puede finalizar si cuadra y hay archivo pendientes."""
+    """PENDIENTE_MORA → ATRASADO: se puede finalizar si cuadra."""
 
     async def run_test():
         set_env_vars()
         client = MockGraphClient()
         r, _ = make_distrib_row(estado=EstadoLinea.PENDIENTE_MORA)
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
         assert client.uploaded_files
@@ -697,7 +777,6 @@ def test_finalize_validar_parcial_skips_amortization_and_cuadratura():
             # VALIDAR_PARCIAL migra a INCOMPLETO + SI: misma regla de ruta/extracto que líneas validadas.
         )
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
         assert res["amortization_updated"] is False
@@ -732,46 +811,9 @@ def test_finalize_multi_credito_same_pago_cuadra():
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
             distrib_specs=[(r1, h1), (r2, h2)]
         )
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
         assert res["validated_rows"] == 2
-
-    _run(run_test())
-
-
-def test_finalize_moves_existing_pendiente_to_historico():
-    async def run_test():
-        set_env_vars()
-        client = MockGraphClient()
-        r, _ = make_distrib_row(id_pago="ID_EXISTENTE")
-        casos = [["ID_EXISTENTE", None, "CLI", "concepto", 100, ""]]
-        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
-            casos_data=casos, distrib_specs=[(r, None)]
-        )
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
-        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
-        assert res["status"] == "success"
-        wb_p = openpyxl.load_workbook(io.BytesIO(client.uploaded_files["pendientes.xlsx"]))
-        hist_ids = [
-            wb_p["Historico"].cell(row=i, column=1).value for i in range(1, wb_p["Historico"].max_row + 1)
-        ]
-        assert "ID_EXISTENTE" in hist_ids
-
-    _run(run_test())
-
-
-def test_finalize_blocks_upload_on_pendientes_fail_no_banco():
-    async def run_test():
-        set_env_vars()
-        client = MockGraphClient()
-        r, _ = make_distrib_row()
-        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
-        client.fail_upload_path = "pendientes.xlsx"
-        with pytest.raises(Exception, match="upload_failed"):
-            await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
-        assert "banco.xlsx" not in client.uploaded_files
 
     _run(run_test())
 
@@ -783,7 +825,6 @@ def test_finalize_respects_validation_file_path_when_provided():
         exact_path = "revision/subcarpeta/val_manual.xlsx"
         r, _ = make_distrib_row()
         client.downloaded_files[exact_path] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(
             client,
             validation_file_path=exact_path,
@@ -809,7 +850,6 @@ def test_finalize_recalculates_totals_from_editable_cells():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
 
@@ -823,7 +863,6 @@ def test_finalize_does_not_update_amortization_tables():
         r, th = make_distrib_row()
         tab_url = "https://x.sharepoint.com/u?u=https://host/root:/clientes/CLI/CRED/tabla.xlsx:/"
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, tab_url)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert not any("tabla" in k and k.endswith(".xlsx") for k in client.uploaded_files)
 
@@ -836,7 +875,6 @@ def test_finalize_does_not_clean_banco_bogota():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["bank_cleaned"] is False
         assert "banco.xlsx" not in client.uploaded_files
@@ -850,7 +888,6 @@ def test_finalize_valid_excel_no_longer_fails_on_amortization_row_errors():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
 
@@ -863,7 +900,6 @@ def test_finalize_historical_workbook_has_exact_ruta_column():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -881,7 +917,6 @@ def test_finalize_historical_workbook_populates_ruta_for_validar_rows():
         path = "clientes/CLI/CRED/docs/ex.pdf"
         r, _ = make_distrib_row(extract_route=path)
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -905,7 +940,6 @@ def test_finalize_missing_ruta_for_validar_blocks():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         with pytest.raises(ValueError, match="missing_extract_route"):
             await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
 
@@ -918,7 +952,6 @@ def test_finalize_creates_secretary_support_workbook():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -944,7 +977,6 @@ def test_secretary_workbook_contains_only_validar_rows():
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
             distrib_specs=[(rv, None), (rnv, None)]
         )
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -962,7 +994,6 @@ def test_secretary_workbook_has_expected_columns():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -993,7 +1024,6 @@ def test_secretary_workbook_includes_extract_link():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wbs = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1011,7 +1041,6 @@ def test_secretary_workbook_includes_amortization_table_link():
         r, _ = make_distrib_row()
         tab_url = "https://z/root:/clientes/CLI/CRED/tabla.xlsx:/"
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, tab_url)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wbs = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1038,7 +1067,6 @@ def test_secretary_workbook_includes_asientos_folder_link_when_http_url():
         r, tab = make_distrib_row()
         tab_url = "https://z/root:/clientes/CLI/CRED/tabla.xlsx:/"
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, tab_url)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wbs = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1063,7 +1091,6 @@ def test_secretary_workbook_asientos_link_after_finalize_provisions_folder():
         r, tab = make_distrib_row()
         tab_url = "https://z/root:/clientes/CLI/CRED/tabla.xlsx:/"
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, tab_url)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert "clientes/CLI/CRED" in client.dynamic_folder_children
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
@@ -1084,7 +1111,6 @@ def test_finalize_writes_ruta_asientos_contables_on_historical_distrib():
         client = MockGraphClient()
         r, _ = make_distrib_row(mora=0, valor_int=100, abono_k=0)
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1133,7 +1159,6 @@ def test_secretary_workbook_has_professional_title_and_instruction():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1151,7 +1176,6 @@ def test_secretary_workbook_headers_start_on_row_3():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1168,7 +1192,6 @@ def test_secretary_workbook_data_starts_on_row_4():
         client = MockGraphClient()
         r, _ = make_distrib_row(id_pago="PID-ROW4")
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1184,7 +1207,6 @@ def test_secretary_workbook_has_freeze_panes_after_credito():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1200,7 +1222,6 @@ def test_secretary_workbook_has_no_autofilter():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1216,7 +1237,6 @@ def test_secretary_workbook_formats_money_columns():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1235,7 +1255,6 @@ def test_secretary_workbook_formats_date_columns():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1265,7 +1284,6 @@ def test_secretary_workbook_preserves_clickable_links():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wbs = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1296,7 +1314,6 @@ def test_secretary_workbook_uses_descriptive_link_text_with_credito():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wss = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))[SECRETARY_SHEET]
@@ -1319,7 +1336,6 @@ def test_secretary_workbook_header_navy_style():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1343,7 +1359,6 @@ def test_secretary_workbook_client_block_borders():
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
             distrib_specs=[(r1, None), (r2, None), (r3, None)]
         )
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1366,7 +1381,6 @@ def test_secretary_workbook_keeps_expected_columns():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1383,7 +1397,6 @@ def test_secretary_workbook_total_row_with_sum():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
@@ -1403,7 +1416,6 @@ def test_finalize_result_includes_secretary_file_url():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["secretary_file_url"] and "soporte_asientos_contables" in res["secretary_file_url"]
 
@@ -1416,7 +1428,6 @@ def test_finalize_result_flags_amortization_and_bank_false():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["amortization_updated"] is False
         assert res["bank_cleaned"] is False
@@ -1438,7 +1449,6 @@ def test_finalize_does_not_use_raw_credit_as_folder_path():
             extract_route="clientes/EQUINORTE/CREDITO # 264/e.pdf",
         )
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert "clientes/EQUINORTE/264" not in client.children_get_paths
 
@@ -1457,7 +1467,6 @@ def test_finalize_falls_back_to_latest_prefixed_review_file_when_none_provided()
             {"name": "val_new.xlsx", "lastModifiedDateTime": "2026-05-10T10:00:00Z", "file": {}},
         ]
         client.downloaded_files["revision/val_new.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, process_date=date(2026, 5, 10))
         assert res["validation_file"] == "val_new.xlsx"
 
@@ -1473,7 +1482,6 @@ def test_finalize_uses_existing_ruta_when_present():
         client.downloaded_files["revision/val_latest.xlsx"] = _append_distrib_ruta_column(
             base, {2: "INFORMACION/precargada/extracto.pdf"}
         )
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1501,7 +1509,6 @@ def test_finalize_extracts_ruta_from_hyperlink_root_path():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1541,7 +1548,6 @@ def test_finalize_extracts_filename_from_sharepoint_doc_url():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1575,7 +1581,6 @@ def test_finalize_resolves_ruta_from_graph_drive_item_url():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1611,7 +1616,6 @@ def test_finalize_resolves_extract_route_by_exact_filename_in_credit_folder():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1647,7 +1651,6 @@ def test_finalize_resolves_extract_route_by_legacy_style_pdf_scan():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1683,7 +1686,6 @@ def test_finalize_allows_blank_ruta_for_non_validar():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
@@ -1716,7 +1718,6 @@ def test_finalize_preserves_link_extracto_and_link_tabla():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1738,7 +1739,6 @@ def test_finalize_does_not_reactivate_amortization_or_bank_cleanup():
         client = MockGraphClient()
         r, _ = make_distrib_row()
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["amortization_updated"] is False
         assert res["bank_cleaned"] is False
@@ -1755,7 +1755,6 @@ def test_finalize_preserves_real_hbi_ruta_format_when_existing():
         r, _ = make_distrib_row(extract_route="")
         base = create_review_workbook(distrib_specs=[(r, None)])
         client.downloaded_files["revision/val_latest.xlsx"] = _append_distrib_ruta_column(base, {2: HBI_EXPECTED_RUTA})
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1795,7 +1794,6 @@ def test_finalize_resolves_real_hbi_extract_path_from_credit_folder():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1835,7 +1833,6 @@ def test_finalize_ruta_is_drive_relative_not_web_url():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1876,7 +1873,6 @@ def test_finalize_prefers_explicit_ruta_column_over_blank_link_hyperlink_resolve
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1920,7 +1916,6 @@ def test_finalize_fallback_extractos_folder_before_credit_root():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         w = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
@@ -1961,7 +1956,6 @@ def test_finalize_missing_route_when_pdf_names_lack_extract_keyword():
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        client.downloaded_files["pendientes.xlsx"] = create_pendientes_file()
         with pytest.raises(ValueError, match="missing_extract_route"):
             await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
 

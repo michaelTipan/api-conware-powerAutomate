@@ -18,6 +18,7 @@ from pypdf import PdfWriter
 from app.application.job_status_enrichment import enrich_job_for_http_response
 from app.application.sharepoint_resolution import encode_graph_drive_path
 from app.application.use_cases.merge_composite_validado_pdfs import (
+    _classify_asiento_pdf_names,
     _credit_number_from_extract_parent,
     _credit_number_from_folder_segment,
     _merge_skip_line,
@@ -518,8 +519,8 @@ def test_merge_multi_credit_two_extracts_validates_each_credit(monkeypatch):
     r = asyncio.run(run())
     assert r.outputs_count == 1
     assert r.skipped_count == 0
-    assert len(g.deleted) == 2
-    assert a231 in g.deleted and a254 in g.deleted
+    assert g.deleted == []
+    assert r.merge_control_status == "CONSOLIDADO"
 
 
 def test_merge_parcial_no_delete_when_second_id_fails(monkeypatch):
@@ -650,7 +651,7 @@ def test_merge_multi_credit_credit_number_not_resolved_when_no_folder_nor_row_cr
     assert g.deleted == []
 
 
-def test_merge_id_pago_two_credits_missing_one_asiento_skips_entire_group(monkeypatch):
+def test_merge_id_pago_two_credits_missing_one_asiento_partial_merge(monkeypatch):
     monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
@@ -710,9 +711,11 @@ def test_merge_id_pago_two_credits_missing_one_asiento_skips_entire_group(monkey
             return await merge_composite_validado_pdfs(g)
 
     r = asyncio.run(run())
-    assert r.outputs_count == 0
+    assert r.outputs_count == 1
+    assert r.merge_control_status == "MERGE_PARCIAL"
     assert any("asiento_contable_not_found" in s for s in r.skipped)
-    assert not any(p.startswith("OUT/PDFS/") for p in g.uploaded)
+    assert r.outputs[0].asiento_pdf_paths == (a231,)
+    assert any(p.startswith("OUT/PDFS/") for p in g.uploaded)
     assert g.deleted == []
 
 
@@ -770,7 +773,8 @@ def test_merge_terminado_credit_folder_consolidates(monkeypatch):
     assert r.outputs_count == 1
     assert r.skipped_count == 0
     assert not any("credit_number_not_resolved" in s for s in r.skipped)
-    assert asiento_rel in g.deleted
+    assert g.deleted == []
+    assert r.outputs[0].asiento_pdf_path == asiento_rel
 
 
 def test_merge_terminado_extract_wrong_asiento_folder_not_credit_unresolved(monkeypatch):
@@ -891,7 +895,9 @@ def test_merge_parcial_retry_does_not_duplicate_existing_output(monkeypatch):
     assert r.outputs_count == 1
     assert len([p for p in g.uploaded if p.startswith("OUT/PDFS/")]) == 0
     assert g.deleted == []
-    assert any(o.sources_summary == "already_consolidated" for o in r.outputs)
+    assert any(
+        str(o.sources_summary).startswith("already_consolidated") for o in r.outputs
+    )
 
 
 def test_merge_finds_single_asiento_pdf_in_credit_folder():
@@ -906,10 +912,16 @@ def test_merge_skips_when_no_asiento_pdf():
     assert reason == "asiento_contable_not_found"
 
 
-def test_merge_skips_when_multiple_asiento_pdfs():
-    name, reason = _pick_single_asiento_pdf(["a.pdf", "b.pdf"], "264")
-    assert name is None
-    assert reason == "asiento_contable_ambiguous"
+def test_merge_accepts_multiple_valid_asiento_pdfs_for_same_credit():
+    valid, rejected = _classify_asiento_pdf_names(
+        ["Asiento cuota credito 264.pdf", "Asiento abono capital credito 264.pdf"],
+        "264",
+    )
+    assert len(valid) == 2
+    assert rejected == []
+    name, reason = _pick_single_asiento_pdf(valid, "264")
+    assert name == valid[0]
+    assert reason is None
 
 
 def test_merge_skips_when_asiento_filename_does_not_match_credit_number():
@@ -918,7 +930,7 @@ def test_merge_skips_when_asiento_filename_does_not_match_credit_number():
     assert reason == "asiento_contable_credit_mismatch"
 
 
-def test_merge_deletes_used_asiento_only_after_successful_upload(monkeypatch):
+def test_merge_success_does_not_delete_asientos(monkeypatch):
     monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
@@ -969,7 +981,11 @@ def test_merge_deletes_used_asiento_only_after_successful_upload(monkeypatch):
 
     r = asyncio.run(run())
     assert r.outputs_count == 1
-    assert asiento_rel in g.deleted
+    assert r.merge_control_status == "CONSOLIDADO"
+    assert g.deleted == []
+    assert r.outputs[0].asiento_pdf_path == asiento_rel
+    assert r.outputs[0].extracto_pdf_path == extract
+    assert r.outputs[0].email_pdf_path == email
 
 
 def test_merge_does_not_delete_asiento_when_upload_fails(monkeypatch):
@@ -1086,7 +1102,10 @@ def test_merge_failed_job_enrichment_merge_control_no_pending():
     }
     out = enrich_job_for_http_response(raw)
     assert out["error"]["error_code"] == "merge_control_no_pending_process"
-    assert "pendiente" in out["error"]["user_message"].lower()
+    msg = out["error"]["user_message"].lower()
+    assert "unir pdfs" in msg
+    assert "proceso activo" in msg
+    assert out["error"]["next_action"]
 
 
 def test_merge_completed_example_success_payload():
@@ -1099,12 +1118,153 @@ def test_merge_completed_example_success_payload():
             "merge_control_file_path": "CTL/control_merge_pdfs.xlsx",
             "outputs_count": 2,
             "skipped_count": 0,
-            "outputs": [],
+            "outputs": [
+                {
+                    "id_pago": "P1",
+                    "output_relative_path": "OUT/x.pdf",
+                    "bytes_written": 100,
+                    "asiento_pdf_path": "clientes/X/asiento.pdf",
+                }
+            ],
             "skipped": [],
         },
     }
     out = enrich_job_for_http_response({**body, "job_id": "x", "type": "merge_composite_validado_pdfs"})
     assert out["severity"] == "success"
+    assert "amortiz" in out["next_action"].lower()
+    assert "cerrado en este paso" not in out["next_action"].lower()
+
+
+def test_merge_writes_manifest_json(monkeypatch):
+    import json
+
+    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
+    monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
+    monkeypatch.setenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "LOGS")
+    hist = "HIST/hist.xlsx"
+    email = "EMAIL/mail.pdf"
+    extract = "clientes/ACME/CREDITO# 264/Extracto.pdf"
+    asiento_dir = "clientes/ACME/CREDITO# 264/ASIENTOS CONTABLES CRED 264"
+    asiento_rel = f"{asiento_dir}/asiento_264.pdf"
+
+    g = _MergeGraph()
+    g.initial["CTL/control.xlsx"] = _control_row_bytes(
+        estado="PENDIENTE_ASIENTOS",
+        is_active=True,
+        hist=hist,
+        email=email,
+    )
+    g.initial["bank/report.xlsx"] = _bank_bytes()
+    g.initial[hist] = _hist_bytes()
+    g.initial[email] = _tiny_pdf()
+    g.initial[extract] = _tiny_pdf()
+    g.initial[asiento_rel] = _tiny_pdf()
+    g.children[asiento_dir] = [{"name": "asiento_264.pdf", "file": {}}]
+
+    ctx = {
+        "site_id": "s1",
+        "drive_id": "d1",
+        "path_encoded": encode_graph_drive_path("bank/report.xlsx"),
+        "file_path": "bank/report.xlsx",
+    }
+
+    async def fake_collect(_g, _s, _d, _cell):
+        return [extract]
+
+    async def run():
+        with (
+            patch(
+                "app.application.use_cases.merge_composite_validado_pdfs.resolve_sharepoint_from_env",
+                new_callable=AsyncMock,
+                return_value=ctx,
+            ),
+            patch(
+                "app.application.use_cases.merge_composite_validado_pdfs._collect_pdf_paths_from_ruta_cell",
+                new_callable=AsyncMock,
+                side_effect=fake_collect,
+            ),
+        ):
+            return await merge_composite_validado_pdfs(g)
+
+    r = asyncio.run(run())
+    assert r.merge_manifest_path.startswith("LOGS/merge_manifest_")
+    manifest_key = next(k for k in g.uploaded if k.endswith(".json"))
+    data = json.loads(g.uploaded[manifest_key].decode("utf-8"))
+    assert data["historico_excel_path"] == hist
+    assert len(data["outputs"]) == 1
+    assert data["outputs"][0]["asiento_pdf_path"] == asiento_rel
+    assert data["outputs"][0]["extracto_pdf_path"] == extract
+
+
+def test_merge_two_asientos_same_credit_consolidates_both_and_manifest_paths(monkeypatch):
+    import json
+
+    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
+    monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
+    monkeypatch.setenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "LOGS")
+    hist = "HIST/hist.xlsx"
+    email = "EMAIL/mail.pdf"
+    extract = "clientes/ACME/CREDITO# 264/Extracto.pdf"
+    asiento_dir = "clientes/ACME/CREDITO# 264/ASIENTOS CONTABLES CRED 264"
+    asiento_abono = f"{asiento_dir}/Asiento abono capital credito 264.pdf"
+    asiento_cuota = f"{asiento_dir}/Asiento cuota credito 264.pdf"
+
+    g = _MergeGraph()
+    g.initial["CTL/control.xlsx"] = _control_row_bytes(
+        estado="PENDIENTE_ASIENTOS",
+        is_active=True,
+        hist=hist,
+        email=email,
+    )
+    g.initial["bank/report.xlsx"] = _bank_bytes()
+    g.initial[hist] = _hist_bytes()
+    g.initial[email] = _tiny_pdf()
+    g.initial[extract] = _tiny_pdf()
+    g.initial[asiento_abono] = _tiny_pdf()
+    g.initial[asiento_cuota] = _tiny_pdf()
+    g.children[asiento_dir] = [
+        {"name": "Asiento abono capital credito 264.pdf", "file": {}},
+        {"name": "Asiento cuota credito 264.pdf", "file": {}},
+        {"folder": {"name": "PROCESADOS"}},
+    ]
+
+    ctx = {
+        "site_id": "s1",
+        "drive_id": "d1",
+        "path_encoded": encode_graph_drive_path("bank/report.xlsx"),
+        "file_path": "bank/report.xlsx",
+    }
+
+    async def fake_collect(_g, _s, _d, _cell):
+        return [extract]
+
+    async def run():
+        with (
+            patch(
+                "app.application.use_cases.merge_composite_validado_pdfs.resolve_sharepoint_from_env",
+                new_callable=AsyncMock,
+                return_value=ctx,
+            ),
+            patch(
+                "app.application.use_cases.merge_composite_validado_pdfs._collect_pdf_paths_from_ruta_cell",
+                new_callable=AsyncMock,
+                side_effect=fake_collect,
+            ),
+        ):
+            return await merge_composite_validado_pdfs(g)
+
+    r = asyncio.run(run())
+    assert r.outputs_count == 1
+    assert r.merge_control_status == "CONSOLIDADO"
+    assert g.deleted == []
+    out = r.outputs[0]
+    assert out.asiento_pdf_paths == (asiento_abono, asiento_cuota)
+    assert out.asiento_pdf_path == asiento_abono
+    assert "asiento:" in out.sources_summary
+    manifest_key = next(k for k in g.uploaded if k.endswith(".json"))
+    data = json.loads(g.uploaded[manifest_key].decode("utf-8"))
+    assert data["outputs"][0]["asiento_pdf_paths"] == [asiento_abono, asiento_cuota]
+    assert data["outputs"][0]["asiento_pdf_path"] == asiento_abono
 
 
 def test_merge_completed_example_warning_payload():

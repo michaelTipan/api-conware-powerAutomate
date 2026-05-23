@@ -209,7 +209,9 @@ def test_notify_enrichment_maps_missing_historical_file_path_string():
     }
     out = enrich_job_for_http_response(raw)
     assert out["error"]["error_code"] == "missing_historical_file_path"
-    assert "No se recibió" in out["error"]["user_message"]
+    assert "Power Automate" in out["error"]["user_message"]
+    assert "histórico" in out["error"]["user_message"].lower()
+    assert out["error"]["next_action"]
 
 
 def test_find_distribucion_header_row_accepts_estado_nuevo():

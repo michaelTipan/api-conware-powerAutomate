@@ -41,7 +41,7 @@ def test_notify_completed_job_includes_user_message_next_action_severity():
     out = enrich_job_for_http_response(raw)
     assert out["severity"] == "success"
     assert "correo" in out["user_message"].lower()
-    assert "consolidación" in out["next_action"].lower() or "consolidacion" in out["next_action"].lower()
+    assert "pdfs" in out["next_action"].lower() or "bandeja" in out["next_action"].lower()
 
 
 def test_notify_completed_merge_control_active_process_has_warning_severity():
@@ -90,7 +90,7 @@ def test_merge_completed_with_outputs_empty_and_skipped_has_warning_severity():
     )
     out = enrich_job_for_http_response(raw)
     assert out["severity"] == "warning"
-    assert "ningún pdf" in out["user_message"].lower() or "ningun pdf" in out["user_message"].lower()
+    assert "sin generar" in out["user_message"].lower() or "asiento" in out["user_message"].lower()
 
 
 def test_merge_completed_with_outputs_and_skipped_warning():
@@ -147,7 +147,7 @@ def test_notify_failed_string_error_is_converted_to_standard_error_object():
     assert isinstance(e, dict)
     assert e["message"] == raw["error"]
     assert e["technical_message"] == raw["error"]
-    assert "destinatarios" in e["user_message"].lower() or "remitente" in e["user_message"].lower()
+    assert "receptores" in e["user_message"].lower() or "emisor" in e["user_message"].lower()
 
 
 def test_merge_failed_string_error_is_converted_to_standard_error_object():

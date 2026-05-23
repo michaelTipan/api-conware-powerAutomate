@@ -93,8 +93,8 @@ async def update_merge_control_workbook_after_notify(
             merge_control_file_path=control_rel,
             merge_control_status=None,
             merge_control_warning=(
-                "No se registró el proceso en el archivo de control: falta el PDF exportado del correo "
-                "(email_pdf_path). Revise GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF y la carpeta 05 EMAIL."
+                "No se registró el paso para unir PDFs: no se generó el PDF copia del correo en la carpeta 05 EMAIL. "
+                "El correo sí pudo haberse enviado; revise esa carpeta en SharePoint."
             ),
             merge_control_error_code="missing_email_pdf_path_for_merge_control",
         )
@@ -112,8 +112,8 @@ async def update_merge_control_workbook_after_notify(
                 merge_control_file_path=control_rel,
                 merge_control_status=None,
                 merge_control_warning=(
-                    f"No se encontró el archivo de control en SharePoint ({control_rel!r}). "
-                    "Ejecute primero POST .../payment-validation/setup/merge-control-workbook."
+                    "No existe control_merge_pdfs.xlsx en 00 CONTROL. "
+                    "Soporte debe crear ese archivo una vez antes de poder unir PDFs después del correo."
                 ),
                 merge_control_error_code="merge_control_workbook_not_found",
             )
@@ -122,7 +122,10 @@ async def update_merge_control_workbook_after_notify(
             merge_control_updated=False,
             merge_control_file_path=control_rel,
             merge_control_status=None,
-            merge_control_warning=f"No se pudo leer el archivo de control (HTTP {code}).",
+            merge_control_warning=(
+                f"No se pudo abrir control_merge_pdfs.xlsx en SharePoint (error {code}). "
+                "Cierre el archivo si está abierto y verifique permisos."
+            ),
             merge_control_error_code="merge_control_read_failed",
         )
     except Exception as exc:
@@ -142,7 +145,10 @@ async def update_merge_control_workbook_after_notify(
                 merge_control_updated=False,
                 merge_control_file_path=control_rel,
                 merge_control_status=None,
-                merge_control_warning='El archivo de control no contiene la hoja "Procesos".',
+                merge_control_warning=(
+                    'El archivo control_merge_pdfs.xlsx no tiene la hoja "Procesos". '
+                    "Pida a soporte restaurar la plantilla del archivo de control."
+                ),
                 merge_control_error_code="merge_control_invalid_structure",
             )
         ws = wb[SHEET_NAME]
@@ -151,7 +157,10 @@ async def update_merge_control_workbook_after_notify(
                 merge_control_updated=False,
                 merge_control_file_path=control_rel,
                 merge_control_status=None,
-                merge_control_warning="Encabezados del archivo de control no coinciden con el contrato esperado.",
+                merge_control_warning=(
+                    "Los encabezados de control_merge_pdfs.xlsx no coinciden con la plantilla esperada. "
+                    "No modifique ese archivo a mano; pida a soporte restaurarlo."
+                ),
                 merge_control_error_code="merge_control_invalid_structure",
             )
         if ws.max_row < 2:
@@ -159,7 +168,10 @@ async def update_merge_control_workbook_after_notify(
                 merge_control_updated=False,
                 merge_control_file_path=control_rel,
                 merge_control_status=None,
-                merge_control_warning="Falta la fila 2 de control en el archivo de control.",
+                merge_control_warning=(
+                    "Falta la fila 2 de datos en control_merge_pdfs.xlsx. "
+                    "Pida a soporte restaurar la plantilla del archivo de control."
+                ),
                 merge_control_error_code="merge_control_invalid_structure",
             )
 
@@ -172,8 +184,8 @@ async def update_merge_control_workbook_after_notify(
                 merge_control_file_path=control_rel,
                 merge_control_status=estado or None,
                 merge_control_warning=(
-                    "Ya existe un proceso pendiente de consolidación de PDFs en el archivo de control. "
-                    "Termine o cancele el proceso pendiente antes de registrar uno nuevo."
+                    "En control_merge_pdfs.xlsx ya hay un proceso activo de unión de PDFs. "
+                    "Termine o cancele ese proceso antes de registrar el correo de hoy."
                 ),
                 merge_control_error_code="merge_control_active_process_exists",
             )

@@ -24,6 +24,8 @@ from app.application.use_cases.setup_merge_control_workbook import (
     MergeControlSetupError,
     setup_merge_control_workbook,
 )
+from app.application.use_cases.amortization_fill_apply import run_amortization_fill_apply
+from app.application.use_cases.amortization_fill_dry_run import run_amortization_fill_dry_run
 from app.domain.exceptions import GraphConfigError
 
 router = APIRouter(prefix="/graph/sharepoint/payment-validation", tags=["payment-validation"])
@@ -49,6 +51,16 @@ class FinalizeRequest(BaseModel):
 
 class PaymentFollowupSetupRequest(BaseModel):
     force_recreate: bool = False
+
+
+class IbrWorkbookSetupRequest(BaseModel):
+    force_recreate: bool = False
+
+
+class AmortizationDryRunRequest(BaseModel):
+    report_date_iso: str | None = None
+    merge_manifest_path: str | None = None
+    historical_file_path: str | None = None
 
 
 # ─── Background Tasks ─────────────────────────────────────────────────────────
@@ -128,6 +140,176 @@ async def _run_finalize_job(
         logger.error("job %s: falló con %s: %s", job_id, type(exc).__name__, exc)
     finally:
         jm.finish_finalize()
+
+
+async def _run_amortization_dry_run_job(
+    job_id: str,
+    graph: GraphClientDep,
+    *,
+    report_date_iso: str | None,
+    merge_manifest_path: str | None,
+    historical_file_path: str | None,
+) -> None:
+    jm = JobManager()
+    await jm.set_job(
+        job_id,
+        {
+            "status": "running",
+            "started_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        },
+    )
+    logger.info("job %s: amortization_dry_run iniciado", job_id)
+    started = perf_counter()
+    try:
+        result = await run_amortization_fill_dry_run(
+            graph,
+            report_date_iso=report_date_iso,
+            merge_manifest_path=merge_manifest_path,
+            historical_file_path=historical_file_path,
+        )
+        elapsed_ms = round((perf_counter() - started) * 1000, 2)
+        await jm.set_job(
+            job_id,
+            {
+                "status": "completed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": {**result, "elapsed_ms": elapsed_ms},
+                "error": None,
+            },
+        )
+        logger.info("job %s: amortization_dry_run completado en %.2fms", job_id, elapsed_ms)
+    except ValueError as exc:
+        msg = str(exc)
+        code = msg.split("|", 1)[0].strip() if "|" in msg else msg.strip()
+        await jm.set_job(
+            job_id,
+            {
+                "status": "failed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": None,
+                "error": {
+                    "type": "ValueError",
+                    "message": msg,
+                    "error_code": code,
+                },
+            },
+        )
+        logger.warning("job %s: amortization_dry_run falló (validación): %s", job_id, msg)
+    except GraphConfigError as exc:
+        await jm.set_job(
+            job_id,
+            {
+                "status": "failed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": None,
+                "error": {
+                    "type": "GraphConfigError",
+                    "message": str(exc),
+                    "error_code": "graph_config_error",
+                },
+            },
+        )
+        logger.error("job %s: amortization_dry_run config: %s", job_id, exc)
+    except Exception as exc:
+        await jm.set_job(
+            job_id,
+            {
+                "status": "failed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": None,
+                "error": {"type": type(exc).__name__, "message": str(exc)},
+            },
+        )
+        logger.exception("job %s: amortization_dry_run falló: %s", job_id, exc)
+
+
+async def _run_amortization_apply_job(
+    job_id: str,
+    graph: GraphClientDep,
+    *,
+    report_date_iso: str | None,
+    merge_manifest_path: str | None,
+    historical_file_path: str | None,
+) -> None:
+    jm = JobManager()
+    await jm.set_job(
+        job_id,
+        {
+            "status": "running",
+            "started_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        },
+    )
+    logger.info("job %s: amortization_apply iniciado", job_id)
+    started = perf_counter()
+    try:
+        result = await run_amortization_fill_apply(
+            graph,
+            report_date_iso=report_date_iso,
+            merge_manifest_path=merge_manifest_path,
+            historical_file_path=historical_file_path,
+        )
+        elapsed_ms = round((perf_counter() - started) * 1000, 2)
+        await jm.set_job(
+            job_id,
+            {
+                "status": "completed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": {**result, "elapsed_ms": elapsed_ms},
+                "error": None,
+            },
+        )
+        logger.info("job %s: amortization_apply completado en %.2fms", job_id, elapsed_ms)
+    except ValueError as exc:
+        msg = str(exc)
+        code = msg.split("|", 1)[0].strip() if "|" in msg else msg.strip()
+        await jm.set_job(
+            job_id,
+            {
+                "status": "failed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": None,
+                "error": {
+                    "type": "ValueError",
+                    "message": msg,
+                    "error_code": code,
+                },
+            },
+        )
+    except GraphConfigError as exc:
+        await jm.set_job(
+            job_id,
+            {
+                "status": "failed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": None,
+                "error": {
+                    "type": "GraphConfigError",
+                    "message": str(exc),
+                    "error_code": "graph_config_error",
+                },
+            },
+        )
+    except Exception as exc:
+        await jm.set_job(
+            job_id,
+            {
+                "status": "failed",
+                "finished_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "result": None,
+                "error": {"type": type(exc).__name__, "message": str(exc)},
+            },
+        )
+        logger.exception("job %s: amortization_apply falló: %s", job_id, exc)
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -229,6 +411,151 @@ async def queue_finalize(
     return {"job_id": job_id, "status": "queued"}
 
 
+@router.post("/amortization/dry-run/queue", status_code=202)
+async def queue_amortization_dry_run(
+    graph: GraphClientDep,
+    background_tasks: BackgroundTasks,
+    body: AmortizationDryRunRequest | None = None,
+) -> dict[str, Any]:
+    """
+    Encola análisis preliminar de amortización (dry-run) contra SharePoint.
+    No escribe tablas ni mueve asientos. Consulte ``GET /jobs/{job_id}`` para el resultado.
+    """
+    payload = body or AmortizationDryRunRequest()
+    manifest_path = (payload.merge_manifest_path or "").strip() or None
+    report_date = (payload.report_date_iso or "").strip() or None
+    historical_path = (payload.historical_file_path or "").strip() or None
+
+    if not manifest_path and not report_date:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "amortization_dry_run_params_required",
+                "user_message": (
+                    "Debe indicar la fecha del reporte (report_date_iso) o la ruta explícita "
+                    "del manifest de Merge (merge_manifest_path)."
+                ),
+                "next_action": (
+                    "Envíe report_date_iso en formato YYYY-MM-DD (fecha del merge_manifest) o "
+                    "merge_manifest_path con la ruta completa del JSON en SharePoint."
+                ),
+            },
+        )
+
+    if report_date:
+        try:
+            date.fromisoformat(report_date)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error_code": "invalid_report_date_iso",
+                    "user_message": "report_date_iso no es una fecha válida.",
+                    "next_action": "Use formato YYYY-MM-DD, por ejemplo 2026-05-15.",
+                },
+            ) from exc
+
+    import uuid
+
+    job_id = str(uuid.uuid4())
+    jm = JobManager()
+    await jm.set_job(
+        job_id,
+        {
+            "job_id": job_id,
+            "type": "amortization_dry_run",
+            "status": "queued",
+            "queued_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "request": {
+                "report_date_iso": report_date,
+                "merge_manifest_path": manifest_path,
+                "historical_file_path": historical_path,
+            },
+        },
+    )
+
+    background_tasks.add_task(
+        _run_amortization_dry_run_job,
+        job_id,
+        graph,
+        report_date_iso=report_date,
+        merge_manifest_path=manifest_path,
+        historical_file_path=historical_path,
+    )
+    logger.info("job %s: amortization_dry_run encolado", job_id)
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.post("/amortization/apply/queue", status_code=202)
+async def queue_amortization_apply(
+    graph: GraphClientDep,
+    background_tasks: BackgroundTasks,
+    body: AmortizationDryRunRequest | None = None,
+) -> dict[str, Any]:
+    """
+    Encola apply real de amortización (preflight dry-run + escritura en SharePoint).
+    Consulte ``GET /jobs/{job_id}`` para el resultado.
+    """
+    payload = body or AmortizationDryRunRequest()
+    manifest_path = (payload.merge_manifest_path or "").strip() or None
+    report_date = (payload.report_date_iso or "").strip() or None
+    historical_path = (payload.historical_file_path or "").strip() or None
+
+    if not manifest_path and not report_date:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "amortization_apply_params_required",
+                "user_message": (
+                    "Debe indicar report_date_iso o merge_manifest_path para apply."
+                ),
+            },
+        )
+
+    if report_date:
+        try:
+            date.fromisoformat(report_date)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"error_code": "invalid_report_date_iso"},
+            ) from exc
+
+    import uuid
+
+    job_id = str(uuid.uuid4())
+    jm = JobManager()
+    await jm.set_job(
+        job_id,
+        {
+            "job_id": job_id,
+            "type": "amortization_apply",
+            "status": "queued",
+            "queued_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "request": {
+                "report_date_iso": report_date,
+                "merge_manifest_path": manifest_path,
+                "historical_file_path": historical_path,
+            },
+        },
+    )
+
+    background_tasks.add_task(
+        _run_amortization_apply_job,
+        job_id,
+        graph,
+        report_date_iso=report_date,
+        merge_manifest_path=manifest_path,
+        historical_file_path=historical_path,
+    )
+    logger.info("job %s: amortization_apply encolado", job_id)
+
+    return {"job_id": job_id, "status": "queued"}
+
+
 @router.get("/jobs/{job_id}")
 async def get_job_status(job_id: str) -> dict[str, Any]:
     """
@@ -292,13 +619,17 @@ async def post_setup_payment_followup_workbooks(
 
 
 @router.post("/setup/ibr-workbook")
-async def post_setup_ibr_workbook(graph: GraphClientDep) -> dict[str, Any]:
+async def post_setup_ibr_workbook(
+    graph: GraphClientDep,
+    body: IbrWorkbookSetupRequest | None = None,
+) -> dict[str, Any]:
     """
     Crea o repara idempotentemente ``IBR_DIARIO.xlsx`` (hoja IBR: Inicio, Fin, Valor).
-    No sobrescribe datos existentes; añade hoja/columnas faltantes si hace falta.
+    Encabezados bloqueados; filas de datos editables. ``force_recreate`` reemplaza el archivo.
     """
+    payload = body or IbrWorkbookSetupRequest()
     try:
-        return await setup_ibr_workbook(graph)
+        return await setup_ibr_workbook(graph, force_recreate=payload.force_recreate)
     except IbrWorkbookSetupError as exc:
         raise HTTPException(
             status_code=exc.http_status,

@@ -1,5 +1,8 @@
 """
 Setup idempotente de bandejas operativas pagos_adelantados / pagos_incompletos (Pendientes + Historico).
+
+Estructura simple sin Table/ListObject para compatibilidad con Excel Online.
+Hojas totalmente protegidas (solo la API escribe vía backend).
 """
 
 from __future__ import annotations
@@ -11,11 +14,11 @@ from typing import Any
 
 import httpx
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.styles.colors import Color
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
 
+from app.application.services.workbook_setup_helpers import (
+    configure_internal_automation_sheet,
+    sheet_headers_match,
+)
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.application.use_cases.setup_merge_control_workbook import (
     MERGE_CONTROL_FOLDER_RELATIVE_PATH,
@@ -32,11 +35,6 @@ SHEET_HISTORICO = "Historico"
 
 FILENAME_ADELANTADOS = "pagos_adelantados.xlsx"
 FILENAME_INCOMPLETOS = "pagos_incompletos.xlsx"
-
-TABLE_ADELANTADOS_PENDIENTES = "tblPagosAdelantadosPendientes"
-TABLE_ADELANTADOS_HISTORICO = "tblPagosAdelantadosHistorico"
-TABLE_INCOMPLETOS_PENDIENTES = "tblPagosIncompletosPendientes"
-TABLE_INCOMPLETOS_HISTORICO = "tblPagosIncompletosHistorico"
 
 ADELANTADOS_COLUMNS: tuple[str, ...] = (
     "ID Pago",
@@ -93,18 +91,6 @@ INCOMPLETOS_COLUMNS: tuple[str, ...] = (
     "CreatedAt",
     "UpdatedAt",
 )
-
-_FILL_HEADER = PatternFill(fill_type="solid", fgColor="002060")
-_FONT_HEADER = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
-_FONT_BODY = Font(name="Calibri", size=11)
-_BORDER = Border(
-    left=Side(style="thin", color="C8C8C8"),
-    right=Side(style="thin", color="C8C8C8"),
-    top=Side(style="thin", color="C8C8C8"),
-    bottom=Side(style="thin", color="C8C8C8"),
-)
-_ALIGN_HEADER = Alignment(vertical="center", horizontal="center", wrap_text=True)
-_ALIGN_BODY = Alignment(vertical="center", horizontal="left", wrap_text=True)
 
 
 class PaymentFollowupSetupError(Exception):
@@ -183,66 +169,16 @@ async def _drive_item_web_url(graph: GraphApiPort, site_id: str, drive_id: str, 
         raise
 
 
-def _style_data_sheet(ws: Any, columns: tuple[str, ...], table_name: str) -> None:
-    ncols = len(columns)
-    for col_idx, name in enumerate(columns, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=name)
-        cell.fill = _FILL_HEADER
-        cell.font = _FONT_HEADER
-        cell.alignment = _ALIGN_HEADER
-        cell.border = _BORDER
-    for col_idx in range(1, ncols + 1):
-        cell = ws.cell(row=2, column=col_idx, value=None)
-        cell.font = _FONT_BODY
-        cell.alignment = _ALIGN_BODY
-        cell.border = _BORDER
-    for col_idx in range(1, ncols + 1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 16.0
-    last_col = get_column_letter(ncols)
-    ws.auto_filter.ref = f"A1:{last_col}2"
-    ws.freeze_panes = "A2"
-    ref = f"A1:{last_col}2"
-    tab = Table(displayName=table_name, ref=ref)
-    tab.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    ws.add_table(tab)
-    try:
-        ws.sheet_view.showGridLines = False
-    except Exception:
-        pass
-    try:
-        ws.sheet_properties.tabColor = Color(rgb="002060")
-    except Exception:
-        pass
-
-
-def _build_followup_workbook_bytes(
-    *,
-    columns: tuple[str, ...],
-    pendientes_table: str,
-    historico_table: str,
-) -> bytes:
+def _build_followup_workbook_bytes(*, columns: tuple[str, ...]) -> bytes:
     wb = openpyxl.Workbook()
     ws_p = wb.active
     ws_p.title = SHEET_PENDIENTES
-    _style_data_sheet(ws_p, columns, pendientes_table)
+    configure_internal_automation_sheet(ws_p, columns)
     ws_h = wb.create_sheet(SHEET_HISTORICO)
-    _style_data_sheet(ws_h, columns, historico_table)
+    configure_internal_automation_sheet(ws_h, columns)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
-
-
-def _sheet_headers_match(ws: Any, expected: tuple[str, ...]) -> bool:
-    for i, exp in enumerate(expected, start=1):
-        if str(ws.cell(row=1, column=i).value or "").strip() != exp:
-            return False
-    return True
 
 
 def _validate_followup_workbook(data: bytes, columns: tuple[str, ...]) -> tuple[bool, list[str]]:
@@ -254,11 +190,11 @@ def _validate_followup_workbook(data: bytes, columns: tuple[str, ...]) -> tuple[
                 warnings.append(f"needs_manual_review: falta la hoja {sheet!r}")
                 return False, warnings
             ws = wb[sheet]
-            if not _sheet_headers_match(ws, columns):
+            if not sheet_headers_match(ws, columns):
                 warnings.append(f"needs_manual_review: encabezados incorrectos en {sheet!r}")
                 return False, warnings
-            if ws.max_row < 2:
-                warnings.append(f"needs_manual_review: falta fila 2 en {sheet!r}")
+            if ws.tables:
+                warnings.append(f"needs_manual_review: hoja {sheet!r} contiene Table/ListObject; use force_recreate")
                 return False, warnings
         if "Registros" in wb.sheetnames:
             warnings.append("needs_manual_review: hoja legacy Registros presente; use force_recreate")
@@ -296,8 +232,6 @@ async def _ensure_one_followup_workbook(
     file_path: str,
     *,
     columns: tuple[str, ...],
-    pendientes_table: str,
-    historico_table: str,
     force_recreate: bool,
 ) -> dict[str, Any]:
     warnings: list[str] = []
@@ -313,17 +247,14 @@ async def _ensure_one_followup_workbook(
             "recreated": False,
             "file_url": await _drive_item_web_url(graph, site_id, drive_id, file_path),
             "structure_ok": ok,
+            "sheet_protection": "full_locked",
             "warnings": warnings,
         }
 
     if exists and force_recreate:
         warnings.append("force_recreate: archivo reemplazado con estructura operativa nueva")
 
-    payload = _build_followup_workbook_bytes(
-        columns=columns,
-        pendientes_table=pendientes_table,
-        historico_table=historico_table,
-    )
+    payload = _build_followup_workbook_bytes(columns=columns)
     file_url = await _upload_workbook(graph, site_id, drive_id, file_path, payload)
     return {
         "file_path": file_path,
@@ -331,6 +262,7 @@ async def _ensure_one_followup_workbook(
         "recreated": exists and force_recreate,
         "file_url": file_url,
         "structure_ok": True,
+        "sheet_protection": "full_locked",
         "warnings": warnings,
     }
 
@@ -366,24 +298,10 @@ async def setup_payment_followup_workbooks(
 
     try:
         out_ad = await _ensure_one_followup_workbook(
-            graph,
-            site_id,
-            drive_id,
-            path_ad,
-            columns=ADELANTADOS_COLUMNS,
-            pendientes_table=TABLE_ADELANTADOS_PENDIENTES,
-            historico_table=TABLE_ADELANTADOS_HISTORICO,
-            force_recreate=force_recreate,
+            graph, site_id, drive_id, path_ad, columns=ADELANTADOS_COLUMNS, force_recreate=force_recreate
         )
         out_in = await _ensure_one_followup_workbook(
-            graph,
-            site_id,
-            drive_id,
-            path_in,
-            columns=INCOMPLETOS_COLUMNS,
-            pendientes_table=TABLE_INCOMPLETOS_PENDIENTES,
-            historico_table=TABLE_INCOMPLETOS_HISTORICO,
-            force_recreate=force_recreate,
+            graph, site_id, drive_id, path_in, columns=INCOMPLETOS_COLUMNS, force_recreate=force_recreate
         )
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code if exc.response else 0
@@ -416,8 +334,6 @@ async def setup_payment_followup_workbooks(
             "file_url": out_ad["file_url"],
             "structure_ok": out_ad["structure_ok"],
             "sheets": [SHEET_PENDIENTES, SHEET_HISTORICO],
-            "pendientes_table": TABLE_ADELANTADOS_PENDIENTES,
-            "historico_table": TABLE_ADELANTADOS_HISTORICO,
         },
         "pagos_incompletos": {
             "file_path": out_in["file_path"],
@@ -426,8 +342,6 @@ async def setup_payment_followup_workbooks(
             "file_url": out_in["file_url"],
             "structure_ok": out_in["structure_ok"],
             "sheets": [SHEET_PENDIENTES, SHEET_HISTORICO],
-            "pendientes_table": TABLE_INCOMPLETOS_PENDIENTES,
-            "historico_table": TABLE_INCOMPLETOS_HISTORICO,
         },
         "warnings": global_warnings,
     }

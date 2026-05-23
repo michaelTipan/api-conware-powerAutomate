@@ -7,6 +7,7 @@ Si necesitas cambiar un nombre de columna, cámbialo AQUÍ, no en cada archivo.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Nombres de hojas
@@ -107,7 +108,7 @@ class EstadoPago:
     # Rutas extracto / soporte secretaría (antes «VALIDAR»)
     SECRETARY_AND_RUTA = frozenset({NORMAL, INCOMPLETO, ATRASADO, ADELANTADO})
 
-    # Quitar de PAGOS_PENDIENTES al finalizar (línea lista para aplicar)
+    # Estados con seguimiento operativo positivo (pagos_adelantados / pagos_incompletos vía followup)
     CLEARS_PENDING = COUNTERS_POSITIVE_TOTAL
 
 
@@ -136,6 +137,9 @@ class DistribucionCols:
     RUTA_UNIDAD_CREDITO = "RutaUnidadCredito"
     # Solo en cartera_validada (Finalize); no en validacion_pagos de Generate
     RUTA_ASIENTOS_CONTABLES = "RutaAsientosContables"
+    # Columnas técnicas (ocultas en Excel); ruta estable para amortización / dry-run
+    RUTA_TABLA_AMORTIZACION = "RutaTablaAmortizacion"
+    CREDITO_NORMALIZADO = "CreditoNormalizado"
     # Alias de código (mismo texto visible que las columnas renombradas)
     VALOR_INTERESES = APLICAR_A_EXTRACTO
     ABONO_K = MORA_A_APLICAR
@@ -166,7 +170,30 @@ class DistribucionCols:
         LINK_CARPETA_CREDITO,
         RUTA,
         RUTA_UNIDAD_CREDITO,
+        RUTA_TABLA_AMORTIZACION,
+        CREDITO_NORMALIZADO,
     ]
+
+
+# Columnas técnicas de Distribución que deben quedar ocultas en el Excel
+DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS = frozenset(
+    {
+        DistribucionCols.RUTA_TABLA_AMORTIZACION,
+        DistribucionCols.CREDITO_NORMALIZADO,
+    }
+)
+
+
+def normalize_credito_digits(raw: Any) -> str:
+    """Número de crédito limpio (ej. 258) desde etiqueta visible o celda."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"(?i)credito#?\s*(\d+)", s)
+    if m:
+        return m.group(1)
+    m2 = re.search(r"\d{1,12}", s)
+    return m2.group(0) if m2 else ""
 
 
 # Encabezados legacy en libros generados antes del renombre UX (Finalize los normaliza)

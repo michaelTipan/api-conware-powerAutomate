@@ -419,28 +419,13 @@ async def queue_amortization_dry_run(
 ) -> dict[str, Any]:
     """
     Encola análisis preliminar de amortización (dry-run) contra SharePoint.
-    No escribe tablas ni mueve asientos. Consulte ``GET /jobs/{job_id}`` para el resultado.
+    Sin body usa ``MergeManifestPath`` de control_merge_pdfs.xlsx (escrito por Merge).
+    Consulte ``GET /jobs/{job_id}`` para el resultado.
     """
     payload = body or AmortizationDryRunRequest()
     manifest_path = (payload.merge_manifest_path or "").strip() or None
     report_date = (payload.report_date_iso or "").strip() or None
     historical_path = (payload.historical_file_path or "").strip() or None
-
-    if not manifest_path and not report_date:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error_code": "amortization_dry_run_params_required",
-                "user_message": (
-                    "Debe indicar la fecha del reporte (report_date_iso) o la ruta explícita "
-                    "del manifest de Merge (merge_manifest_path)."
-                ),
-                "next_action": (
-                    "Envíe report_date_iso en formato YYYY-MM-DD (fecha del merge_manifest) o "
-                    "merge_manifest_path con la ruta completa del JSON en SharePoint."
-                ),
-            },
-        )
 
     if report_date:
         try:
@@ -496,23 +481,12 @@ async def queue_amortization_apply(
 ) -> dict[str, Any]:
     """
     Encola apply real de amortización (preflight dry-run + escritura en SharePoint).
-    Consulte ``GET /jobs/{job_id}`` para el resultado.
+    Sin body lee ``MergeManifestPath`` del control merge. Consulte ``GET /jobs/{job_id}``.
     """
     payload = body or AmortizationDryRunRequest()
     manifest_path = (payload.merge_manifest_path or "").strip() or None
     report_date = (payload.report_date_iso or "").strip() or None
     historical_path = (payload.historical_file_path or "").strip() or None
-
-    if not manifest_path and not report_date:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error_code": "amortization_apply_params_required",
-                "user_message": (
-                    "Debe indicar report_date_iso o merge_manifest_path para apply."
-                ),
-            },
-        )
 
     if report_date:
         try:

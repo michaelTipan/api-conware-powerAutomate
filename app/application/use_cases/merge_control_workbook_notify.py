@@ -15,10 +15,13 @@ from openpyxl import load_workbook
 
 from app.application.sharepoint_resolution import encode_graph_drive_path
 from app.application.use_cases.setup_merge_control_workbook import (
+    MERGE_CONTROL_AMORTIZATION_COLUMN,
     MERGE_CONTROL_COLUMNS,
     SHEET_NAME,
     TABLE_DISPLAY_NAME,
     apply_merge_control_worksheet_protection,
+    ensure_merge_control_worksheet_columns,
+    merge_control_prefix_headers_match,
     merge_control_workbook_relative_path,
 )
 from app.domain.ports.graph import GraphApiPort
@@ -61,10 +64,7 @@ async def _download_workbook_bytes(graph: GraphApiPort, site_id: str, drive_id: 
 
 
 def _headers_match(ws: Any) -> bool:
-    for i, exp in enumerate(MERGE_CONTROL_COLUMNS, start=1):
-        if str(ws.cell(row=1, column=i).value or "").strip() != exp:
-            return False
-    return True
+    return merge_control_prefix_headers_match(ws)
 
 
 @dataclass(frozen=True)
@@ -152,6 +152,7 @@ async def update_merge_control_workbook_after_notify(
                 merge_control_error_code="merge_control_invalid_structure",
             )
         ws = wb[SHEET_NAME]
+        ensure_merge_control_worksheet_columns(ws)
         if not _headers_match(ws):
             return MergeControlNotifyWriteOutcome(
                 merge_control_updated=False,
@@ -204,6 +205,7 @@ async def update_merge_control_workbook_after_notify(
         ws.cell(row=2, column=_col("LastErrorNextAction"), value="")
         ws.cell(row=2, column=_col("CreatedAtProceso"), value=now_iso)
         ws.cell(row=2, column=_col("LastUpdatedAtProceso"), value=now_iso)
+        ws.cell(row=2, column=_col(MERGE_CONTROL_AMORTIZATION_COLUMN), value="")
 
         if TABLE_DISPLAY_NAME not in ws.tables:
             logger.warning("merge control: tabla %s ausente; se continúa sin crear tabla", TABLE_DISPLAY_NAME)

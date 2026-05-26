@@ -36,6 +36,7 @@ from app.application.use_cases.merge_control_workbook_merge import (
     merge_control_set_consolidado_success,
     merge_control_set_consolidando,
     merge_control_set_error_merge,
+    merge_control_set_merge_manifest_path,
     merge_control_set_merge_parcial,
 )
 from app.application.use_cases.send_validar_extractos_notification import (
@@ -1104,6 +1105,14 @@ async def merge_composite_validado_pdfs(
                 graph, site_id, drive_id, iso, manifest_payload
             )
             logger.info("merge_composite_validado: manifest %s", manifest_path)
+            if manifest_path:
+                await merge_control_set_merge_manifest_path(
+                    graph,
+                    site_id,
+                    drive_id,
+                    control_rel,
+                    merge_manifest_path=manifest_path,
+                )
         except Exception as man_exc:
             logger.warning("merge_composite_validado: no se pudo subir manifest: %s", man_exc)
 

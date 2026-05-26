@@ -547,12 +547,42 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
                 "consolidated_upload_failed",
             )
 
+    if job_type in ("amortization_dry_run", "amortization_apply"):
+        mstripped = msg.strip()
+        if mstripped == "merge_control_manifest_path_missing":
+            return (
+                "En control_merge_pdfs.xlsx falta la ruta del manifest de Merge (columna MergeManifestPath).",
+                "Ejecute Merge hasta que termine en CONSOLIDADO o MERGE_PARCIAL y vuelva a intentar amortización.",
+                "merge_control_manifest_path_missing",
+            )
+        if mstripped == "merge_control_amortization_not_ready":
+            return (
+                "El proceso de Merge aún no está listo para amortización (estado distinto de CONSOLIDADO/MERGE_PARCIAL).",
+                "Espere a que Merge finalice o corrija el estado en control_merge_pdfs.xlsx antes de aplicar amortización.",
+                "merge_control_amortization_not_ready",
+            )
+        if mstripped == "merge_control_workbook_not_found":
+            return (
+                "No existe control_merge_pdfs.xlsx en SharePoint.",
+                "Ejecute el setup del control merge y el flujo Notify antes de amortización.",
+                "merge_control_workbook_not_found",
+            )
+        if mstripped in (
+            "merge_control_invalid_structure",
+            "missing_historical_file_path",
+        ):
+            return (
+                "El archivo control_merge_pdfs.xlsx no tiene la estructura esperada o faltan rutas.",
+                "Restaure la plantilla del control o contacte soporte; no edite encabezados a mano.",
+                mstripped,
+            )
+
     if job_type == "amortization_dry_run":
         mstripped = msg.strip()
         if mstripped == "report_date_iso_required" or mstripped.startswith("report_date_iso_required"):
             return (
                 "No se indicó la fecha del reporte ni una ruta de manifest de Merge.",
-                "Vuelva a ejecutar el dry-run enviando report_date_iso (YYYY-MM-DD) o merge_manifest_path.",
+                "Ejecute Merge primero (rellena MergeManifestPath en el control) o envíe report_date_iso / merge_manifest_path.",
                 "report_date_iso_required",
             )
         if mstripped.startswith("merge_manifest_not_found"):

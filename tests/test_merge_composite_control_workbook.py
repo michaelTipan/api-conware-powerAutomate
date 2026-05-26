@@ -1188,6 +1188,15 @@ def test_merge_writes_manifest_json(monkeypatch):
 
     r = asyncio.run(run())
     assert r.merge_manifest_path.startswith("LOGS/merge_manifest_")
+    ctl_path = "CTL/control.xlsx"
+    assert ctl_path in g.uploaded
+    ctl_wb = load_workbook(filename=BytesIO(g.uploaded[ctl_path]), data_only=True)
+    try:
+        ctl_ws = ctl_wb[SHEET_NAME]
+        col_manifest = MERGE_CONTROL_COLUMNS.index("MergeManifestPath") + 1
+        assert str(ctl_ws.cell(2, col_manifest).value or "").strip() == r.merge_manifest_path
+    finally:
+        ctl_wb.close()
     manifest_key = next(k for k in g.uploaded if k.endswith(".json"))
     data = json.loads(g.uploaded[manifest_key].decode("utf-8"))
     assert data["historico_excel_path"] == hist

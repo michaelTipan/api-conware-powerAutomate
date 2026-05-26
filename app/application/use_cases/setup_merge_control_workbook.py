@@ -45,6 +45,14 @@ MERGE_CONTROL_COLUMNS: tuple[str, ...] = (
     "LastErrorNextAction",
     "CreatedAtProceso",
     "LastUpdatedAtProceso",
+    "MergeManifestPath",
+)
+
+MERGE_CONTROL_AMORTIZATION_COLUMN = "MergeManifestPath"
+
+# Columnas que deben existir en posición fija 1..N para Notify / inicio de Merge (workbooks antiguos).
+MERGE_CONTROL_PREFIX_COLUMNS: tuple[str, ...] = tuple(
+    c for c in MERGE_CONTROL_COLUMNS if c != MERGE_CONTROL_AMORTIZATION_COLUMN
 )
 
 SECURITY_WARNING = (
@@ -200,7 +208,73 @@ def _column_widths() -> dict[int, float]:
         9: 48.0,
         10: 22.0,
         11: 22.0,
+        12: 72.0,
     }
+
+
+def merge_control_header_column_map(ws: Any) -> dict[str, int]:
+    col_map: dict[str, int] = {}
+    for c in range(1, (ws.max_column or 0) + 1):
+        name = str(ws.cell(row=1, column=c).value or "").strip()
+        if name and name not in col_map:
+            col_map[name] = c
+    return col_map
+
+
+def merge_control_prefix_headers_match(ws: Any) -> bool:
+    """Valida encabezados 1..11 (plantilla histórica); MergeManifestPath puede faltar."""
+    for i, exp in enumerate(MERGE_CONTROL_PREFIX_COLUMNS, start=1):
+        if str(ws.cell(row=1, column=i).value or "").strip() != exp:
+            return False
+    return True
+
+
+def _resize_merge_control_table_and_filter(ws: Any) -> None:
+    ncols = len(MERGE_CONTROL_COLUMNS)
+    for col_idx, width in _column_widths().items():
+        if col_idx <= ncols:
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+    ref = f"A1:{get_column_letter(ncols)}2"
+    ws.auto_filter.ref = ref
+    if TABLE_DISPLAY_NAME in ws.tables:
+        ws.tables[TABLE_DISPLAY_NAME].ref = ref
+
+
+def ensure_merge_control_worksheet_columns(ws: Any) -> bool:
+    """
+    Añade columnas del contrato que falten (p. ej. MergeManifestPath en workbooks antiguos).
+    Devuelve True si modificó la hoja.
+    """
+    col_map = merge_control_header_column_map(ws)
+    modified = False
+    next_col = max(col_map.values(), default=len(MERGE_CONTROL_PREFIX_COLUMNS)) + 1
+
+    for name in MERGE_CONTROL_COLUMNS:
+        if name in col_map:
+            continue
+        canonical = MERGE_CONTROL_COLUMNS.index(name) + 1
+        if canonical <= len(MERGE_CONTROL_COLUMNS) and str(
+            ws.cell(row=1, column=canonical).value or ""
+        ).strip() == "":
+            col = canonical
+        else:
+            col = next_col
+            next_col += 1
+        hcell = ws.cell(row=1, column=col, value=name)
+        hcell.font = _FONT_HEADER
+        hcell.fill = _FILL_HEADER
+        hcell.alignment = _ALIGN_HEADER
+        hcell.border = _BORDER
+        dcell = ws.cell(row=2, column=col, value="")
+        dcell.font = _FONT_BODY
+        dcell.alignment = _ALIGN_BODY
+        dcell.border = _BORDER
+        col_map[name] = col
+        modified = True
+
+    if modified:
+        _resize_merge_control_table_and_filter(ws)
+    return modified
 
 
 def merge_control_workbook_relative_path() -> str:
@@ -210,7 +284,7 @@ def merge_control_workbook_relative_path() -> str:
 
 
 def apply_merge_control_worksheet_protection(ws: Any) -> None:
-    """Bloquea celdas A1:K2 y activa protección de hoja sin contraseña (mismo perfil que setup)."""
+    """Bloquea filas 1-2 del contrato y activa protección de hoja sin contraseña."""
     ncols = len(MERGE_CONTROL_COLUMNS)
     for r in (1, 2):
         for c in range(1, ncols + 1):
@@ -284,11 +358,10 @@ def _build_workbook_bytes() -> bytes:
 
 
 def _header_row_matches(ws: Any) -> bool:
-    for i, exp in enumerate(MERGE_CONTROL_COLUMNS, start=1):
-        v = ws.cell(row=1, column=i).value
-        if str(v or "").strip() != exp:
-            return False
-    return True
+    if not merge_control_prefix_headers_match(ws):
+        return False
+    col_map = merge_control_header_column_map(ws)
+    return MERGE_CONTROL_AMORTIZATION_COLUMN in col_map
 
 
 def _validate_and_repair_existing_workbook(data: bytes) -> tuple[list[str], bool, bool, bytes | None]:
@@ -307,9 +380,13 @@ def _validate_and_repair_existing_workbook(data: bytes) -> tuple[list[str], bool
 
         ws = wb[SHEET_NAME]
 
-        if not _header_row_matches(ws):
+        if not merge_control_prefix_headers_match(ws):
             warnings.append("needs_manual_review: encabezados no coinciden con el contrato esperado")
             return warnings, False, ws.protection.sheet is True, None
+
+        if ensure_merge_control_worksheet_columns(ws):
+            warnings.append("repaired: se añadieron columnas faltantes del contrato de control")
+            modified = True
 
         if ws.max_row < 2:
             warnings.append("needs_manual_review: falta la fila 2 de control")

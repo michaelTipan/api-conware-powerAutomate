@@ -48,6 +48,10 @@ from app.application.use_cases.merge_composite_validado_pdfs import (
     _credit_number_from_path_scan,
     normalize_sharepoint_path,
 )
+from app.application.use_cases.merge_control_workbook_merge import (
+    MergeControlValidationError,
+    merge_control_read_amortization_snapshot,
+)
 from app.application.services.amortization_apply_safety import compute_asiento_pdf_hash
 from app.application.use_cases.validate_payment_report import (
     _graph_download_by_path,
@@ -215,6 +219,39 @@ async def _list_folder_json_manifests(
         if name.startswith("merge_manifest_") and name.endswith(".json"):
             names.append(f"{folder.strip().strip('/')}/{name}".replace("//", "/"))
     return sorted(names, reverse=True)
+
+
+async def _resolve_amortization_inputs(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    *,
+    report_date_iso: str | None,
+    merge_manifest_path: str | None,
+    historical_file_path: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Devuelve (merge_manifest_path, report_date_iso, historical_file_path).
+    Sin parámetros en body, lee MergeManifestPath e HistoricalFilePath desde control_merge_pdfs.xlsx.
+    """
+    manifest = (merge_manifest_path or "").strip() or None
+    report_date = (report_date_iso or "").strip() or None
+    hist = (historical_file_path or "").strip().strip("/") or None
+
+    if manifest or report_date:
+        return manifest, report_date, hist
+
+    try:
+        snap = await merge_control_read_amortization_snapshot(graph, site_id, drive_id)
+    except MergeControlValidationError as exc:
+        raise ValueError(exc.error_code) from exc
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code if exc.response else 0
+        if code == 404:
+            raise ValueError("merge_control_workbook_not_found") from exc
+        raise
+
+    return snap.merge_manifest_path, None, hist or snap.historical_file_path
 
 
 async def _resolve_manifest_rel_path(
@@ -991,12 +1028,20 @@ async def run_amortization_fill_dry_run(
     Simula el llenado de tablas de amortización. No escribe ni mueve archivos en SharePoint.
     """
     site_id, drive_id = await _drive_context(graph)
-    manifest_rel = await _resolve_manifest_rel_path(
+    resolved_manifest, resolved_date, resolved_hist = await _resolve_amortization_inputs(
         graph,
         site_id,
         drive_id,
         report_date_iso=report_date_iso,
         merge_manifest_path=merge_manifest_path,
+        historical_file_path=historical_file_path,
+    )
+    manifest_rel = await _resolve_manifest_rel_path(
+        graph,
+        site_id,
+        drive_id,
+        report_date_iso=resolved_date,
+        merge_manifest_path=resolved_manifest,
     )
 
     try:
@@ -1011,7 +1056,7 @@ async def run_amortization_fill_dry_run(
         raise
 
     effective_report_date = (
-        str(report_date_iso or "").strip()
+        str(resolved_date or report_date_iso or "").strip()
         or str(manifest.get("report_date_iso") or "").strip()
         or None
     )
@@ -1021,7 +1066,12 @@ async def run_amortization_fill_dry_run(
         outputs = []
 
     hist_index: dict[tuple[str, str], dict[str, Any]] = {}
-    hist_path = (historical_file_path or manifest.get("historico_excel_path") or "").strip().strip("/")
+    hist_path = (
+        resolved_hist
+        or historical_file_path
+        or manifest.get("historico_excel_path")
+        or ""
+    ).strip().strip("/")
     if hist_path:
         try:
             hist_bytes = await _graph_download_by_path(graph, site_id, drive_id, hist_path)
@@ -1061,7 +1111,11 @@ async def run_amortization_fill_dry_run(
         "mode": "dry_run",
         "report_date_iso": effective_report_date,
         "manifest_path": manifest_rel,
+        "merge_manifest_path": manifest_rel,
         "historical_file_path": hist_path or None,
+        "resolved_from_merge_control": not (
+            (merge_manifest_path or "").strip() or (report_date_iso or "").strip()
+        ),
         "ibr_workbook_path": ibr_path,
         "manifest_outputs_count": len(outputs),
         "items": items,

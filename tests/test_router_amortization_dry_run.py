@@ -76,14 +76,15 @@ def test_amortization_dry_run_queue_returns_202(client):
     assert body.get("job_id")
 
 
-def test_amortization_dry_run_queue_rejects_missing_params(client):
+def test_amortization_dry_run_queue_accepts_empty_body(client):
     res = client.post(
         "/graph/sharepoint/payment-validation/amortization/dry-run/queue",
         json={},
     )
-    assert res.status_code == 422
-    detail = res.json()["detail"]
-    assert detail["error_code"] == "amortization_dry_run_params_required"
+    assert res.status_code == 202
+    body = res.json()
+    assert body["status"] == "queued"
+    assert body.get("job_id")
 
 
 def test_amortization_dry_run_job_runs_use_case_with_params(client, monkeypatch):

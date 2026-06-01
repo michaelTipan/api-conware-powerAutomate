@@ -220,3 +220,125 @@ def test_parser_error_includes_preview_for_debug():
         parse_accounting_text("544113410519 sin monto adjunto", CTX)
     assert excinfo.value.text_preview
     assert len(excinfo.value.text_preview) <= 500
+
+
+def _text_banco_bogota_matamoros_pypdf() -> str:
+    return """
+    17,950,000.00 PAGO: No.Rad. 69 Linea 544 1 11100505
+    15,166,653.00 PAGO: No.Rad. 69 Linea 544 1 13410519
+    2,783,347.00 PAGO: No.Rad. 69 Linea 544 1 13430501
+    """
+
+
+def _text_bancolombia_condor_pypdf() -> str:
+    return """
+    221,926,895.00 PAGO: No.Rad. 3 Linea 544 1 11300502
+    163,759,925.00 PAGO: No.Rad. 3 Linea 544 1 13410519
+    62,545,129.00 PAGO: No.Rad. 3 Linea 544 1 13430501
+    4,378,159.00 PAGO: No.Rad. 3 Linea 544 1 13551503
+    """
+
+
+def test_parser_banco_bogota_prefix_11100505():
+    ev = parse_accounting_text(_text_banco_bogota_matamoros_pypdf(), CTX)
+    assert ev.valor_pagado_cliente == 17_950_000.0
+    assert ev.capital == 15_166_653.0
+    assert ev.intereses == 2_783_347.0
+    assert ev.valor_pagado_cliente == ev.capital + ev.intereses
+
+
+def test_parser_bancolombia_11300502_with_retenciones_1355():
+    ev = parse_accounting_text(_text_bancolombia_condor_pypdf(), CTX)
+    assert ev.valor_pagado_cliente == 221_926_895.0
+    assert ev.capital == 163_759_925.0
+    assert ev.intereses == 62_545_129.0
+    assert ev.retenciones == 4_378_159.0
+    assert "1355" in ev.detected_codes
+
+
+def test_parser_bancolombia_account_at_line_start():
+    text = """
+    11300502 1 PAGO: No.Rad. 3 Linea 544 221,926,895.00
+    13410519 1 PAGO: No.Rad. 3 Linea 544 163,759,925.00
+    13430501 1 PAGO: No.Rad. 3 Linea 544 62,545,129.00
+    13551503 1 Reetencin intereses extracto 4,378,159.00
+    """
+    ev = parse_accounting_text(text, CTX)
+    assert ev.valor_pagado_cliente == 221_926_895.0
+    assert ev.retenciones == 4_378_159.0
+
+
+def test_parser_bancolombia_nine_digit_suffix_113005002():
+    text = "50,000,000.00 PAGO: No.Rad. 1 Linea 544 1 113005002\n13410519 10,000,000.00"
+    ev = parse_accounting_text(text, CTX)
+    assert ev.valor_pagado_cliente == 50_000_000.0
+    assert ev.capital == 10_000_000.0
+
+
+def test_parser_mora_suffix_41502030_bancolombia_and_bogota():
+    text = """
+    1,000,000.00 PAGO: No.Rad. 1 Linea 544 1 11100505
+    800,000.00 PAGO: No.Rad. 1 Linea 544 1 13410519
+    150,000.00 PAGO: No.Rad. 1 Linea 544 1 41502030
+    """
+    ev = parse_accounting_text(text, CTX)
+    assert ev.mora == 150_000.0
+    assert ev.valor_pagado_cliente == 1_000_000.0
+
+
+def test_parser_alternate_1341_prefix_capital_not_only_13410519():
+    """Cualquier cuenta 1341* suma a capital, no solo 13410519."""
+    text = """
+    10,000,000.00 PAGO: No.Rad. 1 Linea 544 1 11100505
+    7,000,000.00 PAGO: No.Rad. 1 Linea 544 1 13419999
+    3,000,000.00 PAGO: No.Rad. 1 Linea 544 1 13430501
+    """
+    ev = parse_accounting_text(text, CTX)
+    assert ev.capital == 7_000_000.0
+    assert ev.intereses == 3_000_000.0
+    assert ev.valor_pagado_cliente == 10_000_000.0
+
+
+def test_parser_retenciones_1355_priority_over_label_text():
+    text = """
+    100.00 PAGO: No.Rad. 1 Linea 544 1 11100505
+    80.00 PAGO: No.Rad. 1 Linea 544 1 13410519
+    5.00 PAGO: No.Rad. 1 Linea 544 1 13551503
+    Retenciones intereses facturas 9,999.99
+    """
+    ev = parse_accounting_text(text, CTX)
+    assert ev.retenciones == 5.0
+    assert ev.retenciones != 9_999.99
+
+
+def test_parser_retenciones_label_fallback_without_1355_account():
+    text = """
+    544111100505 100.00
+    544113410519 80.00
+    Retenciones intereses facturas 1,234.56
+    """
+    ev = parse_accounting_text(text, CTX)
+    assert ev.retenciones == 1234.56
+
+
+def test_parser_without_bank_infers_from_capital_plus_intereses_with_warning():
+    """Sin línea banco: infiere valor pagado (no falla) si hay capital + intereses."""
+    ev = parse_accounting_text(
+        "544113410519 100.00\n544113430501 50.00",
+        CTX,
+    )
+    assert ev.valor_pagado_cliente == 150.0
+    assert ev.parse_warnings
+    assert "inferido" in ev.parse_warnings[0].lower()
+
+
+def test_parser_column_one_not_treated_as_amount_on_table_line():
+    text = "11300502 1 PAGO: No.Rad. 3 Linea 544 221,926,895.00"
+    ev = parse_accounting_text(text, CTX)
+    assert ev.valor_pagado_cliente == 221_926_895.0
+
+
+def test_parser_hbi_544_suffix_normalization_unchanged():
+    ev = parse_accounting_text(_text_credito_258(), CTX)
+    assert ACCOUNT_VALOR_PAGADO_CLIENTE in ev.detected_codes
+    assert ev.capital == 21_562_855.0

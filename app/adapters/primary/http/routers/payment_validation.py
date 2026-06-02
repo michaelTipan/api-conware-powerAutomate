@@ -246,6 +246,7 @@ async def _run_amortization_apply_job(
     report_date_iso: str | None,
     merge_manifest_path: str | None,
     historical_file_path: str | None,
+    bank_code: str | None,
 ) -> None:
     jm = JobManager()
     await jm.set_job(
@@ -264,6 +265,8 @@ async def _run_amortization_apply_job(
             report_date_iso=report_date_iso,
             merge_manifest_path=merge_manifest_path,
             historical_file_path=historical_file_path,
+            bank_code=bank_code,
+            job_id=job_id,
         )
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         await jm.set_job(
@@ -497,12 +500,14 @@ async def queue_amortization_apply(
 ) -> dict[str, Any]:
     """
     Encola apply real de amortización (preflight dry-run + escritura en SharePoint).
-    Sin body lee ``MergeManifestPath`` del control merge. Consulte ``GET /jobs/{job_id}``.
+    Sin body resuelve insumos desde el control oficial por banco (auto-detección).
+    Consulte ``GET /jobs/{job_id}``.
     """
     payload = body or AmortizationDryRunRequest()
     manifest_path = (payload.merge_manifest_path or "").strip() or None
     report_date = (payload.report_date_iso or "").strip() or None
     historical_path = (payload.historical_file_path or "").strip() or None
+    bank_code = (payload.bank_code or "").strip() or None
 
     if report_date:
         try:
@@ -529,6 +534,7 @@ async def queue_amortization_apply(
                 "report_date_iso": report_date,
                 "merge_manifest_path": manifest_path,
                 "historical_file_path": historical_path,
+                "bank_code": bank_code,
             },
         },
     )
@@ -540,6 +546,7 @@ async def queue_amortization_apply(
         report_date_iso=report_date,
         merge_manifest_path=manifest_path,
         historical_file_path=historical_path,
+        bank_code=bank_code,
     )
     logger.info("job %s: amortization_apply encolado", job_id)
 

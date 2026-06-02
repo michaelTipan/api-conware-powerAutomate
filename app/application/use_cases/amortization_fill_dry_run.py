@@ -1112,6 +1112,7 @@ async def run_amortization_fill_dry_run(
     historical_file_path: str | None = None,
     bank_code: str | None = None,
     job_id: str | None = None,
+    update_process_control: bool = True,
 ) -> dict[str, Any]:
     """
     Simula el llenado de tablas de amortización. No escribe ni mueve archivos en SharePoint.
@@ -1137,17 +1138,19 @@ async def run_amortization_fill_dry_run(
         merge_manifest_path=merge_manifest_path,
         historical_file_path=historical_file_path,
     )
-    try:
-        await update_process_control_row2(
-            graph,
-            site_id,
-            drive_id,
-            bank_code=resolved_bank_code,
-            updates={"LastStepStatus": "RUNNING", "LastUpdatedAtProceso": utc_now_iso()},
-        )
-        process_control_updated = True
-    except Exception:
-        process_control_updated = False
+    process_control_updated = False
+    if update_process_control:
+        try:
+            await update_process_control_row2(
+                graph,
+                site_id,
+                drive_id,
+                bank_code=resolved_bank_code,
+                updates={"LastStepStatus": "RUNNING", "LastUpdatedAtProceso": utc_now_iso()},
+            )
+            process_control_updated = True
+        except Exception:
+            process_control_updated = False
 
     try:
         manifest_rel = await _resolve_manifest_rel_path(
@@ -1248,39 +1251,41 @@ async def run_amortization_fill_dry_run(
             "dry_run_wrote_changes": False,
         }
 
-        try:
-            await update_process_control_row2(
-                graph,
-                site_id,
-                drive_id,
-                bank_code=resolved_bank_code,
-                updates={
-                    "LastCompletedStep": "DRY_RUN",
-                    "LastStepStatus": "COMPLETED",
-                    "LastStepErrorCode": "",
-                    "LastUpdatedAtProceso": utc_now_iso(),
-                },
-            )
-            result_payload["process_control_updated"] = True
-        except Exception:
-            pass
+        if update_process_control:
+            try:
+                await update_process_control_row2(
+                    graph,
+                    site_id,
+                    drive_id,
+                    bank_code=resolved_bank_code,
+                    updates={
+                        "LastCompletedStep": "DRY_RUN",
+                        "LastStepStatus": "COMPLETED",
+                        "LastStepErrorCode": "",
+                        "LastUpdatedAtProceso": utc_now_iso(),
+                    },
+                )
+                result_payload["process_control_updated"] = True
+            except Exception:
+                pass
 
         return result_payload
     except Exception:
-        try:
-            await update_process_control_row2(
-                graph,
-                site_id,
-                drive_id,
-                bank_code=resolved_bank_code,
-                updates={
-                    "LastStepStatus": "FAILED",
-                    "LastStepErrorCode": "ERROR_DRY_RUN",
-                    "LastErrorUserMessage": "Falló el dry-run de amortización (no se escribieron cambios).",
-                    "LastErrorNextAction": "Revise el detalle del job y reintente el dry-run.",
-                    "LastUpdatedAtProceso": utc_now_iso(),
-                },
-            )
-        except Exception:
-            pass
+        if update_process_control:
+            try:
+                await update_process_control_row2(
+                    graph,
+                    site_id,
+                    drive_id,
+                    bank_code=resolved_bank_code,
+                    updates={
+                        "LastStepStatus": "FAILED",
+                        "LastStepErrorCode": "ERROR_DRY_RUN",
+                        "LastErrorUserMessage": "Falló el dry-run de amortización (no se escribieron cambios).",
+                        "LastErrorNextAction": "Revise el detalle del job y reintente el dry-run.",
+                        "LastUpdatedAtProceso": utc_now_iso(),
+                    },
+                )
+            except Exception:
+                pass
         raise

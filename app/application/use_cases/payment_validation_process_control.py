@@ -80,6 +80,7 @@ class ProcessControlSnapshot:
     notify_idempotency_key: str
     merge_manifest_path: str
     merge_idempotency_key: str
+    apply_idempotency_key: str
     bank_code: str
     bank_name: str
 
@@ -103,6 +104,7 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
         nid = str(ws.cell(row=2, column=_col_index("NotifyIdempotencyKey")).value or "").strip()
         mmp = str(ws.cell(row=2, column=_col_index("MergeManifestPath")).value or "").strip().strip("/")
         mid = str(ws.cell(row=2, column=_col_index("MergeIdempotencyKey")).value or "").strip()
+        aid = str(ws.cell(row=2, column=_col_index("ApplyIdempotencyKey")).value or "").strip()
         bc = str(ws.cell(row=2, column=_col_index("BankCode")).value or "").strip()
         bn = str(ws.cell(row=2, column=_col_index("BankName")).value or "").strip()
 
@@ -118,6 +120,7 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
             notify_idempotency_key=nid,
             merge_manifest_path=mmp,
             merge_idempotency_key=mid,
+            apply_idempotency_key=aid,
             bank_code=bc,
             bank_name=bn,
         )

@@ -34,8 +34,14 @@ from app.application.services.amortization_workbook import (
     write_payment_application,
 )
 from app.application.use_cases.amortization_fill_dry_run import (
-    run_amortization_fill_dry_run,
     _drive_context,
+    _resolve_amortization_inputs,
+    run_amortization_fill_dry_run,
+)
+from app.application.use_cases.payment_validation_process_control import (
+    read_process_control_snapshot,
+    update_process_control_row2,
+    utc_now_iso,
 )
 from app.application.use_cases.validate_payment_report import (
     _graph_download_by_path,
@@ -483,155 +489,435 @@ async def _apply_one_table(
             closer()
 
 
+def _apply_observability_base(
+    *,
+    resolved_bank_code: str,
+    resolved_bank_name: str,
+    bank_code_param: str | None,
+    resolved_process_key: str,
+    resolved_control_path: str,
+    ready_banks_detected: list[str],
+    merge_manifest_source: str,
+    historical_file_source: str,
+    manifest_rel: str,
+    hist_path: str | None,
+    process_control_updated: bool,
+    process_control_estado: str,
+) -> dict[str, Any]:
+    return {
+        "bank_code": resolved_bank_code,
+        "bank_name": resolved_bank_name,
+        "bank_code_source": "body" if (bank_code_param or "").strip() else "auto_detected",
+        "ready_banks_detected": ready_banks_detected,
+        "process_key": resolved_process_key,
+        "process_control_file_path": resolved_control_path,
+        "process_control_updated": process_control_updated,
+        "process_control_estado": process_control_estado,
+        "merge_manifest_source": merge_manifest_source,
+        "historical_file_source": historical_file_source,
+        "merge_manifest_path": manifest_rel,
+        "historical_file_path": hist_path,
+    }
+
+
 async def run_amortization_fill_apply(
     graph: GraphApiPort,
     *,
     report_date_iso: str | None = None,
     merge_manifest_path: str | None = None,
     historical_file_path: str | None = None,
+    bank_code: str | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Preflight (dry-run) y escritura real en tablas de amortización.
     """
-    dry_run = await run_amortization_fill_dry_run(
+    site_id, drive_id = await _drive_context(graph)
+    (
+        resolved_manifest,
+        resolved_date,
+        resolved_hist,
+        resolved_bank_code,
+        resolved_bank_name,
+        resolved_process_key,
+        resolved_control_path,
+        ready_banks_detected,
+        merge_manifest_source,
+        historical_file_source,
+    ) = await _resolve_amortization_inputs(
         graph,
+        site_id,
+        drive_id,
+        bank_code=bank_code,
         report_date_iso=report_date_iso,
         merge_manifest_path=merge_manifest_path,
         historical_file_path=historical_file_path,
     )
 
+    manifest_rel = (resolved_manifest or merge_manifest_path or "").strip().strip("/")
+    hist_path = (resolved_hist or historical_file_path or "").strip().strip("/") or None
+    apply_idempotency_key = (resolved_process_key or "").strip()
+
+    process_control_updated = False
     try:
-        validate_amortization_preflight(dry_run)
-    except AmortizationPreflightError as exc:
-        return {
-            "status": "preflight_failed",
+        snap = await read_process_control_snapshot(
+            graph, site_id, drive_id, bank_code=resolved_bank_code
+        )
+        if not apply_idempotency_key:
+            apply_idempotency_key = (snap.process_key or "").strip()
+        if (
+            (snap.estado_proceso or "").strip() == "AMORTIZACION_APLICADA"
+            and (snap.apply_idempotency_key or "").strip()
+            and apply_idempotency_key
+            and (snap.apply_idempotency_key or "").strip() == apply_idempotency_key
+        ):
+            base = _apply_observability_base(
+                resolved_bank_code=resolved_bank_code,
+                resolved_bank_name=resolved_bank_name,
+                bank_code_param=bank_code,
+                resolved_process_key=apply_idempotency_key,
+                resolved_control_path=resolved_control_path,
+                ready_banks_detected=ready_banks_detected,
+                merge_manifest_source=merge_manifest_source,
+                historical_file_source=historical_file_source,
+                manifest_rel=manifest_rel,
+                hist_path=hist_path,
+                process_control_updated=False,
+                process_control_estado="AMORTIZACION_APLICADA",
+            )
+            return {
+                **base,
+                "status": "ok",
+                "mode": "apply",
+                "already_applied": True,
+                "file_action": "reused",
+                "apply_idempotency_key": snap.apply_idempotency_key,
+                "apply_wrote_changes": False,
+                "tables_uploaded_count": 0,
+                "tables_skipped_count": 0,
+                "idempotent_skips_count": 0,
+                "items": [],
+                "tables_uploaded": [],
+                "tables_summary": [],
+                "apply_errors": [],
+                "summary": _apply_summarize([]),
+                "manifest_path": manifest_rel,
+                "preflight": None,
+            }
+    except Exception:
+        pass
+
+    try:
+        await update_process_control_row2(
+            graph,
+            site_id,
+            drive_id,
+            bank_code=resolved_bank_code,
+            updates={
+                "EstadoProceso": "APLICANDO_AMORTIZACION",
+                "LastStepStatus": "RUNNING",
+                "LastUpdatedAtProceso": utc_now_iso(),
+            },
+        )
+        process_control_updated = True
+    except Exception:
+        pass
+
+    try:
+        dry_run = await run_amortization_fill_dry_run(
+            graph,
+            report_date_iso=resolved_date or report_date_iso,
+            merge_manifest_path=resolved_manifest or merge_manifest_path,
+            historical_file_path=resolved_hist or historical_file_path,
+            bank_code=resolved_bank_code,
+            job_id=job_id,
+            update_process_control=False,
+        )
+
+        try:
+            validate_amortization_preflight(dry_run)
+        except AmortizationPreflightError as exc:
+            try:
+                await update_process_control_row2(
+                    graph,
+                    site_id,
+                    drive_id,
+                    bank_code=resolved_bank_code,
+                    updates={
+                        "EstadoProceso": "ERROR_APPLY",
+                        "LastStepStatus": "FAILED",
+                        "LastStepErrorCode": "ERROR_APPLY",
+                        "LastErrorUserMessage": str(exc)[:500],
+                        "LastErrorNextAction": "Revise el preflight y corrija antes de reintentar apply.",
+                        "LastUpdatedAtProceso": utc_now_iso(),
+                    },
+                )
+                process_control_updated = True
+            except Exception:
+                pass
+            base = _apply_observability_base(
+                resolved_bank_code=resolved_bank_code,
+                resolved_bank_name=resolved_bank_name,
+                bank_code_param=bank_code,
+                resolved_process_key=apply_idempotency_key,
+                resolved_control_path=resolved_control_path,
+                ready_banks_detected=ready_banks_detected,
+                merge_manifest_source=merge_manifest_source,
+                historical_file_source=historical_file_source,
+                manifest_rel=manifest_rel,
+                hist_path=hist_path,
+                process_control_updated=process_control_updated,
+                process_control_estado="ERROR_APPLY",
+            )
+            return {
+                **base,
+                "status": "preflight_failed",
+                "mode": "apply",
+                "preflight_error_code": exc.error_code,
+                "message": str(exc),
+                "preflight": dry_run,
+                "already_applied": False,
+                "apply_idempotency_key": apply_idempotency_key,
+                "apply_wrote_changes": False,
+                "tables_uploaded_count": 0,
+                "tables_skipped_count": 0,
+                "idempotent_skips_count": 0,
+                "items": [],
+                "tables_uploaded": [],
+                "tables_summary": [],
+                "summary": _apply_summarize([]),
+            }
+        by_table = _writable_planned_items(dry_run)
+        apply_items: list[dict[str, Any]] = []
+        tables_uploaded: list[str] = []
+        tables_summary: list[dict[str, Any]] = []
+        apply_errors: list[dict[str, Any]] = []
+
+        for tabla_path, planned in by_table.items():
+            try:
+                table_result = await _apply_one_table(
+                    graph, site_id, drive_id, tabla_path, planned, dry_run=dry_run
+                )
+                apply_items.extend(table_result["items"])
+                upload_status = str(table_result.get("upload_status") or UPLOAD_STATUS_SKIPPED)
+                verification_status = str(
+                    table_result.get("verification_status") or VERIFICATION_SKIPPED
+                )
+                if table_result.get("uploaded"):
+                    tables_uploaded.append(tabla_path)
+                tables_summary.append(
+                    build_table_apply_summary(
+                        tabla_path,
+                        table_result["items"],
+                        upload_status=upload_status,
+                        verification_status=verification_status,
+                    )
+                )
+                if verification_status in (
+                    VERIFICATION_FAILED,
+                    VERIFICATION_FORMULA_FAILED,
+                ):
+                    apply_errors.append(
+                        {
+                            "tabla_amortizacion_path": tabla_path,
+                            "error_code": verification_status,
+                            "message": "Verificación post-upload falló",
+                        }
+                    )
+                if upload_status == UPLOAD_STATUS_EXCEL_LOCKED:
+                    apply_errors.append(
+                        {
+                            "tabla_amortizacion_path": tabla_path,
+                            "error_code": "EXCEL_LOCKED",
+                            "message": "SharePoint devolvió 423 Locked tras reintentos",
+                        }
+                    )
+            except AmortizationApplySafetyError as exc:
+                logger.error("apply abortado tabla %s: %s", tabla_path, exc)
+                apply_errors.append(
+                    {
+                        "tabla_amortizacion_path": tabla_path,
+                        "error_code": "APPLY_SAFETY_ABORT",
+                        "message": str(exc),
+                        "item": exc.item,
+                    }
+                )
+                for item in planned:
+                    apply_items.append(
+                        {
+                            **item,
+                            "apply_status": APPLY_STATUS_ERROR,
+                            "apply_error_code": "APPLY_SAFETY_ABORT",
+                            "apply_message": str(exc),
+                        }
+                    )
+                tables_summary.append(
+                    build_table_apply_summary(
+                        tabla_path,
+                        apply_items[-len(planned) :],
+                        upload_status=UPLOAD_STATUS_FAILED,
+                        verification_status=VERIFICATION_SKIPPED,
+                    )
+                )
+            except Exception as exc:
+                logger.exception("apply falló tabla %s", tabla_path)
+                apply_errors.append(
+                    {
+                        "tabla_amortizacion_path": tabla_path,
+                        "error_code": "TABLE_APPLY_FAILED",
+                        "message": str(exc)[:500],
+                    }
+                )
+                for item in planned:
+                    apply_items.append(
+                        {
+                            **item,
+                            "apply_status": APPLY_STATUS_ERROR,
+                            "apply_error_code": "TABLE_APPLY_FAILED",
+                            "apply_message": str(exc)[:500],
+                        }
+                    )
+                tables_summary.append(
+                    build_table_apply_summary(
+                        tabla_path,
+                        apply_items[-len(planned) :],
+                        upload_status=UPLOAD_STATUS_FAILED,
+                        verification_status=VERIFICATION_SKIPPED,
+                    )
+                )
+
+        summary = _apply_summarize(apply_items)
+        status = "ok"
+        if apply_errors and not tables_uploaded:
+            status = "failed"
+        elif apply_errors:
+            status = "partial"
+
+        if status == "ok":
+            process_estado = "AMORTIZACION_APLICADA"
+            last_step_status = "COMPLETED"
+            last_error_user = ""
+            last_error_next = ""
+        elif status == "partial":
+            process_estado = "AMORTIZACION_PARCIAL"
+            last_step_status = "COMPLETED_WITH_WARNINGS"
+            last_error_user = (
+                f"Apply parcial: {len(apply_errors)} tabla(s) con error; "
+                f"{len(tables_uploaded)} subida(s)."
+            )
+            last_error_next = "Revise apply_errors y reintente solo las tablas pendientes si aplica."
+        else:
+            process_estado = "ERROR_APPLY"
+            last_step_status = "FAILED"
+            last_error_user = "No se pudo aplicar amortización en ninguna tabla."
+            last_error_next = "Revise apply_errors y el preflight; corrija y reintente apply."
+
+        tables_uploaded_count = len(tables_uploaded)
+        tables_skipped_count = max(0, len(by_table) - tables_uploaded_count)
+        idempotent_skips_count = int(summary.get("skipped_idempotent") or 0)
+        apply_wrote_changes = tables_uploaded_count > 0
+
+        base = _apply_observability_base(
+            resolved_bank_code=resolved_bank_code,
+            resolved_bank_name=resolved_bank_name,
+            bank_code_param=bank_code,
+            resolved_process_key=apply_idempotency_key,
+            resolved_control_path=resolved_control_path,
+            ready_banks_detected=ready_banks_detected,
+            merge_manifest_source=merge_manifest_source,
+            historical_file_source=historical_file_source,
+            manifest_rel=manifest_rel or str(dry_run.get("manifest_path") or ""),
+            hist_path=hist_path or dry_run.get("historical_file_path"),
+            process_control_updated=process_control_updated,
+            process_control_estado=process_estado,
+        )
+
+        result_payload: dict[str, Any] = {
+            **base,
+            "status": status,
             "mode": "apply",
-            "preflight_error_code": exc.error_code,
-            "message": str(exc),
             "preflight": dry_run,
-            "items": [],
-            "tables_uploaded": [],
-            "tables_summary": [],
-            "summary": _apply_summarize([]),
+            "items": apply_items,
+            "tables_uploaded": tables_uploaded,
+            "tables_summary": tables_summary,
+            "apply_errors": apply_errors,
+            "summary": summary,
+            "manifest_path": dry_run.get("manifest_path"),
+            "already_applied": False,
+            "file_action": "created" if apply_wrote_changes else "partial" if status == "partial" else "failed",
+            "apply_idempotency_key": apply_idempotency_key,
+            "apply_wrote_changes": apply_wrote_changes,
+            "tables_uploaded_count": tables_uploaded_count,
+            "tables_skipped_count": tables_skipped_count,
+            "idempotent_skips_count": idempotent_skips_count,
         }
 
-    site_id, drive_id = await _drive_context(graph)
-    by_table = _writable_planned_items(dry_run)
-    apply_items: list[dict[str, Any]] = []
-    tables_uploaded: list[str] = []
-    tables_summary: list[dict[str, Any]] = []
-    apply_errors: list[dict[str, Any]] = []
+        if status in ("ok", "partial"):
+            try:
+                await update_process_control_row2(
+                    graph,
+                    site_id,
+                    drive_id,
+                    bank_code=resolved_bank_code,
+                    updates={
+                        "ProcessKey": apply_idempotency_key,
+                        "BankCode": resolved_bank_code,
+                        "BankName": resolved_bank_name,
+                        "HistoricalFilePath": hist_path or dry_run.get("historical_file_path") or "",
+                        "MergeManifestPath": manifest_rel or dry_run.get("merge_manifest_path") or "",
+                        "EstadoProceso": process_estado,
+                        "IsActive": True,
+                        "ApplyIdempotencyKey": apply_idempotency_key,
+                        "ApplyJobId": job_id or "",
+                        "LastCompletedStep": "APPLY",
+                        "LastStepStatus": last_step_status,
+                        "LastStepErrorCode": "",
+                        "LastErrorUserMessage": last_error_user,
+                        "LastErrorNextAction": last_error_next,
+                        "LastUpdatedAtProceso": utc_now_iso(),
+                    },
+                )
+                result_payload["process_control_updated"] = True
+            except Exception:
+                pass
+        else:
+            try:
+                await update_process_control_row2(
+                    graph,
+                    site_id,
+                    drive_id,
+                    bank_code=resolved_bank_code,
+                    updates={
+                        "EstadoProceso": "ERROR_APPLY",
+                        "LastStepStatus": "FAILED",
+                        "LastStepErrorCode": "ERROR_APPLY",
+                        "LastErrorUserMessage": last_error_user,
+                        "LastErrorNextAction": last_error_next,
+                        "LastUpdatedAtProceso": utc_now_iso(),
+                    },
+                )
+                result_payload["process_control_updated"] = True
+            except Exception:
+                pass
 
-    for tabla_path, planned in by_table.items():
+        return result_payload
+    except Exception as exc:
         try:
-            table_result = await _apply_one_table(
-                graph, site_id, drive_id, tabla_path, planned, dry_run=dry_run
+            await update_process_control_row2(
+                graph,
+                site_id,
+                drive_id,
+                bank_code=resolved_bank_code,
+                updates={
+                    "EstadoProceso": "ERROR_APPLY",
+                    "LastStepStatus": "FAILED",
+                    "LastStepErrorCode": "ERROR_APPLY",
+                    "LastErrorUserMessage": str(exc)[:500],
+                    "LastErrorNextAction": "Revise el detalle del job y reintente apply.",
+                    "LastUpdatedAtProceso": utc_now_iso(),
+                },
             )
-            apply_items.extend(table_result["items"])
-            upload_status = str(table_result.get("upload_status") or UPLOAD_STATUS_SKIPPED)
-            verification_status = str(
-                table_result.get("verification_status") or VERIFICATION_SKIPPED
-            )
-            if table_result.get("uploaded"):
-                tables_uploaded.append(tabla_path)
-            tables_summary.append(
-                build_table_apply_summary(
-                    tabla_path,
-                    table_result["items"],
-                    upload_status=upload_status,
-                    verification_status=verification_status,
-                )
-            )
-            if verification_status in (
-                VERIFICATION_FAILED,
-                VERIFICATION_FORMULA_FAILED,
-            ):
-                apply_errors.append(
-                    {
-                        "tabla_amortizacion_path": tabla_path,
-                        "error_code": verification_status,
-                        "message": "Verificación post-upload falló",
-                    }
-                )
-            if upload_status == UPLOAD_STATUS_EXCEL_LOCKED:
-                apply_errors.append(
-                    {
-                        "tabla_amortizacion_path": tabla_path,
-                        "error_code": "EXCEL_LOCKED",
-                        "message": "SharePoint devolvió 423 Locked tras reintentos",
-                    }
-                )
-        except AmortizationApplySafetyError as exc:
-            logger.error("apply abortado tabla %s: %s", tabla_path, exc)
-            apply_errors.append(
-                {
-                    "tabla_amortizacion_path": tabla_path,
-                    "error_code": "APPLY_SAFETY_ABORT",
-                    "message": str(exc),
-                    "item": exc.item,
-                }
-            )
-            for item in planned:
-                apply_items.append(
-                    {
-                        **item,
-                        "apply_status": APPLY_STATUS_ERROR,
-                        "apply_error_code": "APPLY_SAFETY_ABORT",
-                        "apply_message": str(exc),
-                    }
-                )
-            tables_summary.append(
-                build_table_apply_summary(
-                    tabla_path,
-                    apply_items[-len(planned) :],
-                    upload_status=UPLOAD_STATUS_FAILED,
-                    verification_status=VERIFICATION_SKIPPED,
-                )
-            )
-        except Exception as exc:
-            logger.exception("apply falló tabla %s", tabla_path)
-            apply_errors.append(
-                {
-                    "tabla_amortizacion_path": tabla_path,
-                    "error_code": "TABLE_APPLY_FAILED",
-                    "message": str(exc)[:500],
-                }
-            )
-            for item in planned:
-                apply_items.append(
-                    {
-                        **item,
-                        "apply_status": APPLY_STATUS_ERROR,
-                        "apply_error_code": "TABLE_APPLY_FAILED",
-                        "apply_message": str(exc)[:500],
-                    }
-                )
-            tables_summary.append(
-                build_table_apply_summary(
-                    tabla_path,
-                    apply_items[-len(planned) :],
-                    upload_status=UPLOAD_STATUS_FAILED,
-                    verification_status=VERIFICATION_SKIPPED,
-                )
-            )
-
-    summary = _apply_summarize(apply_items)
-    status = "ok"
-    if apply_errors and not tables_uploaded:
-        status = "failed"
-    elif apply_errors:
-        status = "partial"
-
-    return {
-        "status": status,
-        "mode": "apply",
-        "preflight": dry_run,
-        "items": apply_items,
-        "tables_uploaded": tables_uploaded,
-        "tables_summary": tables_summary,
-        "apply_errors": apply_errors,
-        "summary": summary,
-        "manifest_path": dry_run.get("manifest_path"),
-        "historical_file_path": dry_run.get("historical_file_path"),
-    }
+        except Exception:
+            pass
+        raise
 

@@ -381,8 +381,8 @@ async def queue_finalize(
     Power Automate debe llamar este endpoint después de que la secretaria
     complete el Excel de revisión.
 
-    Nota: el endpoint legacy `validate-payment-report` sigue coexistiendo
-    temporalmente en `sharepoint.py` y NO se consolida todavía.
+    Flujo productivo: Generate → Finalize (control por banco). El endpoint antiguo
+    `validate-payment-report` fue retirado; use estos endpoints.
     """
     jm = JobManager()
     if not jm.try_start_finalize():

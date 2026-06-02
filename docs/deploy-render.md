@@ -11,7 +11,10 @@
 - Probar `POST /parse-excel` con un Excel de prueba.
 - Validar que Power Automate reciba JSON correcto.
 
-## 3) Contrato desde Power Automate (body)
+## 3) Flujo validacion de pagos (COMWARE)
+Ver `docs/payment-validation-production-flow.md`. En produccion use Generate/Finalize/Notify/Merge/Amortization; no use `validate-payment-report`.
+
+## 4) Contrato desde Power Automate (parse-excel)
 - `file_name` (string)
 - `excel_base64` (string)
 - `run_id` (string, opcional; puede ir vacio `""`)

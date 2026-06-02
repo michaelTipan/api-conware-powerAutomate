@@ -80,6 +80,14 @@ Endpoints:
 
 Al arrancar en local, `python-dotenv` carga `.env` automaticamente.
 
+## Validacion de pagos (flujo productivo en Render)
+- Documentacion del flujo: `docs/payment-validation-production-flow.md`
+- Setup control por banco: `POST /graph/sharepoint/payment-validation/setup/merge-control-workbook`
+- Pasos: generate → finalize → notify → merge → amortization dry-run → apply (ver doc)
+- Jobs generate/finalize/amortization: `GET /graph/sharepoint/payment-validation/jobs/{job_id}`
+- Jobs notify/merge: rutas bajo `/graph/sharepoint/.../jobs/{job_id}` (ver doc)
+- **Obsoleto:** `POST /graph/sharepoint/validate-payment-report` (reemplazado por generate/finalize)
+
 ## Documentacion adicional
-- Flujo Power Automate: `docs/power-automate-flow.md`
+- Flujo Power Automate (parse-excel): `docs/power-automate-flow.md`
 - Deploy en Render: `docs/deploy-render.md`

@@ -21,7 +21,6 @@ from app.application.use_cases.send_validar_extractos_notification import (
 )
 from app.application.use_cases.ensure_asientos_contables_folders import ensure_asientos_contables_folders
 from app.application.use_cases.merge_composite_validado_pdfs import merge_composite_validado_pdfs
-from app.application.use_cases.validate_payment_report import validate_payment_report_and_replace_excel
 from app.application.job_status_enrichment import enrich_job_for_http_response
 from app.domain.exceptions import GraphConfigError
 from app.models import GraphUploadRequest, MergeCompositeValidadoRequest, NotifyValidarExtractosRequest
@@ -41,54 +40,6 @@ async def _set_job(job_id: str, updates: dict[str, Any]) -> None:
         current = _validation_jobs.get(job_id, {})
         current.update(updates)
         _validation_jobs[job_id] = current
-
-
-async def _run_validation_job(job_id: str, graph: GraphClientDep) -> None:
-    await _set_job(
-        job_id,
-        {
-            "status": "running",
-            "started_at": _utc_now_iso(),
-            "updated_at": _utc_now_iso(),
-        },
-    )
-    logger.info("job %s: validate_payment_report iniciado", job_id)
-    started_ts = perf_counter()
-    try:
-        summary = await validate_payment_report_and_replace_excel(graph)
-        elapsed_ms = round((perf_counter() - started_ts) * 1000, 2)
-        await _set_job(
-            job_id,
-            {
-                "status": "completed",
-                "finished_at": _utc_now_iso(),
-                "updated_at": _utc_now_iso(),
-                "result": {
-                    "status": "ok",
-                    "message": "Ejecutado con éxito",
-                    "reaction_time_ms": elapsed_ms,
-                    "processed_rows": summary.processed_rows,
-                    "ok_count": summary.ok_count,
-                    "no_count": summary.no_count,
-                    "error_count": summary.error_count,
-                    "errors": summary.errors,
-                },
-                "error": None,
-            },
-        )
-        logger.info("job %s: validate_payment_report completado", job_id)
-    except Exception as exc:
-        await _set_job(
-            job_id,
-            {
-                "status": "failed",
-                "finished_at": _utc_now_iso(),
-                "updated_at": _utc_now_iso(),
-                "result": None,
-                "error": str(exc),
-            },
-        )
-        logger.exception("job %s: validate_payment_report falló: %s", job_id, exc)
 
 
 async def _run_notify_validar_extractos_job(
@@ -447,93 +398,6 @@ async def graph_sharepoint_upload_from_env(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Graph request failed: {exc}") from exc
-
-
-@router.post("/validate-payment-report")
-async def validate_payment_report(graph: GraphClientDep) -> dict:
-    """
-    Valida el Excel en GRAPH_SHAREPOINT_FILE_PATH: fecha ancla global, cuotas por PDF, empareje de
-    carpetas de crédito con la columna Crédito; escribe Validado/Estado/Observaciones/Rutas y reemplaza el archivo.
-    """
-    # Línea explícita: si no ves logs, revisa LOG_LEVEL=INFO y que la consola sea la de uvicorn.
-    logger.info("HTTP validate_payment_report: recibido request (inicio)")
-    started_ts = perf_counter()
-    try:
-        summary = await validate_payment_report_and_replace_excel(graph)
-        elapsed_ms = round((perf_counter() - started_ts) * 1000, 2)
-        payload = {
-            "status": "ok",
-            "message": "Ejecutado con éxito",
-            "reaction_time_ms": elapsed_ms,
-            "processed_rows": summary.processed_rows,
-            "ok_count": summary.ok_count,
-            "no_count": summary.no_count,
-            "error_count": summary.error_count,
-            "errors": summary.errors,
-        }
-        logger.info(
-            "HTTP validate_payment_report: completado",
-            extra={
-                "processed_rows": summary.processed_rows,
-                "ok_count": summary.ok_count,
-                "no_count": summary.no_count,
-                "error_count": summary.error_count,
-            },
-        )
-        return payload
-    except GraphConfigError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except httpx.HTTPStatusError as exc:
-        code = exc.response.status_code
-        if code == 404:
-            raise HTTPException(
-                status_code=404,
-                detail="El Excel configurado no existe en SharePoint (revisa GRAPH_SHAREPOINT_FILE_PATH).",
-            ) from exc
-        if code == 423:
-            raise HTTPException(
-                status_code=423,
-                detail="El Excel está bloqueado (abierto/check-out). Cierra el archivo y reintenta.",
-            ) from exc
-        raise HTTPException(status_code=400, detail=f"Validation failed: {exc}") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Validation failed: {exc}") from exc
-
-
-@router.post("/validate-payment-report/queue")
-async def validate_payment_report_queue(graph: GraphClientDep) -> dict:
-    """
-    Encola la validación y responde inmediato con job_id para evitar timeout en cliente.
-    """
-    job_id = str(uuid.uuid4())
-    async with _job_lock:
-        _validation_jobs[job_id] = {
-            "job_id": job_id,
-            "status": "queued",
-            "created_at": _utc_now_iso(),
-            "updated_at": _utc_now_iso(),
-            "started_at": None,
-            "finished_at": None,
-            "result": None,
-            "error": None,
-        }
-    create_task(_run_validation_job(job_id, graph))
-    logger.info("job %s: encolado validate_payment_report", job_id)
-    return {
-        "status": "queued",
-        "job_id": job_id,
-        "estimated_processing_seconds": 60,
-        "message": "Trabajo en cola. Consulta /graph/sharepoint/validate-payment-report/jobs/{job_id}",
-    }
-
-
-@router.get("/validate-payment-report/jobs/{job_id}")
-async def validate_payment_report_job_status(job_id: str) -> dict:
-    async with _job_lock:
-        job = _validation_jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
 
 
 @router.get("/notify-validar-extractos-email/jobs/{job_id}")

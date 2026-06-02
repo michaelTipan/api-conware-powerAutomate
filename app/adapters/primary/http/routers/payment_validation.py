@@ -546,8 +546,19 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
 @router.post("/setup/merge-control-workbook")
 async def post_setup_merge_control_workbook(graph: GraphClientDep) -> dict[str, Any]:
     """
-    Crea de forma idempotente ``control_merge_pdfs.xlsx`` en la carpeta 00 CONTROL
-    (no sobrescribe si ya existe). Temporal hasta integración Notify/Merge.
+    Crea o repara de forma idempotente los Excel de control del proceso en 00 CONTROL.
+
+  Oficiales (por banco, preparados para generate → finalize → notify → merge → apply):
+
+  * ``control_proceso_validacion_pagos_banco_bogota.xlsx``
+  * ``control_proceso_validacion_pagos_banco_bancolombia.xlsx``
+
+  Legacy (sigue usándose por Notify/Merge/amortización hasta migración):
+
+  * ``control_merge_pdfs.xlsx``
+
+  Esta fase solo prepara estructura y columnas; los endpoints operativos aún no consumen
+  los controles por banco.
     """
     try:
         return await setup_merge_control_workbook(graph)

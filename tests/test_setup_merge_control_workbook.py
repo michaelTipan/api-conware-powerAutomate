@@ -1,4 +1,4 @@
-"""Tests del setup idempotente del Excel control_merge_pdfs.xlsx."""
+"""Tests del setup idempotente del Excel control_merge_pdfs.xlsx (legacy)."""
 
 import asyncio
 import io
@@ -15,6 +15,8 @@ from app.application.use_cases import setup_merge_control_workbook as smcw
 from app.application.use_cases.setup_merge_control_workbook import (
     MERGE_CONTROL_COLUMNS,
     MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
+    PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
+    PROCESS_CONTROL_BANK_FILE_BOGOTA,
     SECURITY_WARNING,
     SHEET_NAME,
     TABLE_DISPLAY_NAME,
@@ -40,35 +42,43 @@ class MockGraphSetup:
         self.force_403_on_put = False
         self.force_403_on_list = False
 
-    def _is_file_content(self, endpoint: str) -> bool:
+    def _path_from_endpoint(self, endpoint: str) -> str | None:
         low = endpoint.lower()
-        return ":/content" in endpoint and "control_merge_pdfs" in low
-
-    def _is_file_item(self, endpoint: str) -> bool:
-        low = endpoint.lower()
-        return endpoint.endswith(":") and "control_merge_pdfs" in low and "/content" not in low
+        if ":/content" not in low and not low.endswith(":"):
+            return None
+        for p in (
+            PROCESS_CONTROL_BANK_FILE_BOGOTA,
+            PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
+            MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
+        ):
+            if p.lower() in low or p.split("/")[-1].lower() in low:
+                return p
+        return None
 
     async def get(self, endpoint: str, params=None):
         if self.force_403_on_list:
             raise _http_error(403)
-        if self._is_file_item(endpoint):
+        p = self._path_from_endpoint(endpoint)
+        if p == MERGE_CONTROL_WORKBOOK_RELATIVE_PATH and endpoint.endswith(":") and "/content" not in endpoint:
             return dict(self.get_item_meta)
         return {"value": []}
 
     async def get_bytes(self, endpoint: str, params=None):
         if self.force_403_on_list:
             raise _http_error(403)
-        if self._is_file_content(endpoint):
-            if MERGE_CONTROL_WORKBOOK_RELATIVE_PATH not in self.files:
+        p = self._path_from_endpoint(endpoint)
+        if p:
+            if p not in self.files:
                 raise _http_error(404)
-            return self.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH]
+            return self.files[p]
         raise _http_error(404)
 
     async def put_bytes(self, endpoint: str, content: bytes, content_type: str = ""):
         if self.force_403_on_put:
             raise _http_error(403)
         self.put_count += 1
-        self.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH] = content
+        p = self._path_from_endpoint(endpoint) or MERGE_CONTROL_WORKBOOK_RELATIVE_PATH
+        self.files[p] = content
         return dict(self.put_response)
 
     async def post_json(self, endpoint: str, body: dict):
@@ -98,9 +108,8 @@ def env_site(monkeypatch):
 def test_setup_merge_control_workbook_creates_file_when_missing(mock_resolve):
     g = MockGraphSetup()
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert out["created"] is True
     assert out["status"] == "success"
-    assert g.put_count == 1
+    assert out["legacy_merge_control"]["created"] is True
     assert MERGE_CONTROL_WORKBOOK_RELATIVE_PATH in g.files
 
 
@@ -109,7 +118,7 @@ def test_setup_merge_control_workbook_does_not_overwrite_existing_file(mock_reso
     asyncio.run(setup_merge_control_workbook(g))
     first_puts = g.put_count
     out2 = asyncio.run(setup_merge_control_workbook(g))
-    assert out2["created"] is False
+    assert out2["legacy_merge_control"]["created"] is False
     assert g.put_count == first_puts
 
 
@@ -205,7 +214,7 @@ def test_setup_merge_control_workbook_returns_weburl_when_graph_returns_weburl(m
     g = MockGraphSetup()
     g.put_response = {"webUrl": "https://custom.web/url.xlsx"}
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert out["file_url"] == "https://custom.web/url.xlsx"
+    assert out["legacy_merge_control"]["file_url"] == "https://custom.web/url.xlsx"
 
 
 def test_setup_merge_control_workbook_handles_existing_valid_file(mock_resolve):
@@ -213,8 +222,8 @@ def test_setup_merge_control_workbook_handles_existing_valid_file(mock_resolve):
     asyncio.run(setup_merge_control_workbook(g))
     puts_after_create = g.put_count
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert out["created"] is False
-    assert out["excel_protection_applied"] is True
+    assert out["legacy_merge_control"]["created"] is False
+    assert out["legacy_merge_control"]["excel_protection_applied"] is True
     assert g.put_count == puts_after_create
 
 
@@ -243,9 +252,10 @@ def test_setup_merge_control_workbook_repairs_missing_table(mock_resolve):
 
     g.put_count = 0
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert out["created"] is False
-    assert g.put_count == 1
-    assert any(str(w).startswith("repaired:") for w in out["warnings"])
+    assert out["legacy_merge_control"]["created"] is False
+    # En la nueva versión, el setup también crea/repara los dos controles por banco.
+    assert g.put_count >= 1
+    assert any(str(w).startswith("repaired:") for w in out["legacy_merge_control"]["warnings"])
     wb2 = openpyxl.load_workbook(io.BytesIO(g.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH]), data_only=False)
     try:
         assert TABLE_DISPLAY_NAME in wb2[SHEET_NAME].tables
@@ -270,7 +280,7 @@ def test_setup_merge_control_workbook_handles_graph_403_with_clear_error(monkeyp
 
     class G403(MockGraphSetup):
         async def get_bytes(self, endpoint: str, params=None):
-            if self._is_file_content(endpoint):
+            if ":/content" in endpoint.lower():
                 raise _http_error(403)
             raise _http_error(404)
 
@@ -284,4 +294,4 @@ def test_setup_merge_control_workbook_handles_graph_403_with_clear_error(monkeyp
     assert "detail" in body
     d = body["detail"]
     assert "user_message" in d
-    assert "No se pudo crear el archivo de control" in d["user_message"]
+    assert "No se pudo crear" in d["user_message"]

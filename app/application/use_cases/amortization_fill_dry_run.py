@@ -48,9 +48,14 @@ from app.application.use_cases.merge_composite_validado_pdfs import (
     _credit_number_from_path_scan,
     normalize_sharepoint_path,
 )
-from app.application.use_cases.merge_control_workbook_merge import (
-    MergeControlValidationError,
-    merge_control_read_amortization_snapshot,
+from app.application.use_cases.payment_validation_process_control import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
+    read_process_control_snapshot,
+    resolve_process_control_path_for_bank,
+    update_process_control_row2,
+    utc_now_iso,
+    validate_bank_code,
 )
 from app.application.services.amortization_apply_safety import compute_asiento_pdf_hash
 from app.application.use_cases.validate_payment_report import (
@@ -226,32 +231,114 @@ async def _resolve_amortization_inputs(
     site_id: str,
     drive_id: str,
     *,
+    bank_code: str | None,
     report_date_iso: str | None,
     merge_manifest_path: str | None,
     historical_file_path: str | None,
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[
+    str,
+    str | None,
+    str | None,
+    str,
+    str,
+    str,
+    str,
+    list[str],
+    str,
+    str,
+]:
     """
-    Devuelve (merge_manifest_path, report_date_iso, historical_file_path).
-    Sin parámetros en body, lee MergeManifestPath e HistoricalFilePath desde control_merge_pdfs.xlsx.
+    Resuelve insumos y banco para dry-run.
+
+    Devuelve:
+    (merge_manifest_path, report_date_iso, historical_file_path,
+     bank_code, bank_name, process_key, process_control_file_path,
+     ready_banks_detected, merge_manifest_source, historical_file_source)
     """
     manifest = (merge_manifest_path or "").strip() or None
     report_date = (report_date_iso or "").strip() or None
     hist = (historical_file_path or "").strip().strip("/") or None
 
+    bank_code_raw = (bank_code or "").strip()
+    bank_code_source = "body" if bank_code_raw else "auto_detected"
+    if bank_code_raw:
+        validate_bank_code(bank_code_raw)
+
+    # Overrides manuales: si vienen paths, NO forzamos auto-detección.
     if manifest or report_date:
-        return manifest, report_date, hist
+        # best-effort: infer bank_code si no viene
+        bc = bank_code_raw
+        if not bc:
+            low = f"{(manifest or '').lower()}/{(hist or '').lower()}"
+            bc = BANK_CODE_BANCOLOMBIA if "banco_bancolombia" in low else BANK_CODE_BOGOTA
+            bank_code_source = "body"
+        bank_name = "Banco de Bogotá" if bc == BANK_CODE_BOGOTA else "Bancolombia"
+        return (
+            manifest or "",
+            report_date,
+            hist,
+            bc,
+            bank_name,
+            "",
+            resolve_process_control_path_for_bank(bc).strip().strip("/") if bank_code_raw else "",
+            [],
+            "body",
+            "body" if hist else "control",
+        )
 
-    try:
-        snap = await merge_control_read_amortization_snapshot(graph, site_id, drive_id)
-    except MergeControlValidationError as exc:
-        raise ValueError(exc.error_code) from exc
-    except httpx.HTTPStatusError as exc:
-        code = exc.response.status_code if exc.response else 0
-        if code == 404:
-            raise ValueError("merge_control_workbook_not_found") from exc
-        raise
+    # Sin manifest/report_date: usar control por banco (auto-detect si falta bank_code)
+    ready_banks: list[str] = []
+    bc = bank_code_raw or None
+    if not bc:
+        detected, ready_banks = await _auto_detect_bank_ready_for_dry_run(graph, site_id, drive_id)
+        if not detected:
+            if not ready_banks:
+                raise ValueError("NO_READY_PROCESS")
+            raise ValueError("MULTIPLE_READY_PROCESSES|" + ",".join(ready_banks))
+        bc = detected
+    validate_bank_code(bc)
+    snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bc)
+    estado = (snap.estado_proceso or "").strip()
+    if estado not in ("CONSOLIDADO", "MERGE_PARCIAL") or not snap.is_active:
+        raise ValueError("control_not_ready_for_dry_run")
+    if not (snap.merge_manifest_path or "").strip():
+        raise ValueError("missing_merge_manifest_path")
+    if not (snap.historical_file_path or "").strip():
+        raise ValueError("missing_historical_file_path")
 
-    return snap.merge_manifest_path, None, hist or snap.historical_file_path
+    bank_name = "Banco de Bogotá" if bc == BANK_CODE_BOGOTA else "Bancolombia"
+    control_path = resolve_process_control_path_for_bank(bc).strip().strip("/")
+    process_key = (snap.process_key or "").strip()
+    return (
+        (snap.merge_manifest_path or "").strip(),
+        None,
+        hist or (snap.historical_file_path or "").strip(),
+        bc,
+        bank_name,
+        process_key,
+        control_path,
+        ready_banks,
+        "control",
+        "body" if hist else "control",
+    )
+
+
+async def _auto_detect_bank_ready_for_dry_run(
+    graph: GraphApiPort, site_id: str, drive_id: str
+) -> tuple[str | None, list[str]]:
+    ready: list[str] = []
+    for bc in (BANK_CODE_BOGOTA, BANK_CODE_BANCOLOMBIA):
+        snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bc)
+        if (
+            (snap.estado_proceso or "").strip() in ("CONSOLIDADO", "MERGE_PARCIAL")
+            and snap.is_active
+            and (snap.merge_manifest_path or "").strip()
+            and (snap.historical_file_path or "").strip()
+        ):
+            ready.append(bc)
+    if len(ready) == 1:
+        return ready[0], ready
+    return None, ready
 
 
 async def _resolve_manifest_rel_path(
@@ -1023,101 +1110,177 @@ async def run_amortization_fill_dry_run(
     report_date_iso: str | None = None,
     merge_manifest_path: str | None = None,
     historical_file_path: str | None = None,
+    bank_code: str | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Simula el llenado de tablas de amortización. No escribe ni mueve archivos en SharePoint.
     """
     site_id, drive_id = await _drive_context(graph)
-    resolved_manifest, resolved_date, resolved_hist = await _resolve_amortization_inputs(
+    (
+        resolved_manifest,
+        resolved_date,
+        resolved_hist,
+        resolved_bank_code,
+        resolved_bank_name,
+        resolved_process_key,
+        resolved_control_path,
+        ready_banks_detected,
+        merge_manifest_source,
+        historical_file_source,
+    ) = await _resolve_amortization_inputs(
         graph,
         site_id,
         drive_id,
+        bank_code=bank_code,
         report_date_iso=report_date_iso,
         merge_manifest_path=merge_manifest_path,
         historical_file_path=historical_file_path,
     )
-    manifest_rel = await _resolve_manifest_rel_path(
-        graph,
-        site_id,
-        drive_id,
-        report_date_iso=resolved_date,
-        merge_manifest_path=resolved_manifest,
-    )
+    try:
+        await update_process_control_row2(
+            graph,
+            site_id,
+            drive_id,
+            bank_code=resolved_bank_code,
+            updates={"LastStepStatus": "RUNNING", "LastUpdatedAtProceso": utc_now_iso()},
+        )
+        process_control_updated = True
+    except Exception:
+        process_control_updated = False
 
     try:
-        manifest_raw = await _graph_download_by_path(graph, site_id, drive_id, manifest_rel)
-        manifest = json.loads(manifest_raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid_merge_manifest_json|{manifest_rel}") from exc
-    except httpx.HTTPStatusError as exc:
-        code = exc.response.status_code if exc.response else 0
-        if code == 404:
-            raise ValueError(f"merge_manifest_not_found|{manifest_rel}") from exc
-        raise
+        manifest_rel = await _resolve_manifest_rel_path(
+            graph,
+            site_id,
+            drive_id,
+            report_date_iso=resolved_date,
+            merge_manifest_path=resolved_manifest,
+        )
 
-    effective_report_date = (
-        str(resolved_date or report_date_iso or "").strip()
-        or str(manifest.get("report_date_iso") or "").strip()
-        or None
-    )
-
-    outputs = manifest.get("outputs") or []
-    if not isinstance(outputs, list):
-        outputs = []
-
-    hist_index: dict[tuple[str, str], dict[str, Any]] = {}
-    hist_path = (
-        resolved_hist
-        or historical_file_path
-        or manifest.get("historico_excel_path")
-        or ""
-    ).strip().strip("/")
-    if hist_path:
         try:
-            hist_bytes = await _graph_download_by_path(graph, site_id, drive_id, hist_path)
-            hist_index = _load_historical_index(hist_bytes)
+            manifest_raw = await _graph_download_by_path(graph, site_id, drive_id, manifest_rel)
+            manifest = json.loads(manifest_raw.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid_merge_manifest_json|{manifest_rel}") from exc
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code if exc.response else 0
+            if code == 404:
+                raise ValueError(f"merge_manifest_not_found|{manifest_rel}") from exc
+            raise
+
+        effective_report_date = (
+            str(resolved_date or report_date_iso or "").strip()
+            or str(manifest.get("report_date_iso") or "").strip()
+            or None
+        )
+
+        outputs = manifest.get("outputs") or []
+        if not isinstance(outputs, list):
+            outputs = []
+
+        hist_index: dict[tuple[str, str], dict[str, Any]] = {}
+        hist_path = (
+            resolved_hist
+            or historical_file_path
+            or manifest.get("historico_excel_path")
+            or ""
+        ).strip().strip("/")
+        if hist_path:
+            try:
+                hist_bytes = await _graph_download_by_path(graph, site_id, drive_id, hist_path)
+                hist_index = _load_historical_index(hist_bytes)
+            except Exception as exc:
+                logger.warning(
+                    "amortization dry_run: histórico no legible %s: %s", hist_path, exc
+                )
+
+        ibr_bytes: bytes | None = None
+        ibr_path = ibr_workbook_relative_path()
+        try:
+            ibr_bytes = await _graph_download_by_path(graph, site_id, drive_id, ibr_path)
         except Exception as exc:
-            logger.warning("amortization dry_run: histórico no legible %s: %s", hist_path, exc)
+            logger.warning("amortization dry_run: IBR no disponible %s: %s", ibr_path, exc)
 
-    ibr_bytes: bytes | None = None
-    ibr_path = ibr_workbook_relative_path()
-    try:
-        ibr_bytes = await _graph_download_by_path(graph, site_id, drive_id, ibr_path)
-    except Exception as exc:
-        logger.warning("amortization dry_run: IBR no disponible %s: %s", ibr_path, exc)
+        used_application_rows_by_table: dict[str, set[int]] = {}
+        planned_ibr_keys: set[str] = set()
+        items: list[dict[str, Any]] = []
+        for out in outputs:
+            if not isinstance(out, dict):
+                continue
+            items.extend(
+                await _plan_events_for_manifest_output(
+                    graph,
+                    site_id,
+                    drive_id,
+                    out,
+                    hist_index,
+                    ibr_bytes,
+                    used_application_rows_by_table,
+                    planned_ibr_keys,
+                    payment_date_iso=effective_report_date,
+                )
+            )
 
-    used_application_rows_by_table: dict[str, set[int]] = {}
-    planned_ibr_keys: set[str] = set()
-    items: list[dict[str, Any]] = []
-    for out in outputs:
-        if not isinstance(out, dict):
-            continue
-        items.extend(
-            await _plan_events_for_manifest_output(
+        result_payload: dict[str, Any] = {
+            "status": "ok",
+            "mode": "dry_run",
+            "report_date_iso": effective_report_date,
+            "manifest_path": manifest_rel,
+            "merge_manifest_path": manifest_rel,
+            "historical_file_path": hist_path or None,
+            "resolved_from_merge_control": False,
+            "ibr_workbook_path": ibr_path,
+            "manifest_outputs_count": len(outputs),
+            "items": items,
+            "summary": _summarize(items),
+            "bank_code": resolved_bank_code,
+            "bank_name": resolved_bank_name,
+            "bank_code_source": "body" if (bank_code or "").strip() else "auto_detected",
+            "ready_banks_detected": ready_banks_detected,
+            "process_key": resolved_process_key,
+            "process_control_file_path": resolved_control_path,
+            "process_control_updated": process_control_updated,
+            "process_control_estado": "",
+            "merge_manifest_source": merge_manifest_source,
+            "historical_file_source": historical_file_source,
+            "dry_run_idempotent": True,
+            "dry_run_wrote_changes": False,
+        }
+
+        try:
+            await update_process_control_row2(
                 graph,
                 site_id,
                 drive_id,
-                out,
-                hist_index,
-                ibr_bytes,
-                used_application_rows_by_table,
-                planned_ibr_keys,
-                payment_date_iso=effective_report_date,
+                bank_code=resolved_bank_code,
+                updates={
+                    "LastCompletedStep": "DRY_RUN",
+                    "LastStepStatus": "COMPLETED",
+                    "LastStepErrorCode": "",
+                    "LastUpdatedAtProceso": utc_now_iso(),
+                },
             )
-        )
+            result_payload["process_control_updated"] = True
+        except Exception:
+            pass
 
-    return {
-        "status": "ok",
-        "mode": "dry_run",
-        "report_date_iso": effective_report_date,
-        "manifest_path": manifest_rel,
-        "merge_manifest_path": manifest_rel,
-        "historical_file_path": hist_path or None,
-        "resolved_from_merge_control": not (
-            (merge_manifest_path or "").strip() or (report_date_iso or "").strip()
-        ),
-        "ibr_workbook_path": ibr_path,
-        "manifest_outputs_count": len(outputs),
-        "items": items,
-        "summary": _summarize(items),
-    }
+        return result_payload
+    except Exception:
+        try:
+            await update_process_control_row2(
+                graph,
+                site_id,
+                drive_id,
+                bank_code=resolved_bank_code,
+                updates={
+                    "LastStepStatus": "FAILED",
+                    "LastStepErrorCode": "ERROR_DRY_RUN",
+                    "LastErrorUserMessage": "Falló el dry-run de amortización (no se escribieron cambios).",
+                    "LastErrorNextAction": "Revise el detalle del job y reintente el dry-run.",
+                    "LastUpdatedAtProceso": utc_now_iso(),
+                },
+            )
+        except Exception:
+            pass
+        raise

@@ -98,10 +98,12 @@ def test_amortization_dry_run_job_runs_use_case_with_params(client, monkeypatch)
         report_date_iso: str | None,
         merge_manifest_path: str | None,
         historical_file_path: str | None,
+        bank_code: str | None,
     ) -> None:
         captured["report_date_iso"] = report_date_iso
         captured["merge_manifest_path"] = merge_manifest_path
         captured["historical_file_path"] = historical_file_path
+        captured["bank_code"] = bank_code
         await jm.set_job(
             job_id,
             {
@@ -135,6 +137,7 @@ def test_amortization_dry_run_job_runs_use_case_with_params(client, monkeypatch)
     assert captured["report_date_iso"] == "2026-05-15"
     assert captured["merge_manifest_path"] is None
     assert captured["historical_file_path"] == "HIST/cartera.xlsx"
+    assert captured["bank_code"] is None
 
     res2 = client.get(f"/graph/sharepoint/payment-validation/jobs/{job_id}")
     assert res2.status_code == 200

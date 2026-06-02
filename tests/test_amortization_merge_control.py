@@ -1,4 +1,4 @@
-"""Amortización sin body: lee MergeManifestPath desde control_merge_pdfs.xlsx."""
+"""Amortización sin body: lee MergeManifestPath desde el control oficial por banco."""
 
 import asyncio
 import json
@@ -11,23 +11,6 @@ import pytest
 from openpyxl import Workbook
 
 from app.application.use_cases.amortization_fill_dry_run import run_amortization_fill_dry_run
-from app.application.use_cases.setup_merge_control_workbook import MERGE_CONTROL_COLUMNS, SHEET_NAME
-
-
-def _control_bytes(*, estado: str, manifest: str, hist: str) -> bytes:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = SHEET_NAME
-    ws.append(list(MERGE_CONTROL_COLUMNS))
-    row = {c: "" for c in MERGE_CONTROL_COLUMNS}
-    row["EstadoProceso"] = estado
-    row["IsActive"] = False
-    row["HistoricalFilePath"] = hist
-    row["MergeManifestPath"] = manifest
-    ws.append([row[c] for c in MERGE_CONTROL_COLUMNS])
-    bio = BytesIO()
-    wb.save(bio)
-    return bio.getvalue()
 
 
 def _manifest_bytes(fecha: date) -> bytes:
@@ -64,17 +47,11 @@ class _Graph:
 def test_amortization_dry_run_resolves_manifest_from_merge_control(monkeypatch):
     monkeypatch.setenv("GRAPH_SHAREPOINT_SITE_SEARCH", "site")
     monkeypatch.setenv("GRAPH_SHAREPOINT_DRIVE_NAME", "drive")
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "LOGS")
     fecha = date(2026, 5, 20)
-    manifest_rel = f"LOGS/merge_manifest_{fecha.isoformat()}.json"
+    manifest_rel = f"LOGS/merge_manifest_banco_bogota_{fecha.isoformat()}.json"
     g = _Graph(
         {
-            "CTL/control.xlsx": _control_bytes(
-                estado="CONSOLIDADO",
-                manifest=manifest_rel,
-                hist="HIST/h.xlsx",
-            ),
             manifest_rel: _manifest_bytes(fecha),
         }
     )
@@ -86,24 +63,44 @@ def test_amortization_dry_run_resolves_manifest_from_merge_control(monkeypatch):
             new_callable=AsyncMock,
             return_value=ctx,
         ):
-            return await run_amortization_fill_dry_run(g)
+            with patch(
+                "app.application.use_cases.amortization_fill_dry_run.read_process_control_snapshot",
+                new_callable=AsyncMock,
+                    side_effect=lambda _g, _s, _d, *, bank_code: type(
+                        "Snap",
+                        (),
+                        {
+                            "estado_proceso": "CONSOLIDADO"
+                            if bank_code == "banco_bogota"
+                            else "FINALIZADO",
+                            "is_active": True,
+                            "merge_manifest_path": manifest_rel
+                            if bank_code == "banco_bogota"
+                            else "",
+                            "historical_file_path": "HIST/h.xlsx"
+                            if bank_code == "banco_bogota"
+                            else "",
+                            "process_key": f"payment-validation|{bank_code}|2026-05-20",
+                        },
+                    )(),
+            ):
+                with patch(
+                    "app.application.use_cases.amortization_fill_dry_run.update_process_control_row2",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ):
+                    return await run_amortization_fill_dry_run(g)
 
     out = asyncio.run(run())
-    assert out["resolved_from_merge_control"] is True
+    assert out["merge_manifest_source"] == "control"
     assert out["manifest_path"] == manifest_rel
 
 
 def test_amortization_fails_when_control_not_ready(monkeypatch):
     monkeypatch.setenv("GRAPH_SHAREPOINT_SITE_SEARCH", "site")
     monkeypatch.setenv("GRAPH_SHAREPOINT_DRIVE_NAME", "drive")
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     g = _Graph(
         {
-            "CTL/control.xlsx": _control_bytes(
-                estado="PENDIENTE_ASIENTOS",
-                manifest="",
-                hist="HIST/h.xlsx",
-            ),
         }
     )
     ctx = {"site_id": "s", "drive_id": "d"}
@@ -114,7 +111,22 @@ def test_amortization_fails_when_control_not_ready(monkeypatch):
             new_callable=AsyncMock,
             return_value=ctx,
         ):
-            with pytest.raises(ValueError, match="merge_control_amortization_not_ready"):
-                await run_amortization_fill_dry_run(g)
+            with patch(
+                "app.application.use_cases.amortization_fill_dry_run.read_process_control_snapshot",
+                new_callable=AsyncMock,
+                return_value=type(
+                    "Snap",
+                    (),
+                    {
+                        "estado_proceso": "PENDIENTE_ASIENTOS",
+                        "is_active": True,
+                        "merge_manifest_path": "",
+                        "historical_file_path": "HIST/h.xlsx",
+                        "process_key": "payment-validation|banco_bogota|2026-05-20",
+                    },
+                )(),
+            ):
+                with pytest.raises(ValueError, match="NO_READY_PROCESS"):
+                    await run_amortization_fill_dry_run(g)
 
     asyncio.run(run())

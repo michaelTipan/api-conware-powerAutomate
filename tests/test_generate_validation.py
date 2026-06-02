@@ -20,6 +20,11 @@ from app.application.services.review_schema import (
     ReviewSheets,
     ValidarPago,
 )
+from app.application.use_cases.setup_merge_control_workbook import (
+    PROCESS_CONTROL_BANK_FILE_BOGOTA,
+    PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
+    _build_process_control_workbook_bytes,
+)
 
 try:
     from app.application.use_cases.payment_validation_generate import (
@@ -88,6 +93,11 @@ class MockGraphClient:
         self.requested_endpoints.append(endpoint)
         file_path = endpoint.split("/root:/", 1)[1].rsplit(":/content", 1)[0]
         file_path = unquote(file_path)
+        if file_path not in self.downloaded_files:
+            if file_path == PROCESS_CONTROL_BANK_FILE_BOGOTA:
+                return _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
+            if file_path == PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA:
+                return _build_process_control_workbook_bytes("banco_bancolombia", "Bancolombia")
         return self.downloaded_files.get(file_path, b"")
 
     async def put_bytes(self, endpoint, content, content_type):
@@ -219,6 +229,7 @@ def make_pdf_extractor_mock(client: "MockGraphClient"):
 
 def set_env_vars():
     os.environ["GRAPH_BANK_PAYMENTS_FILE_PATH"] = "banco.xlsx"
+    os.environ["GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA"] = "banco.xlsx"
     os.environ["GRAPH_CLIENTS_BASE_PATH"] = "clientes"
     os.environ["GRAPH_SHAREPOINT_SITE_SEARCH"] = "SITIO"
     os.environ["GRAPH_SHAREPOINT_DRIVE_NAME"] = "DRIVE"
@@ -227,6 +238,12 @@ def set_env_vars():
 
 
 def setup_client_structure(client, include_web_urls=False):
+    # Control oficial por banco (Phase 1): Generate ahora lo lee siempre.
+    # Para los tests, basta con el control de Bogotá porque bank_code default = banco_bogota.
+    client.downloaded_files[PROCESS_CONTROL_BANK_FILE_BOGOTA] = _build_process_control_workbook_bytes(
+        "banco_bogota", "Banco de Bogotá"
+    )
+
     client.folder_children["clientes"] = [
         make_item("GEOEXCON", is_folder=True),
         make_item("EQUINORTE", is_folder=True),
@@ -408,7 +425,7 @@ def test_generate_ignores_temp_files():
         assert result["process_id"] is not None
         assert any(endpoint.endswith("/banco.xlsx:/content") for endpoint in client.requested_endpoints)
         assert any(
-            endpoint.endswith("/revision/val_2026-05-10.xlsx:/content")
+            endpoint.endswith("/revision/val_banco_bogota_2026-05-10.xlsx:/content")
             for endpoint, _ in client.put_calls
         )
 
@@ -2908,7 +2925,7 @@ def test_generate_result_includes_validation_file_url_when_graph_returns_weburl(
     if generate_payment_validation is None:
         pytest.fail("Not implemented")
 
-    expected_url = "https://comwareec.sharepoint.com/sites/demo/val_2026-05-10.xlsx"
+    expected_url = "https://comwareec.sharepoint.com/sites/demo/val_banco_bogota_2026-05-10.xlsx"
 
     async def run_test():
         set_env_vars()
@@ -3293,8 +3310,8 @@ def test_generate_existing_result_fields_remain_backward_compatible():
         date(2025, 12, 23),
     )
     assert result["process_id"]
-    assert result["validation_file"] == "val_2025-12-23.xlsx"
-    assert result["validation_file_path"] == "revision/val_2025-12-23.xlsx"
+    assert result["validation_file"] == "val_banco_bogota_2025-12-23.xlsx"
+    assert result["validation_file_path"] == "revision/val_banco_bogota_2025-12-23.xlsx"
     assert "pagos_banco" in result["summary"]
     assert "errores" in result["summary"]
     assert "conditional_formatting" in result["summary"]

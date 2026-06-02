@@ -42,6 +42,7 @@ class GenerateRequest(BaseModel):
     process_date: str | None = None
     source_file_path: str | None = None
     force: bool = False
+    bank_code: str | None = None
 
 class FinalizeRequest(BaseModel):
     validation_file: str | None = None
@@ -65,7 +66,9 @@ class AmortizationDryRunRequest(BaseModel):
 
 # ─── Background Tasks ─────────────────────────────────────────────────────────
 
-async def _run_generate_job(job_id: str, graph: GraphClientDep, process_date: date) -> None:
+async def _run_generate_job(
+    job_id: str, graph: GraphClientDep, process_date: date, bank_code: str | None
+) -> None:
     jm = JobManager()
     await jm.set_job(job_id, {
         "status": "running",
@@ -75,7 +78,7 @@ async def _run_generate_job(job_id: str, graph: GraphClientDep, process_date: da
     logger.info("job %s: generate_payment_validation iniciado", job_id)
     started = perf_counter()
     try:
-        result = await generate_payment_validation(graph, process_date)
+        result = await generate_payment_validation(graph, process_date, bank_code=bank_code or "banco_bogota", job_id=job_id)
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         await jm.set_job(job_id, {
             "status": "completed",
@@ -350,7 +353,7 @@ async def queue_generate(
         "updated_at": _utc_now_iso(),
     })
 
-    background_tasks.add_task(_run_generate_job, job_id, graph, process_date)
+    background_tasks.add_task(_run_generate_job, job_id, graph, process_date, body.bank_code)
     logger.info("job %s: generate encolado", job_id)
 
     return {"job_id": job_id, "status": "queued"}

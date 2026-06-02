@@ -2214,22 +2214,109 @@ async def _load_credit_candidates(
     return candidates, credit_issues
 
 
-async def generate_payment_validation(client: GraphApiPort, process_date: date) -> dict[str, Any]:
+async def generate_payment_validation(
+    client: GraphApiPort,
+    process_date: date,
+    *,
+    bank_code: str = "banco_bogota",
+    job_id: str | None = None,
+) -> dict[str, Any]:
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
     drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
     review_path = os.getenv("GRAPH_PAYMENT_VALIDATION_REVIEW_PATH", "").strip()
-    bank_path = os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
     clients_path = os.getenv("GRAPH_CLIENTS_BASE_PATH", "").strip()
     file_prefix = os.getenv("GRAPH_VALIDATION_FILE_PREFIX", "").strip()
+
+    from app.application.use_cases.payment_validation_process_control import (
+        normalize_bank_code,
+        read_process_control_snapshot,
+        resolve_process_control_path_for_bank,
+        update_process_control_row2,
+        utc_now_iso,
+        validate_bank_code,
+    )
+    from app.application.use_cases.payment_validation_process_control import (
+        BANK_CODE_BANCOLOMBIA,
+        BANK_CODE_BOGOTA,
+    )
+    from app.application.use_cases.setup_merge_control_workbook import (
+        build_payment_validation_process_key,
+    )
+
+    bank_code = normalize_bank_code(bank_code)
+    validate_bank_code(bank_code)
+
+    # Selección del reporte del banco por banco.
+    bank_path = ""
+    if bank_code == BANK_CODE_BOGOTA:
+        bank_path = os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
+    elif bank_code == BANK_CODE_BANCOLOMBIA:
+        bank_path = os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA", "").strip()
+        if not bank_path:
+            default_bog = os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
+            if default_bog.endswith("/BANCO_BOGOTA.xlsx"):
+                bank_path = default_bog.rsplit("/", 1)[0] + "/BANCO_BANCOLOMBIA.xlsx"
+            elif default_bog.endswith("BANCO_BOGOTA.xlsx"):
+                bank_path = default_bog.replace("BANCO_BOGOTA.xlsx", "BANCO_BANCOLOMBIA.xlsx")
 
     if not all([site_search, review_path, bank_path, clients_path, file_prefix]):
         raise ValueError("missing_sharepoint_folder")
 
     review_info = await resolve_sharepoint_path(client, site_search, drive_name, review_path)
+    site_id = review_info["site_id"]
+    drive_id = review_info["drive_id"]
+
+    # Idempotencia inicial: si control indica ya generado para el mismo ProcessKey, reusar.
+    process_key = build_payment_validation_process_key(bank_code, process_date.isoformat())
+    already_generated = False
+    file_action = "created"
+    control_updated = False
+    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
+
+    snap = await read_process_control_snapshot(client, site_id, drive_id, bank_code=bank_code)
+    terminal = {
+        "VACIO",
+        "CONSOLIDADO",
+        "MERGE_PARCIAL",
+        "AMORTIZACION_APLICADA",
+        "ERROR_GENERATE",
+        "ERROR_FINALIZE",
+        "ERROR_NOTIFY",
+        "ERROR_MERGE",
+        "ERROR_APPLY",
+    }
+    estado = (snap.estado_proceso or "").strip()
+    if snap.process_key and snap.process_key == process_key and snap.validation_file_path:
+        already_generated = True
+        file_action = "reused"
+        return {
+            "process_id": "",
+            "validation_file": snap.validation_file_path.rsplit("/", 1)[-1],
+            "validation_file_path": snap.validation_file_path,
+            "validation_file_url": None,
+            "summary": {"pagos_banco": 0, "errores": 0, "conditional_formatting": "n/a"},
+            "bank_code": bank_code,
+            "bank_name": bank_name,
+            "process_key": process_key,
+            "process_control_file_path": process_control_file_path,
+            "process_control_updated": False,
+            "process_control_estado": estado or "REVISION_CREADA",
+            "already_generated": True,
+            "file_action": file_action,
+            "generate_idempotency_key": process_key,
+        }
+
+    if snap.is_active and (estado not in terminal) and snap.process_key and snap.process_key != process_key:
+        raise ValueError(f"active_process_exists|{snap.process_key}|{estado}")
+
+    # Mantener regla previa: carpeta de revisión debe estar vacía al crear.
     review_children = await client.get(
-        f"/sites/{review_info['site_id']}/drives/{review_info['drive_id']}/root:/{review_info['path_encoded']}:/children"
+        f"/sites/{site_id}/drives/{drive_id}/root:/{review_info['path_encoded']}:/children"
     )
-    valid_children = [item for item in review_children.get("value", []) if not item.get("name", "").startswith("~$")]
+    valid_children = [
+        item for item in review_children.get("value", []) if not item.get("name", "").startswith("~$")
+    ]
     if valid_children:
         raise ValueError("review_folder_not_empty")
 
@@ -2417,7 +2504,7 @@ async def generate_payment_validation(client: GraphApiPort, process_date: date) 
     output = io.BytesIO()
     workbook.save(output)
 
-    file_name = f"{file_prefix}_{process_date}.xlsx"
+    file_name = f"{file_prefix}_{bank_code}_{process_date}.xlsx"
     upload_path = f"{review_path}/{file_name}"
     upload_resp = await client.put_bytes(
         _build_content_endpoint(review_info["site_id"], review_info["drive_id"], upload_path),
@@ -2427,6 +2514,29 @@ async def generate_payment_validation(client: GraphApiPort, process_date: date) 
     validation_file_url: str | None = (
         upload_resp.get("webUrl") if isinstance(upload_resp, dict) else None
     )
+
+    # Actualizar control por banco al éxito.
+    now_iso = utc_now_iso()
+    updates: dict[str, Any] = {
+        "ProcessKey": process_key,
+        "ProcessDate": process_date.isoformat(),
+        "BankCode": bank_code,
+        "BankName": bank_name,
+        "ProcessId": process_id,
+        "ValidationFilePath": upload_path.strip().strip("/"),
+        "EstadoProceso": "REVISION_CREADA",
+        "IsActive": True,
+        "GenerateIdempotencyKey": process_key,
+        "GenerateJobId": job_id or "",
+        "LastCompletedStep": "GENERATE",
+        "LastStepStatus": "COMPLETED",
+        "LastStepErrorCode": "",
+        "LastUpdatedAtProceso": now_iso,
+    }
+    if not (str(snap.process_key or "").strip()) or snap.process_key != process_key:
+        updates["CreatedAtProceso"] = now_iso
+    await update_process_control_row2(client, site_id, drive_id, bank_code=bank_code, updates=updates)
+    control_updated = True
 
     return {
         "process_id": process_id,
@@ -2438,4 +2548,13 @@ async def generate_payment_validation(client: GraphApiPort, process_date: date) 
             "errores": len(error_records),
             "conditional_formatting": formatting_strategy,
         },
+        "bank_code": bank_code,
+        "bank_name": bank_name,
+        "process_key": process_key,
+        "process_control_file_path": process_control_file_path,
+        "process_control_updated": control_updated,
+        "process_control_estado": "REVISION_CREADA",
+        "already_generated": already_generated,
+        "file_action": file_action,
+        "generate_idempotency_key": process_key,
     }

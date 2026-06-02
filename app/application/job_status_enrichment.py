@@ -35,6 +35,14 @@ _GENERATE_MESSAGES: dict[str, tuple[str, str]] = {
         "Mueva o archive los archivos validacion_pagos_*.xlsx viejos en 01 REVISION y vuelva a ejecutar la generación. "
         "Deje solo el reporte del banco actualizado en su carpeta.",
     ),
+    "invalid_bank_code": (
+        "El parámetro bank_code no es válido para la generación.",
+        "Use banco_bogota o banco_bancolombia (o no envíe bank_code para usar Banco de Bogotá por compatibilidad).",
+    ),
+    "active_process_exists": (
+        "Ya existe un proceso activo en el control del banco y no se puede iniciar otro Generate.",
+        "Finalice o cancele el proceso actual y vuelva a intentar.",
+    ),
     "missing_sharepoint_folder": (
         "El sistema no tiene configuradas las rutas de SharePoint para este proceso (sitio, banco o clientes).",
         "Contacte a soporte técnico. No es un error de la secretaría ni del Excel del banco.",

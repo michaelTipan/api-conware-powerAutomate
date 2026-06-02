@@ -78,7 +78,7 @@ Endpoints:
 - `PUT /graph/sharepoint/file-from-env` — sube/reemplaza el archivo en `GRAPH_SHAREPOINT_FILE_PATH` (body JSON `content_base64`).
 - `POST /graph/sharepoint/parse-excel-from-env?column_letter=C&run_id=` — descarga el Excel configurado y aplica el parser como `POST /parse-excel`.
 
-Al arrancar en local, `python-dotenv` carga `.env` automaticamente.
+Al arrancar en local, `python-dotenv` carga `.env` automaticamente (archivo local, no versionado). Matriz de variables para Render: `docs/render-env-variables.md`.
 
 ## Validacion de pagos (flujo productivo en Render)
 - Documentacion del flujo: `docs/payment-validation-production-flow.md`

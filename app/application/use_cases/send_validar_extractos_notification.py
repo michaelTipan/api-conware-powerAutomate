@@ -159,17 +159,14 @@ def _parse_correos_workbook(wb: Any) -> tuple[str, list[str]]:
     raise ValueError(msg)
 
 
-_CORREOS_XLSX_DEFAULT = (
-    "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/00 CONTROL/CORREOS.xlsx"
-)
-
-
 async def _load_sender_and_recipients_from_correos_xlsx(
     graph: GraphApiPort,
     site_id: str,
     drive_id: str,
 ) -> tuple[str, list[str]]:
-    rel = os.getenv("GRAPH_VALIDAR_NOTIFY_CORREOS_XLSX_PATH", "").strip().strip("/") or _CORREOS_XLSX_DEFAULT
+    from app.application.config.payment_validation_settings import resolve_correos_xlsx_path
+
+    rel = resolve_correos_xlsx_path()
     data = await _graph_download_by_path(graph, site_id, drive_id, rel)
     wb = load_workbook(filename=BytesIO(data), data_only=True)
     try:
@@ -1005,9 +1002,16 @@ async def send_validar_extractos_notification_email(
     if not estado_filtro:
         estado_filtro = "VALIDAR"
 
-    from app.application.use_cases.payment_validation_process_control import (
+    from app.application.config.payment_validation_settings import (
         BANK_CODE_BANCOLOMBIA,
         BANK_CODE_BOGOTA,
+        resolve_bank_display_name,
+        resolve_bank_report_path,
+        resolve_email_pdf_name_template,
+        resolve_email_subject,
+        resolve_email_export_folder_path,
+    )
+    from app.application.use_cases.payment_validation_process_control import (
         read_process_control_snapshot,
         resolve_process_control_path_for_bank,
         update_process_control_row2,
@@ -1103,7 +1107,7 @@ async def send_validar_extractos_notification_email(
     if not bank_code:
         raise ValueError("invalid_bank_code")
 
-    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    bank_name = resolve_bank_display_name(bank_code)
     banco = bank_name.upper()
 
     sender, to_recipients = await _load_sender_and_recipients_from_correos_xlsx(graph, site_id, drive_id)
@@ -1125,15 +1129,7 @@ async def send_validar_extractos_notification_email(
 
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
     drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
-    report_path = ""
-    if bank_code == BANK_CODE_BOGOTA:
-        report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
-    else:
-        report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH_BANCOLOMBIA", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA", "").strip()
-        if not report_path:
-            bog = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
-            if bog.endswith("BANCO_BOGOTA.xlsx"):
-                report_path = bog.replace("BANCO_BOGOTA.xlsx", "BANCO_BANCOLOMBIA.xlsx")
+    report_path = resolve_bank_report_path(bank_code)
     if not report_path:
         raise ValueError("missing_sharepoint_folder")
     report_info = await resolve_sharepoint_path(graph, site_search, drive_name, report_path)
@@ -1143,8 +1139,7 @@ async def send_validar_extractos_notification_email(
     report_d, bank_headers, bank_rows = _parse_bank_report_table_and_min_date(report_bytes)
     fecha_str = report_d.strftime("%d/%m/%Y")
 
-    subject_default = "ABONOS BANCO BOGOTA" if bank_code == BANK_CODE_BOGOTA else "ABONOS BANCOLOMBIA"
-    subject = os.getenv("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT", "").strip() or subject_default
+    subject = os.getenv("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT", "").strip() or resolve_email_subject(bank_code)
     _body_intro_default = (
         "Buenos días. El día {fecha} ingresaron a la cuenta {banco} los siguientes valores, "
         "que corresponden a:"
@@ -1284,22 +1279,11 @@ async def send_validar_extractos_notification_email(
             )
             pdf_bytes = cover_pdf
 
-            _pdf_folder_default = (
-                "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/05 EMAIL"
+            pdf_folder = resolve_email_export_folder_path()
+            pdf_name_tpl = (
+                os.getenv("GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE", "").strip()
+                or resolve_email_pdf_name_template(bank_code)
             )
-            pdf_folder = (
-                os.getenv("GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_FOLDER_PATH", "").strip().strip("/")
-                or _pdf_folder_default
-            )
-            pdf_name_tpl_default = (
-                "ABONOS BANCO BOGOTA {fecha}.pdf"
-                if bank_code == BANK_CODE_BOGOTA
-                else "ABONOS BANCOLOMBIA {fecha}.pdf"
-            )
-            pdf_name_tpl = os.getenv(
-                "GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE",
-                pdf_name_tpl_default,
-            ).strip()
             pdf_name = pdf_name_tpl.format(
                 fecha=report_d.isoformat(),
                 fecha_ddmmyyyy=fecha_str,

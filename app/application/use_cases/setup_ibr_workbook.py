@@ -18,12 +18,19 @@ from app.application.services.workbook_setup_helpers import (
     sheet_headers_match,
 )
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
+from app.application.config.payment_validation_settings import (
+    DEFAULT_IBR_FILENAME,
+    resolve_ibr_workbook_path,
+    resolve_payment_validation_folder,
+    PaymentValidationFolderName,
+)
 from app.application.use_cases.setup_merge_control_workbook import (
-    MERGE_CONTROL_FOLDER_RELATIVE_PATH,
     MergeControlSetupError,
     ensure_merge_control_folder_path,
 )
-from app.application.use_cases.setup_payment_followup_workbooks import followup_workbooks_folder_relative_path
+from app.application.use_cases.setup_payment_followup_workbooks import (
+    followup_workbooks_folder_relative_path,
+)
 from app.domain.exceptions import GraphConfigError
 from app.domain.ports.graph import GraphApiPort
 
@@ -31,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 IBR_SHEET_NAME = "IBR"
 IBR_COLUMNS: tuple[str, ...] = ("Inicio", "Fin", "Valor")
-FILENAME_IBR = "IBR_DIARIO.xlsx"
+FILENAME_IBR = DEFAULT_IBR_FILENAME
 
 
 class IbrWorkbookSetupError(Exception):
@@ -51,11 +58,7 @@ class IbrWorkbookSetupError(Exception):
 
 
 def ibr_workbook_relative_path() -> str:
-    p = os.getenv("GRAPH_IBR_DIARIO_PATH", "").strip()
-    if p:
-        return p
-    folder = followup_workbooks_folder_relative_path().strip().rstrip("/")
-    return f"{folder}/{FILENAME_IBR}"
+    return resolve_ibr_workbook_path()
 
 
 def _content_endpoint(site_id: str, drive_id: str, file_path: str) -> str:

@@ -14,6 +14,9 @@
 ## 3) Flujo validacion de pagos (COMWARE)
 Ver `docs/payment-validation-production-flow.md`. En produccion use Generate/Finalize/Notify/Merge/Amortization; no use `validate-payment-report`.
 
+## 4) Variables de entorno
+Configure en el dashboard de Render según `docs/render-env-variables.md`. No commitear `.env` ni `.env.local` (locales, ignorados por git).
+
 ## 4) Contrato desde Power Automate (parse-excel)
 - `file_name` (string)
 - `excel_base64` (string)

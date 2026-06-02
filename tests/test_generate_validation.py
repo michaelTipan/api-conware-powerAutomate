@@ -20,9 +20,12 @@ from app.application.services.review_schema import (
     ReviewSheets,
     ValidarPago,
 )
+from app.application.config.payment_validation_settings import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
+    resolve_bank_control_file_path,
+)
 from app.application.use_cases.setup_merge_control_workbook import (
-    PROCESS_CONTROL_BANK_FILE_BOGOTA,
-    PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
     _build_process_control_workbook_bytes,
 )
 
@@ -94,9 +97,9 @@ class MockGraphClient:
         file_path = endpoint.split("/root:/", 1)[1].rsplit(":/content", 1)[0]
         file_path = unquote(file_path)
         if file_path not in self.downloaded_files:
-            if file_path == PROCESS_CONTROL_BANK_FILE_BOGOTA:
+            if file_path == resolve_bank_control_file_path(BANK_CODE_BOGOTA):
                 return _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
-            if file_path == PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA:
+            if file_path == resolve_bank_control_file_path(BANK_CODE_BANCOLOMBIA):
                 return _build_process_control_workbook_bytes("banco_bancolombia", "Bancolombia")
         return self.downloaded_files.get(file_path, b"")
 
@@ -240,8 +243,8 @@ def set_env_vars():
 def setup_client_structure(client, include_web_urls=False):
     # Control oficial por banco (Phase 1): Generate ahora lo lee siempre.
     # Para los tests, basta con el control de Bogotá porque bank_code default = banco_bogota.
-    client.downloaded_files[PROCESS_CONTROL_BANK_FILE_BOGOTA] = _build_process_control_workbook_bytes(
-        "banco_bogota", "Banco de Bogotá"
+    client.downloaded_files[resolve_bank_control_file_path(BANK_CODE_BOGOTA)] = (
+        _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
     )
 
     client.folder_children["clientes"] = [

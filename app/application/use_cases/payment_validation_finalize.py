@@ -1121,17 +1121,23 @@ async def finalize_payment_validation(
 ) -> dict[str, Any]:
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
     drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
-    review_path = os.getenv("GRAPH_PAYMENT_VALIDATION_REVIEW_PATH", "").strip()
-    history_path = os.getenv("GRAPH_PAYMENT_VALIDATION_HISTORY_PATH", "").strip()
+    from app.application.config.payment_validation_settings import (
+        BANK_CODE_BANCOLOMBIA,
+        BANK_CODE_BOGOTA,
+        get_payment_validation_paths,
+        normalize_bank_code,
+        resolve_bank_display_name,
+    )
+
+    paths = get_payment_validation_paths()
+    review_path = os.getenv("GRAPH_PAYMENT_VALIDATION_REVIEW_PATH", "").strip() or paths.review
+    history_path = os.getenv("GRAPH_PAYMENT_VALIDATION_HISTORY_PATH", "").strip() or paths.historical
     validation_prefix = os.getenv("GRAPH_VALIDATION_FILE_PREFIX", "").strip()
     clients_path = os.getenv("GRAPH_CLIENTS_BASE_PATH", "").strip()
     extract_keyword = os.getenv("GRAPH_EXTRACT_KEYWORD", "Extracto").strip() or "Extracto"
     effective_process_date = _normalize_process_date(process_date)
 
     from app.application.use_cases.payment_validation_process_control import (
-        BANK_CODE_BANCOLOMBIA,
-        BANK_CODE_BOGOTA,
-        normalize_bank_code,
         read_process_control_snapshot,
         resolve_process_control_path_for_bank,
         update_process_control_row2,
@@ -1191,7 +1197,7 @@ async def finalize_payment_validation(
 
     if bank_code:
         validate_bank_code(bank_code)
-    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    bank_name = resolve_bank_display_name(bank_code)
     process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
 
     snap = await read_process_control_snapshot(client, site_id, drive_id, bank_code=bank_code)

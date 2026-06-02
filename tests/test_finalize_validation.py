@@ -30,9 +30,12 @@ from app.application.use_cases.payment_validation_finalize import (
     _secretary_link_visible_text,
     finalize_payment_validation,
 )
+from app.application.config.payment_validation_settings import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
+    resolve_bank_control_file_path,
+)
 from app.application.use_cases.setup_merge_control_workbook import (
-    PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
-    PROCESS_CONTROL_BANK_FILE_BOGOTA,
     _build_process_control_workbook_bytes,
 )
 
@@ -140,9 +143,9 @@ class MockGraphClient:
             raise httpx.HTTPStatusError("404", request=req, response=resp)
         if file_path in self.downloaded_files:
             return self.downloaded_files[file_path]
-        if file_path == PROCESS_CONTROL_BANK_FILE_BOGOTA:
+        if file_path == resolve_bank_control_file_path(BANK_CODE_BOGOTA):
             return _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
-        if file_path == PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA:
+        if file_path == resolve_bank_control_file_path(BANK_CODE_BANCOLOMBIA):
             return _build_process_control_workbook_bytes("banco_bancolombia", "Bancolombia")
         return b""
 
@@ -1495,7 +1498,7 @@ def test_finalize_falls_back_to_latest_prefixed_review_file_when_none_provided()
             ws.cell(2, col["ProcessKey"], value="payment-validation|banco_bogota|2026-05-10")
             buf = io.BytesIO()
             wb.save(buf)
-            client.downloaded_files[PROCESS_CONTROL_BANK_FILE_BOGOTA] = buf.getvalue()
+            client.downloaded_files[resolve_bank_control_file_path(BANK_CODE_BOGOTA)] = buf.getvalue()
         finally:
             wb.close()
         res = await finalize_payment_validation(client, process_date=date(2026, 5, 10))

@@ -25,14 +25,21 @@ from openpyxl.styles.colors import Color
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+from app.application.config.payment_validation_settings import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
+    PaymentValidationFolderName,
+    list_payment_banks,
+    resolve_payment_validation_folder,
+)
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.domain.exceptions import GraphConfigError
 from app.domain.ports.graph import GraphApiPort
 
 logger = logging.getLogger(__name__)
 
-MERGE_CONTROL_FOLDER_RELATIVE_PATH = (
-    "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/00 CONTROL"
+MERGE_CONTROL_FOLDER_RELATIVE_PATH = resolve_payment_validation_folder(
+    PaymentValidationFolderName.CONTROL
 )
 
 SHEET_NAME = "Procesos"
@@ -90,17 +97,6 @@ MERGE_CONTROL_PREFIX_COLUMNS: tuple[str, ...] = tuple(
     c for c in MERGE_CONTROL_COLUMNS if c != MERGE_CONTROL_AMORTIZATION_COLUMN
 )
 
-BANK_CODE_BOGOTA = "banco_bogota"
-BANK_CODE_BANCOLOMBIA = "banco_bancolombia"
-
-PROCESS_CONTROL_BANK_FILE_BOGOTA = (
-    f"{MERGE_CONTROL_FOLDER_RELATIVE_PATH}/control_proceso_validacion_pagos_banco_bogota.xlsx"
-)
-PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA = (
-    f"{MERGE_CONTROL_FOLDER_RELATIVE_PATH}/control_proceso_validacion_pagos_banco_bancolombia.xlsx"
-)
-
-
 @dataclass(frozen=True)
 class ProcessControlBankDefinition:
     bank_code: str
@@ -108,17 +104,20 @@ class ProcessControlBankDefinition:
     control_file_path: str
 
 
-PROCESS_CONTROL_BANKS: tuple[ProcessControlBankDefinition, ...] = (
+PROCESS_CONTROL_BANKS: tuple[ProcessControlBankDefinition, ...] = tuple(
     ProcessControlBankDefinition(
-        bank_code=BANK_CODE_BOGOTA,
-        bank_name="Banco de Bogotá",
-        control_file_path=PROCESS_CONTROL_BANK_FILE_BOGOTA,
-    ),
-    ProcessControlBankDefinition(
-        bank_code=BANK_CODE_BANCOLOMBIA,
-        bank_name="Bancolombia",
-        control_file_path=PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
-    ),
+        bank_code=cfg.bank_code,
+        bank_name=cfg.bank_name,
+        control_file_path=cfg.control_file_path,
+    )
+    for cfg in list_payment_banks()
+)
+
+PROCESS_CONTROL_BANK_FILE_BOGOTA = next(
+    b.control_file_path for b in PROCESS_CONTROL_BANKS if b.bank_code == BANK_CODE_BOGOTA
+)
+PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA = next(
+    b.control_file_path for b in PROCESS_CONTROL_BANKS if b.bank_code == BANK_CODE_BANCOLOMBIA
 )
 
 SECURITY_WARNING = (

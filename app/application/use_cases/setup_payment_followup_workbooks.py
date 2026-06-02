@@ -20,8 +20,14 @@ from app.application.services.workbook_setup_helpers import (
     sheet_headers_match,
 )
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
+from app.application.config.payment_validation_settings import (
+    DEFAULT_FOLLOWUP_ADELANTADOS,
+    DEFAULT_FOLLOWUP_INCOMPLETOS,
+    resolve_followup_workbook_path,
+    resolve_payment_validation_folder,
+    PaymentValidationFolderName,
+)
 from app.application.use_cases.setup_merge_control_workbook import (
-    MERGE_CONTROL_FOLDER_RELATIVE_PATH,
     MergeControlSetupError,
     ensure_merge_control_folder_path,
 )
@@ -33,8 +39,8 @@ logger = logging.getLogger(__name__)
 SHEET_PENDIENTES = "Pendientes"
 SHEET_HISTORICO = "Historico"
 
-FILENAME_ADELANTADOS = "pagos_adelantados.xlsx"
-FILENAME_INCOMPLETOS = "pagos_incompletos.xlsx"
+FILENAME_ADELANTADOS = DEFAULT_FOLLOWUP_ADELANTADOS
+FILENAME_INCOMPLETOS = DEFAULT_FOLLOWUP_INCOMPLETOS
 
 ADELANTADOS_COLUMNS: tuple[str, ...] = (
     "ID Pago",
@@ -117,35 +123,16 @@ def _item_endpoint(site_id: str, drive_id: str, file_path: str) -> str:
     return f"/sites/{site_id}/drives/{drive_id}/root:/{encode_graph_drive_path(file_path)}:"
 
 
-def _env_workbook_path(new_var: str, legacy_var: str, default_filename: str) -> str:
-    p = os.getenv(new_var, "").strip()
-    if not p:
-        p = os.getenv(legacy_var, "").strip()
-    if p:
-        return p
-    folder = followup_workbooks_folder_relative_path().strip().rstrip("/")
-    return f"{folder}/{default_filename}"
-
-
 def followup_workbooks_folder_relative_path() -> str:
-    p = os.getenv("GRAPH_PAYMENT_VALIDATION_CONTROL_PATH", "").strip()
-    return p or MERGE_CONTROL_FOLDER_RELATIVE_PATH
+    return resolve_payment_validation_folder(PaymentValidationFolderName.CONTROL)
 
 
 def adelantados_workbook_relative_path() -> str:
-    return _env_workbook_path(
-        "GRAPH_FOLLOWUP_PAGOS_ADELANTADOS_PATH",
-        "GRAPH_AUDIT_PAGOS_ADELANTADOS_PATH",
-        FILENAME_ADELANTADOS,
-    )
+    return resolve_followup_workbook_path(FILENAME_ADELANTADOS)
 
 
 def incompletos_workbook_relative_path() -> str:
-    return _env_workbook_path(
-        "GRAPH_FOLLOWUP_PAGOS_INCOMPLETOS_PATH",
-        "GRAPH_AUDIT_PAGOS_INCOMPLETOS_PATH",
-        FILENAME_INCOMPLETOS,
-    )
+    return resolve_followup_workbook_path(FILENAME_INCOMPLETOS)
 
 
 async def _file_exists(graph: GraphApiPort, site_id: str, drive_id: str, path: str) -> bool:

@@ -28,6 +28,14 @@ import httpx
 from openpyxl import load_workbook
 from pypdf import PdfReader, PdfWriter
 
+from app.application.config.payment_validation_settings import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
+    resolve_bank_display_name,
+    resolve_bank_report_path,
+    resolve_logs_folder_path,
+    resolve_merge_output_folder_path,
+)
 from app.application.sharepoint_resolution import (
     encode_graph_drive_path,
     resolve_sharepoint_from_env,
@@ -49,10 +57,6 @@ from app.domain.ports.graph import GraphApiPort
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OUTPUT_FOLDER = (
-    "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/06 ASIENTO CONTABLES GENERADOS"
-)
-
 
 async def _auto_detect_bank_ready_for_merge(
     graph: GraphApiPort, site_id: str, drive_id: str
@@ -63,8 +67,6 @@ async def _auto_detect_bank_ready_for_merge(
     HistoricalFilePath y EmailPdfPath no vacíos.
     """
     from app.application.use_cases.payment_validation_process_control import (
-        BANK_CODE_BANCOLOMBIA,
-        BANK_CODE_BOGOTA,
         read_process_control_snapshot,
     )
 
@@ -753,10 +755,7 @@ class MergeCompositeValidadoPdfsResult:
 
 
 def _merge_logs_folder_relative() -> str:
-    p = os.getenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "").strip().rstrip("/")
-    if p:
-        return p
-    return "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/04 LOGS"
+    return resolve_logs_folder_path()
 
 
 def _legacy_paths_from_credit_items(credit_items: list[dict[str, Any]]) -> tuple[list[str], str]:
@@ -835,8 +834,6 @@ async def merge_composite_validado_pdfs(
         estado = "VALIDAR"
 
     from app.application.use_cases.payment_validation_process_control import (
-        BANK_CODE_BANCOLOMBIA,
-        BANK_CODE_BOGOTA,
         read_process_control_snapshot,
         resolve_process_control_path_for_bank,
         update_process_control_row2,
@@ -884,7 +881,7 @@ async def merge_composite_validado_pdfs(
             bank_code_source = "body"
 
     validate_bank_code(bank_code)
-    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    bank_name = resolve_bank_display_name(bank_code)
     process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
 
     snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bank_code)
@@ -964,15 +961,7 @@ async def merge_composite_validado_pdfs(
         # Reporte del banco para fecha mínima (por banco).
         site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
         drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
-        report_path = ""
-        if bank_code == BANK_CODE_BOGOTA:
-            report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
-        else:
-            report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH_BANCOLOMBIA", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA", "").strip()
-            if not report_path:
-                bog = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
-                if bog.endswith("BANCO_BOGOTA.xlsx"):
-                    report_path = bog.replace("BANCO_BOGOTA.xlsx", "BANCO_BANCOLOMBIA.xlsx")
+        report_path = resolve_bank_report_path(bank_code)
         if not report_path:
             raise ValueError("missing_sharepoint_folder")
         report_info = await resolve_sharepoint_path(graph, site_search, drive_name, report_path)
@@ -1094,10 +1083,7 @@ async def merge_composite_validado_pdfs(
             if callable(closer):
                 closer()
 
-        out_folder = (
-            os.getenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "").strip().strip("/")
-            or _DEFAULT_OUTPUT_FOLDER
-        )
+        out_folder = resolve_merge_output_folder_path()
 
         outputs: list[MergeCompositePdfOutput] = []
         skipped: list[str] = []

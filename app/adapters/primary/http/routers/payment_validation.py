@@ -24,6 +24,7 @@ from app.application.use_cases.setup_merge_control_workbook import (
     MergeControlSetupError,
     setup_merge_control_workbook,
 )
+from app.application.config.payment_validation_settings import normalize_bank_code
 from app.application.use_cases.amortization_fill_apply import run_amortization_fill_apply
 from app.application.use_cases.amortization_fill_dry_run import run_amortization_fill_dry_run
 from app.domain.exceptions import GraphConfigError
@@ -80,7 +81,9 @@ async def _run_generate_job(
     logger.info("job %s: generate_payment_validation iniciado", job_id)
     started = perf_counter()
     try:
-        result = await generate_payment_validation(graph, process_date, bank_code=bank_code or "banco_bogota", job_id=job_id)
+        result = await generate_payment_validation(
+            graph, process_date, bank_code=normalize_bank_code(bank_code), job_id=job_id
+        )
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         await jm.set_job(job_id, {
             "status": "completed",

@@ -2218,7 +2218,7 @@ async def generate_payment_validation(
     client: GraphApiPort,
     process_date: date,
     *,
-    bank_code: str = "banco_bogota",
+    bank_code: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
@@ -2227,17 +2227,18 @@ async def generate_payment_validation(
     clients_path = os.getenv("GRAPH_CLIENTS_BASE_PATH", "").strip()
     file_prefix = os.getenv("GRAPH_VALIDATION_FILE_PREFIX", "").strip()
 
-    from app.application.use_cases.payment_validation_process_control import (
+    from app.application.config.payment_validation_settings import (
+        get_payment_validation_paths,
         normalize_bank_code,
+        resolve_bank_display_name,
+        resolve_bank_input_file_path,
+    )
+    from app.application.use_cases.payment_validation_process_control import (
         read_process_control_snapshot,
         resolve_process_control_path_for_bank,
         update_process_control_row2,
         utc_now_iso,
         validate_bank_code,
-    )
-    from app.application.use_cases.payment_validation_process_control import (
-        BANK_CODE_BANCOLOMBIA,
-        BANK_CODE_BOGOTA,
     )
     from app.application.use_cases.setup_merge_control_workbook import (
         build_payment_validation_process_key,
@@ -2246,18 +2247,11 @@ async def generate_payment_validation(
     bank_code = normalize_bank_code(bank_code)
     validate_bank_code(bank_code)
 
-    # Selección del reporte del banco por banco.
-    bank_path = ""
-    if bank_code == BANK_CODE_BOGOTA:
-        bank_path = os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
-    elif bank_code == BANK_CODE_BANCOLOMBIA:
-        bank_path = os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA", "").strip()
-        if not bank_path:
-            default_bog = os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
-            if default_bog.endswith("/BANCO_BOGOTA.xlsx"):
-                bank_path = default_bog.rsplit("/", 1)[0] + "/BANCO_BANCOLOMBIA.xlsx"
-            elif default_bog.endswith("BANCO_BOGOTA.xlsx"):
-                bank_path = default_bog.replace("BANCO_BOGOTA.xlsx", "BANCO_BANCOLOMBIA.xlsx")
+    paths = get_payment_validation_paths()
+    if not review_path:
+        review_path = paths.review
+
+    bank_path = resolve_bank_input_file_path(bank_code)
 
     if not all([site_search, review_path, bank_path, clients_path, file_prefix]):
         raise ValueError("missing_sharepoint_folder")
@@ -2271,7 +2265,7 @@ async def generate_payment_validation(
     already_generated = False
     file_action = "created"
     control_updated = False
-    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    bank_name = resolve_bank_display_name(bank_code)
     process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
 
     snap = await read_process_control_snapshot(client, site_id, drive_id, bank_code=bank_code)

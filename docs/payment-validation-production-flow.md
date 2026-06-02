@@ -7,7 +7,7 @@ Runtime: **Render** (`uvicorn app.main:app`). Control operativo: **un Excel por 
 - `control_proceso_validacion_pagos_banco_bogota.xlsx`
 - `control_proceso_validacion_pagos_banco_bancolombia.xlsx`
 
-Ruta base: `INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/00 CONTROL`
+Ruta base de control: configurable vía `GRAPH_PAYMENT_VALIDATION_CONTROL_PATH` o `PAYMENT_VALIDATION_BASE_FOLDER` + `PAYMENT_VALIDATION_CONTROL_FOLDER` (ver `docs/render-env-variables.md`). Valor por defecto en código: `…/02 COMWARE - VALIDACION PAGOS/00 CONTROL`.
 
 El archivo `control_merge_pdfs.xlsx` **no** forma parte del flujo. El endpoint antiguo `POST /graph/sharepoint/validate-payment-report` fue retirado; use Generate/Finalize.
 

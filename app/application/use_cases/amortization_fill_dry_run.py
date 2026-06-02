@@ -48,9 +48,15 @@ from app.application.use_cases.merge_composite_validado_pdfs import (
     _credit_number_from_path_scan,
     normalize_sharepoint_path,
 )
-from app.application.use_cases.payment_validation_process_control import (
+from app.application.config.payment_validation_settings import (
     BANK_CODE_BANCOLOMBIA,
     BANK_CODE_BOGOTA,
+    resolve_bank_display_name,
+    resolve_logs_folder_path,
+    resolve_payment_validation_folder,
+    PaymentValidationFolderName,
+)
+from app.application.use_cases.payment_validation_process_control import (
     read_process_control_snapshot,
     resolve_process_control_path_for_bank,
     update_process_control_row2,
@@ -78,10 +84,7 @@ _STATUS_MAP = {
 
 
 def _logs_folder_relative() -> str:
-    p = os.getenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "").strip().rstrip("/")
-    if p:
-        return p
-    return "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/04 LOGS"
+    return resolve_logs_folder_path()
 
 
 def _hyperlink_target(cell: Cell | None) -> str | None:
@@ -198,10 +201,7 @@ async def _drive_context(graph: GraphApiPort) -> tuple[str, str]:
     drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
     if not site_search:
         raise GraphConfigError("Missing environment variable: GRAPH_SHAREPOINT_SITE_SEARCH")
-    anchor = (
-        os.getenv("GRAPH_PAYMENT_VALIDATION_CONTROL_PATH", "").strip()
-        or _logs_folder_relative()
-    )
+    anchor = resolve_payment_validation_folder(PaymentValidationFolderName.CONTROL)
     info = await resolve_sharepoint_path(graph, site_search, drive_name, anchor)
     return info["site_id"], info["drive_id"]
 
@@ -272,7 +272,7 @@ async def _resolve_amortization_inputs(
             low = f"{(manifest or '').lower()}/{(hist or '').lower()}"
             bc = BANK_CODE_BANCOLOMBIA if "banco_bancolombia" in low else BANK_CODE_BOGOTA
             bank_code_source = "body"
-        bank_name = "Banco de Bogotá" if bc == BANK_CODE_BOGOTA else "Bancolombia"
+        bank_name = resolve_bank_display_name(bc)
         return (
             manifest or "",
             report_date,
@@ -306,7 +306,7 @@ async def _resolve_amortization_inputs(
     if not (snap.historical_file_path or "").strip():
         raise ValueError("missing_historical_file_path")
 
-    bank_name = "Banco de Bogotá" if bc == BANK_CODE_BOGOTA else "Bancolombia"
+    bank_name = resolve_bank_display_name(bc)
     control_path = resolve_process_control_path_for_bank(bc).strip().strip("/")
     process_key = (snap.process_key or "").strip()
     return (

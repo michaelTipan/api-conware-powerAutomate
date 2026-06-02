@@ -6,7 +6,9 @@ env/
 # Secretos y entorno local (mantener .env.example en el repo)
 .env
 .env.local
+.env.example
 .env.*.local
+.env.*.example
 
 # Python
 __pycache__/

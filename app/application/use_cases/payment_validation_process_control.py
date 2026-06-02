@@ -13,36 +13,37 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from app.application.config.payment_validation_settings import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
+    normalize_bank_code,
+    resolve_bank_control_file_path,
+    validate_bank_code,
+)
+
+__all__ = [
+    "BANK_CODE_BANCOLOMBIA",
+    "BANK_CODE_BOGOTA",
+    "ProcessControlSnapshot",
+    "normalize_bank_code",
+    "validate_bank_code",
+    "resolve_process_control_path_for_bank",
+    "parse_process_control_row2",
+    "download_process_control_bytes",
+    "read_process_control_snapshot",
+    "update_process_control_row2",
+    "utc_now_iso",
+]
 from app.application.sharepoint_resolution import encode_graph_drive_path
 from app.application.use_cases.setup_merge_control_workbook import (
-    PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
-    PROCESS_CONTROL_BANK_FILE_BOGOTA,
     PROCESS_CONTROL_COLUMNS,
     SHEET_NAME,
 )
 from app.domain.ports.graph import GraphApiPort
 
 
-BANK_CODE_BOGOTA = "banco_bogota"
-BANK_CODE_BANCOLOMBIA = "banco_bancolombia"
-
-
-def normalize_bank_code(bank_code: str | None) -> str:
-    bc = (bank_code or "").strip()
-    return bc or BANK_CODE_BOGOTA
-
-
-def validate_bank_code(bank_code: str) -> None:
-    if bank_code not in (BANK_CODE_BOGOTA, BANK_CODE_BANCOLOMBIA):
-        raise ValueError("invalid_bank_code")
-
-
 def resolve_process_control_path_for_bank(bank_code: str) -> str:
-    if bank_code == BANK_CODE_BOGOTA:
-        return PROCESS_CONTROL_BANK_FILE_BOGOTA
-    if bank_code == BANK_CODE_BANCOLOMBIA:
-        return PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA
-    raise ValueError("invalid_bank_code")
+    return resolve_bank_control_file_path(bank_code)
 
 
 def utc_now_iso() -> str:

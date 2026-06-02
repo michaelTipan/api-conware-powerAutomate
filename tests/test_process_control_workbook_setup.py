@@ -48,7 +48,6 @@ class MultiFileMockGraph:
         for path in (
             PROCESS_CONTROL_BANK_FILE_BOGOTA,
             PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
-            MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
         ):
             key = path.replace(" ", "%20").lower()
             if path.lower() in low or key.split("/")[-1] in low:
@@ -75,13 +74,12 @@ class MultiFileMockGraph:
             for known in (
                 PROCESS_CONTROL_BANK_FILE_BOGOTA,
                 PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
-                MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
             ):
                 if known.split("/")[-1].lower() in endpoint.lower():
                     path = known
                     break
         if not path:
-            path = MERGE_CONTROL_WORKBOOK_RELATIVE_PATH
+            raise AssertionError(f"Unexpected write endpoint: {endpoint!r}")
         self.put_count += 1
         self.files[path] = content
         return dict(self.put_response)
@@ -232,8 +230,6 @@ def test_setup_endpoint_response_includes_banks_summary(mock_resolve):
     out = asyncio.run(setup_merge_control_workbook(g))
     assert out["status"] == "success"
     assert len(out["banks"]) == 2
-    assert out["legacy_merge_control"]["control_file_path"] == MERGE_CONTROL_WORKBOOK_RELATIVE_PATH
-    assert "control_merge_pdfs.xlsx" in out["legacy_control_file_name"]
     assert out["process_control_columns"] == list(PROCESS_CONTROL_COLUMNS)
 
 
@@ -247,16 +243,9 @@ def test_build_process_control_bytes_standalone():
         wb.close()
 
 
-def test_legacy_workbook_still_created(mock_resolve):
+def test_setup_does_not_create_legacy_merge_control_workbook(mock_resolve):
     g = MultiFileMockGraph()
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert MERGE_CONTROL_WORKBOOK_RELATIVE_PATH in g.files
-    legacy = out["legacy_merge_control"]
-    assert legacy["legacy"] is True
-    wb = openpyxl.load_workbook(io.BytesIO(g.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH]), data_only=True)
-    try:
-        ws = wb[SHEET_NAME]
-        assert TABLE_DISPLAY_NAME in ws.tables
-        assert ws.cell(2, 2).value == "VACIO"
-    finally:
-        wb.close()
+    assert out["status"] == "success"
+    assert "legacy_merge_control" not in out
+    assert MERGE_CONTROL_WORKBOOK_RELATIVE_PATH not in g.files

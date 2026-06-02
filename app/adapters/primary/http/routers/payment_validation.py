@@ -553,12 +553,8 @@ async def post_setup_merge_control_workbook(graph: GraphClientDep) -> dict[str, 
   * ``control_proceso_validacion_pagos_banco_bogota.xlsx``
   * ``control_proceso_validacion_pagos_banco_bancolombia.xlsx``
 
-  Legacy (sigue usándose por Notify/Merge/amortización hasta migración):
-
-  * ``control_merge_pdfs.xlsx``
-
-  Esta fase solo prepara estructura y columnas; los endpoints operativos aún no consumen
-  los controles por banco.
+  Nota: ``control_merge_pdfs.xlsx`` queda obsoleto y este setup ya NO lo crea ni lo repara.
+  La migración funcional de endpoints se hará en fases posteriores.
     """
     try:
         return await setup_merge_control_workbook(graph)

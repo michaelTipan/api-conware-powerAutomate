@@ -1,16 +1,14 @@
 """
-Setup idempotente de Excel de control del proceso de validación de pagos.
+Setup idempotente de Excel de control del proceso de validación de pagos (oficial por banco).
 
-Crea o repara (sin sobrescribir datos de fila 2):
+Crea o repara (sin sobrescribir datos de fila 2) los controles oficiales:
 
 * ``control_proceso_validacion_pagos_banco_bogota.xlsx``
 * ``control_proceso_validacion_pagos_banco_bancolombia.xlsx``
 
-También mantiene el archivo legacy ``control_merge_pdfs.xlsx`` usado hoy por Notify/Merge
-hasta que esos flujos migren al control por banco.
+Nota: ``control_merge_pdfs.xlsx`` queda obsoleto. Este setup NO lo crea ni lo repara.
 
-Hoja ``Procesos``, tabla ``tblControlProcesosPagos`` (nuevos archivos). El nombre
-``tblControlMergePDFs`` queda como legacy en archivos antiguos.
+Hoja ``Procesos``, tabla ``tblControlProcesosPagos``.
 """
 
 from __future__ import annotations
@@ -133,8 +131,8 @@ SECURITY_WARNING = (
 )
 
 SETUP_PHASE_NOTE = (
-    "Esta fase solo prepara la estructura de los controles por banco. Generate, Finalize, "
-    "Notify, Merge, dry-run y apply siguen usando control_merge_pdfs.xlsx hasta la migración."
+    "Este endpoint solo prepara la estructura de los controles por banco. La migración funcional "
+    "de Generate/Finalize/Notify/Merge/dry-run/apply a estos controles se hará en fases posteriores."
 )
 
 _FILL_HEADER = PatternFill(fill_type="solid", fgColor="002060")
@@ -870,84 +868,6 @@ async def _setup_process_control_bank_workbook(
     }
 
 
-async def _setup_legacy_merge_control_workbook(
-    graph: GraphApiPort,
-    site_id: str,
-    drive_id: str,
-) -> dict[str, Any]:
-    """Mantiene control_merge_pdfs.xlsx para Notify/Merge hasta la migración."""
-    file_path = MERGE_CONTROL_WORKBOOK_RELATIVE_PATH
-    warnings: list[str] = []
-
-    try:
-        exists = await _file_exists(graph, site_id, drive_id, file_path)
-    except httpx.HTTPStatusError as exc:
-        raise _graph_setup_error_from_http(exc, creating=True) from exc
-
-    file_url: str | None = None
-    excel_protection = False
-    created = False
-    repaired = False
-
-    if exists:
-        raw = await graph.get_bytes(_content_endpoint(site_id, drive_id, file_path))
-        w, struct_ok, excel_protection, new_bytes = _validate_and_repair_legacy_workbook(raw)
-        warnings.extend(w)
-        if new_bytes is not None:
-            repaired = True
-            try:
-                file_url = await _upload_workbook(graph, site_id, drive_id, file_path, new_bytes)
-            except httpx.HTTPStatusError as exc:
-                code = exc.response.status_code if exc.response else 0
-                body_txt = (exc.response.text if exc.response else "") or ""
-                warnings.append(
-                    f"needs_manual_review: no se pudo guardar reparación (HTTP {code}): {body_txt[:500]}"
-                )
-        if file_url is None:
-            file_url = await _drive_item_web_url(graph, site_id, drive_id, file_path)
-        status = "success" if struct_ok else "needs_manual_review"
-        if not struct_ok:
-            warnings.append("needs_manual_review: estructura del archivo legacy no válida o incompleta")
-        return {
-            "legacy": True,
-            "control_file_path": file_path,
-            "created": created,
-            "repaired": repaired,
-            "status": status,
-            "file_url": file_url,
-            "sheet_name": SHEET_NAME,
-            "table_name": TABLE_DISPLAY_NAME,
-            "columns": list(MERGE_CONTROL_COLUMNS),
-            "warnings": warnings,
-            "excel_protection_applied": excel_protection,
-        }
-
-    payload = _build_legacy_workbook_bytes()
-    try:
-        file_url = await _upload_workbook(graph, site_id, drive_id, file_path, payload)
-    except httpx.HTTPStatusError as exc:
-        raise _graph_setup_error_from_http(exc, creating=True) from exc
-
-    if not file_url:
-        file_url = await _drive_item_web_url(graph, site_id, drive_id, file_path)
-
-    created = True
-    excel_protection = True
-    return {
-        "legacy": True,
-        "control_file_path": file_path,
-        "created": created,
-        "repaired": repaired,
-        "status": "success",
-        "file_url": file_url,
-        "sheet_name": SHEET_NAME,
-        "table_name": TABLE_DISPLAY_NAME,
-        "columns": list(MERGE_CONTROL_COLUMNS),
-        "warnings": warnings,
-        "excel_protection_applied": excel_protection,
-    }
-
-
 async def setup_merge_control_workbook(graph: GraphApiPort) -> dict[str, Any]:
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
     drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
@@ -986,17 +906,13 @@ async def setup_merge_control_workbook(graph: GraphApiPort) -> dict[str, Any]:
     for bank_def in PROCESS_CONTROL_BANKS:
         banks.append(await _setup_process_control_bank_workbook(graph, site_id, drive_id, bank_def))
 
-    legacy_merge_control = await _setup_legacy_merge_control_workbook(graph, site_id, drive_id)
-
     overall_status = "success"
-    if any(b.get("status") != "success" for b in banks) or legacy_merge_control.get("status") != "success":
+    if any(b.get("status") != "success" for b in banks):
         overall_status = "needs_manual_review"
 
     return {
         "status": overall_status,
         "banks": banks,
-        "legacy_merge_control": legacy_merge_control,
-        "legacy_control_file_name": "control_merge_pdfs.xlsx",
         "official_control_file_names": [
             "control_proceso_validacion_pagos_banco_bogota.xlsx",
             "control_proceso_validacion_pagos_banco_bancolombia.xlsx",

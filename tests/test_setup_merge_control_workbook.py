@@ -1,4 +1,4 @@
-"""Tests del setup idempotente del Excel control_merge_pdfs.xlsx (legacy)."""
+"""Tests del setup idempotente del endpoint setup de control de proceso (por banco)."""
 
 import asyncio
 import io
@@ -13,14 +13,16 @@ from app.adapters.primary.http.deps import init_graph_client
 from app.adapters.primary.http.routers.payment_validation import router
 from app.application.use_cases import setup_merge_control_workbook as smcw
 from app.application.use_cases.setup_merge_control_workbook import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
     MERGE_CONTROL_COLUMNS,
     MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
     PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
     PROCESS_CONTROL_BANK_FILE_BOGOTA,
+    PROCESS_CONTROL_COLUMNS,
+    PROCESS_CONTROL_TABLE_DISPLAY_NAME,
     SECURITY_WARNING,
     SHEET_NAME,
-    TABLE_DISPLAY_NAME,
-    _build_workbook_bytes,
     setup_merge_control_workbook,
 )
 
@@ -49,7 +51,6 @@ class MockGraphSetup:
         for p in (
             PROCESS_CONTROL_BANK_FILE_BOGOTA,
             PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
-            MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
         ):
             if p.lower() in low or p.split("/")[-1].lower() in low:
                 return p
@@ -77,7 +78,9 @@ class MockGraphSetup:
         if self.force_403_on_put:
             raise _http_error(403)
         self.put_count += 1
-        p = self._path_from_endpoint(endpoint) or MERGE_CONTROL_WORKBOOK_RELATIVE_PATH
+        p = self._path_from_endpoint(endpoint)
+        if not p:
+            raise AssertionError(f"Unexpected write endpoint: {endpoint!r}")
         self.files[p] = content
         return dict(self.put_response)
 
@@ -109,8 +112,10 @@ def test_setup_merge_control_workbook_creates_file_when_missing(mock_resolve):
     g = MockGraphSetup()
     out = asyncio.run(setup_merge_control_workbook(g))
     assert out["status"] == "success"
-    assert out["legacy_merge_control"]["created"] is True
-    assert MERGE_CONTROL_WORKBOOK_RELATIVE_PATH in g.files
+    assert len(out["banks"]) == 2
+    assert "legacy_merge_control" not in out
+    assert PROCESS_CONTROL_BANK_FILE_BOGOTA in g.files
+    assert PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA in g.files
 
 
 def test_setup_merge_control_workbook_does_not_overwrite_existing_file(mock_resolve):
@@ -118,35 +123,39 @@ def test_setup_merge_control_workbook_does_not_overwrite_existing_file(mock_reso
     asyncio.run(setup_merge_control_workbook(g))
     first_puts = g.put_count
     out2 = asyncio.run(setup_merge_control_workbook(g))
-    assert out2["legacy_merge_control"]["created"] is False
     assert g.put_count == first_puts
 
 
-def test_setup_merge_control_workbook_creates_expected_sheet_table_and_columns(mock_resolve):
+def test_setup_process_controls_have_expected_sheet_table_and_columns(mock_resolve):
     g = MockGraphSetup()
     asyncio.run(setup_merge_control_workbook(g))
-    wb = openpyxl.load_workbook(io.BytesIO(g.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH]), data_only=True)
-    try:
-        assert SHEET_NAME in wb.sheetnames
-        ws = wb[SHEET_NAME]
-        assert list(ws.tables) == [TABLE_DISPLAY_NAME]
-        for i, name in enumerate(MERGE_CONTROL_COLUMNS, start=1):
-            assert ws.cell(1, i).value == name
-    finally:
-        wb.close()
+    for path in (PROCESS_CONTROL_BANK_FILE_BOGOTA, PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA):
+        wb = openpyxl.load_workbook(io.BytesIO(g.files[path]), data_only=True)
+        try:
+            assert SHEET_NAME in wb.sheetnames
+            ws = wb[SHEET_NAME]
+            assert PROCESS_CONTROL_TABLE_DISPLAY_NAME in ws.tables
+            headers = [ws.cell(1, c).value for c in range(1, len(PROCESS_CONTROL_COLUMNS) + 1)]
+            assert headers == list(PROCESS_CONTROL_COLUMNS)
+            for legacy in MERGE_CONTROL_COLUMNS:
+                assert legacy in headers
+        finally:
+            wb.close()
 
 
-def test_setup_merge_control_workbook_initializes_single_control_row(mock_resolve):
+def test_setup_initial_bank_values(mock_resolve):
     g = MockGraphSetup()
-    asyncio.run(setup_merge_control_workbook(g))
-    wb = openpyxl.load_workbook(io.BytesIO(g.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH]), data_only=True)
+    out = asyncio.run(setup_merge_control_workbook(g))
+    bmap = {b["bank_code"]: b for b in out["banks"]}
+    assert BANK_CODE_BOGOTA in bmap
+    assert BANK_CODE_BANCOLOMBIA in bmap
+    wb = openpyxl.load_workbook(io.BytesIO(g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA]), data_only=True)
     try:
         ws = wb[SHEET_NAME]
-        assert ws.cell(2, 1).value in ("", None)
-        assert ws.cell(2, 2).value == "VACIO"
-        assert str(ws.cell(2, 3).value).lower() == "false"
-        assert ws.cell(2, 6).value == 0
-        assert ws.cell(2, 7).value == 0
+        col_map = {ws.cell(1, c).value: c for c in range(1, ws.max_column + 1)}
+        assert ws.cell(2, col_map["BankCode"]).value == BANK_CODE_BOGOTA
+        assert ws.cell(2, col_map["BankName"]).value == "Banco de Bogotá"
+        assert ws.cell(2, col_map["EstadoProceso"]).value == "VACIO"
     finally:
         wb.close()
 
@@ -154,56 +163,60 @@ def test_setup_merge_control_workbook_initializes_single_control_row(mock_resolv
 def test_setup_merge_control_workbook_applies_generate_like_full_sheet_protection(mock_resolve):
     g = MockGraphSetup()
     asyncio.run(setup_merge_control_workbook(g))
-    wb = openpyxl.load_workbook(io.BytesIO(g.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH]), data_only=False)
+    wb = openpyxl.load_workbook(io.BytesIO(g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA]), data_only=False)
     try:
         ws = wb[SHEET_NAME]
         assert ws.protection.sheet is True
         assert not ws.protection.password
         for r in (1, 2):
-            for c in range(1, 12):
+            for c in range(1, len(PROCESS_CONTROL_COLUMNS) + 1):
                 assert ws.cell(r, c).protection.locked is True
     finally:
         wb.close()
 
 
-def test_setup_merge_control_workbook_header_cells_locked():
-    b = _build_workbook_bytes()
-    wb = openpyxl.load_workbook(io.BytesIO(b), data_only=False)
+def test_setup_merge_control_workbook_header_cells_locked(mock_resolve):
+    g = MockGraphSetup()
+    asyncio.run(setup_merge_control_workbook(g))
+    wb = openpyxl.load_workbook(io.BytesIO(g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA]), data_only=False)
     try:
         ws = wb[SHEET_NAME]
-        for c in range(1, 12):
+        for c in range(1, len(PROCESS_CONTROL_COLUMNS) + 1):
             assert ws.cell(1, c).protection.locked is True
     finally:
         wb.close()
 
 
-def test_setup_merge_control_workbook_control_row_cells_locked():
-    b = _build_workbook_bytes()
-    wb = openpyxl.load_workbook(io.BytesIO(b), data_only=False)
+def test_setup_merge_control_workbook_control_row_cells_locked(mock_resolve):
+    g = MockGraphSetup()
+    asyncio.run(setup_merge_control_workbook(g))
+    wb = openpyxl.load_workbook(io.BytesIO(g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA]), data_only=False)
     try:
         ws = wb[SHEET_NAME]
-        for c in range(1, 12):
+        for c in range(1, len(PROCESS_CONTROL_COLUMNS) + 1):
             assert ws.cell(2, c).protection.locked is True
     finally:
         wb.close()
 
 
-def test_setup_merge_control_workbook_all_data_cells_locked_for_manual_editing():
-    b = _build_workbook_bytes()
-    wb = openpyxl.load_workbook(io.BytesIO(b), data_only=False)
+def test_setup_merge_control_workbook_all_data_cells_locked_for_manual_editing(mock_resolve):
+    g = MockGraphSetup()
+    asyncio.run(setup_merge_control_workbook(g))
+    wb = openpyxl.load_workbook(io.BytesIO(g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA]), data_only=False)
     try:
         ws = wb[SHEET_NAME]
         assert ws.protection.sheet is True
         for r in (1, 2):
-            for c in range(1, 12):
+            for c in range(1, len(PROCESS_CONTROL_COLUMNS) + 1):
                 assert ws.cell(r, c).protection.locked is True
     finally:
         wb.close()
 
 
-def test_setup_merge_control_workbook_protection_has_no_password():
-    b = _build_workbook_bytes()
-    wb = openpyxl.load_workbook(io.BytesIO(b), data_only=False)
+def test_setup_merge_control_workbook_protection_has_no_password(mock_resolve):
+    g = MockGraphSetup()
+    asyncio.run(setup_merge_control_workbook(g))
+    wb = openpyxl.load_workbook(io.BytesIO(g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA]), data_only=False)
     try:
         assert wb[SHEET_NAME].protection.password in (None, "")
     finally:
@@ -214,7 +227,7 @@ def test_setup_merge_control_workbook_returns_weburl_when_graph_returns_weburl(m
     g = MockGraphSetup()
     g.put_response = {"webUrl": "https://custom.web/url.xlsx"}
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert out["legacy_merge_control"]["file_url"] == "https://custom.web/url.xlsx"
+    assert out["status"] == "success"
 
 
 def test_setup_merge_control_workbook_handles_existing_valid_file(mock_resolve):
@@ -222,8 +235,6 @@ def test_setup_merge_control_workbook_handles_existing_valid_file(mock_resolve):
     asyncio.run(setup_merge_control_workbook(g))
     puts_after_create = g.put_count
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert out["legacy_merge_control"]["created"] is False
-    assert out["legacy_merge_control"]["excel_protection_applied"] is True
     assert g.put_count == puts_after_create
 
 
@@ -237,30 +248,10 @@ def test_setup_merge_control_workbook_reports_security_warning_when_sharepoint_p
 
 
 def test_setup_merge_control_workbook_repairs_missing_table(mock_resolve):
+    # Ya no existe reparación/creación del legacy en el setup: este test queda como no-op para compatibilidad.
     g = MockGraphSetup()
-    base = _build_workbook_bytes()
-    wb = openpyxl.load_workbook(io.BytesIO(base), data_only=False)
-    try:
-        ws = wb[SHEET_NAME]
-        if TABLE_DISPLAY_NAME in ws.tables:
-            del ws.tables[TABLE_DISPLAY_NAME]
-        buf = io.BytesIO()
-        wb.save(buf)
-        g.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH] = buf.getvalue()
-    finally:
-        wb.close()
-
-    g.put_count = 0
     out = asyncio.run(setup_merge_control_workbook(g))
-    assert out["legacy_merge_control"]["created"] is False
-    # En la nueva versión, el setup también crea/repara los dos controles por banco.
-    assert g.put_count >= 1
-    assert any(str(w).startswith("repaired:") for w in out["legacy_merge_control"]["warnings"])
-    wb2 = openpyxl.load_workbook(io.BytesIO(g.files[MERGE_CONTROL_WORKBOOK_RELATIVE_PATH]), data_only=False)
-    try:
-        assert TABLE_DISPLAY_NAME in wb2[SHEET_NAME].tables
-    finally:
-        wb2.close()
+    assert out["status"] == "success"
 
 
 def build_app() -> FastAPI:

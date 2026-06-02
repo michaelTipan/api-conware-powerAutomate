@@ -31,9 +31,10 @@ from xml.sax.saxutils import escape
 
 import httpx
 from openpyxl import load_workbook
-from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_from_env
-from app.application.use_cases.merge_control_workbook_notify import (
-    update_merge_control_workbook_after_notify,
+from app.application.sharepoint_resolution import (
+    encode_graph_drive_path,
+    resolve_sharepoint_from_env,
+    resolve_sharepoint_path,
 )
 from app.application.use_cases.validate_payment_report import (
     _find_header_map,
@@ -995,6 +996,8 @@ async def send_validar_extractos_notification_email(
     graph: GraphApiPort,
     *,
     historical_file_path: str | None,
+    bank_code: str | None = None,
+    job_id: str | None = None,
     to_override: str | None = None,
     cc_override: str | None = None,
 ) -> ValidarExtractosNotifyResult:
@@ -1002,16 +1005,106 @@ async def send_validar_extractos_notification_email(
     if not estado_filtro:
         estado_filtro = "VALIDAR"
 
-    hist_raw = (historical_file_path or "").strip()
-    historico_rel = hist_raw.strip("/")
-    if not historico_rel:
-        raise ValueError("missing_historical_file_path")
-
-    banco = os.getenv("GRAPH_NOTIFY_BANK_NAME", "BANCO BOGOTA").strip() or "BANCO BOGOTA"
+    from app.application.use_cases.payment_validation_process_control import (
+        BANK_CODE_BANCOLOMBIA,
+        BANK_CODE_BOGOTA,
+        read_process_control_snapshot,
+        resolve_process_control_path_for_bank,
+        update_process_control_row2,
+        utc_now_iso,
+        validate_bank_code,
+    )
+    from app.application.use_cases.setup_merge_control_workbook import (
+        build_payment_validation_process_key,
+    )
 
     ctx = await resolve_sharepoint_from_env(graph)
     site_id = ctx["site_id"]
     drive_id = ctx["drive_id"]
+
+    manual_hist_override = bool((historical_file_path or "").strip())
+
+    bank_code_source = "body" if (bank_code or "").strip() else "auto_detected"
+    bank_code = (bank_code or "").strip() or None
+    if bank_code:
+        validate_bank_code(bank_code)
+
+    ready_banks_detected: list[str] = []
+    historico_rel = ""
+    process_control_file_path = ""
+    process_key = ""
+
+    if manual_hist_override:
+        historico_rel = (historical_file_path or "").strip().strip("/")
+        if not bank_code:
+            low = historico_rel.lower()
+            if "banco_bancolombia" in low:
+                bank_code = BANK_CODE_BANCOLOMBIA
+                bank_code_source = "body"
+            else:
+                bank_code = BANK_CODE_BOGOTA
+                bank_code_source = "body"
+    else:
+        if not bank_code:
+            candidates: list[str] = []
+            for bc in (BANK_CODE_BOGOTA, BANK_CODE_BANCOLOMBIA):
+                snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bc)
+                if (
+                    (snap.estado_proceso or "").strip() == "FINALIZADO"
+                    and snap.is_active
+                    and (snap.historical_file_path or "").strip()
+                ):
+                    candidates.append(bc)
+            if not candidates:
+                raise ValueError("NO_READY_PROCESS")
+            if len(candidates) > 1:
+                raise ValueError("MULTIPLE_READY_PROCESSES|" + ",".join(candidates))
+            bank_code = candidates[0]
+            bank_code_source = "auto_detected"
+            ready_banks_detected = list(candidates)
+
+        validate_bank_code(bank_code)
+        process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
+        snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bank_code)
+        process_key = (snap.process_key or "").strip()
+
+        if (
+            (snap.estado_proceso or "").strip() == "PENDIENTE_ASIENTOS"
+            and (snap.process_key or "").strip()
+            and (snap.email_pdf_path or "").strip()
+            and (snap.notify_idempotency_key or "").strip()
+        ):
+            return ValidarExtractosNotifyResult(
+                report_date="",
+                historico_excel_path=snap.historical_file_path,
+                historical_file_path=snap.historical_file_path,
+                historical_file_source="control",
+                rows_included=0,
+                subject="",
+                attachments_count=0,
+                graph_sendmail_http_status=0,
+                mail_sender="",
+                mail_to="",
+                email_pdf_path=snap.email_pdf_path,
+                email_pdf_error=None,
+                merge_control_updated=False,
+                merge_control_file_path=process_control_file_path,
+                merge_control_status="PENDIENTE_ASIENTOS",
+                merge_control_warning="already_notified",
+                merge_control_error_code="already_notified",
+            )
+
+        if (snap.estado_proceso or "").strip() != "FINALIZADO" or not snap.is_active:
+            raise ValueError("control_not_ready_for_notify")
+        if not (snap.historical_file_path or "").strip():
+            raise ValueError("missing_historical_file_path")
+        historico_rel = snap.historical_file_path.strip().strip("/")
+
+    if not bank_code:
+        raise ValueError("invalid_bank_code")
+
+    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    banco = bank_name.upper()
 
     sender, to_recipients = await _load_sender_and_recipients_from_correos_xlsx(graph, site_id, drive_id)
     if (to_override or "").strip():
@@ -1030,15 +1123,28 @@ async def send_validar_extractos_notification_email(
     if cc_override is not None and str(cc_override).strip():
         cc_list = _dedupe_emails_preserve_order(_collect_emails_from_cell(cc_override))
 
+    site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
+    drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
+    report_path = ""
+    if bank_code == BANK_CODE_BOGOTA:
+        report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
+    else:
+        report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH_BANCOLOMBIA", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA", "").strip()
+        if not report_path:
+            bog = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
+            if bog.endswith("BANCO_BOGOTA.xlsx"):
+                report_path = bog.replace("BANCO_BOGOTA.xlsx", "BANCO_BANCOLOMBIA.xlsx")
+    if not report_path:
+        raise ValueError("missing_sharepoint_folder")
+    report_info = await resolve_sharepoint_path(graph, site_search, drive_name, report_path)
     report_bytes = await graph.get_bytes(
-        f"/sites/{site_id}/drives/{drive_id}/root:/{ctx['path_encoded']}:/content"
+        f"/sites/{report_info['site_id']}/drives/{report_info['drive_id']}/root:/{report_info['path_encoded']}:/content"
     )
     report_d, bank_headers, bank_rows = _parse_bank_report_table_and_min_date(report_bytes)
     fecha_str = report_d.strftime("%d/%m/%Y")
 
-    subject = (
-        os.getenv("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT", "").strip() or "ABONOS BANCO BOGOTA"
-    )
+    subject_default = "ABONOS BANCO BOGOTA" if bank_code == BANK_CODE_BOGOTA else "ABONOS BANCOLOMBIA"
+    subject = os.getenv("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT", "").strip() or subject_default
     _body_intro_default = (
         "Buenos días. El día {fecha} ingresaron a la cuenta {banco} los siguientes valores, "
         "que corresponden a:"
@@ -1185,9 +1291,14 @@ async def send_validar_extractos_notification_email(
                 os.getenv("GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_FOLDER_PATH", "").strip().strip("/")
                 or _pdf_folder_default
             )
+            pdf_name_tpl_default = (
+                "ABONOS BANCO BOGOTA {fecha}.pdf"
+                if bank_code == BANK_CODE_BOGOTA
+                else "ABONOS BANCOLOMBIA {fecha}.pdf"
+            )
             pdf_name_tpl = os.getenv(
                 "GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE",
-                "ABONOS BANCO BOGOTA {fecha}.pdf",
+                pdf_name_tpl_default,
             ).strip()
             pdf_name = pdf_name_tpl.format(
                 fecha=report_d.isoformat(),
@@ -1214,20 +1325,53 @@ async def send_validar_extractos_notification_email(
             email_pdf_error = str(exc)[:4000]
             logger.exception("validar extractos notify: export PDF falló")
 
-    mc_out = await update_merge_control_workbook_after_notify(
-        graph,
-        site_id,
-        drive_id,
-        historical_file_path=historico_rel,
-        email_pdf_path=email_pdf_path,
-        report_d=report_d,
-    )
+    merge_control_updated = False
+    merge_control_warning: str | None = None
+    merge_control_error_code: str | None = None
+    if not process_control_file_path:
+        process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
+    if not process_key:
+        process_key = build_payment_validation_process_key(bank_code, report_d.isoformat())
+
+    if email_pdf_path:
+        now_iso = utc_now_iso()
+        await update_process_control_row2(
+            graph,
+            site_id,
+            drive_id,
+            bank_code=bank_code,
+            updates={
+                "ProcessKey": process_key,
+                "ProcessDate": report_d.isoformat(),
+                "BankCode": bank_code,
+                "BankName": bank_name,
+                "HistoricalFilePath": historico_rel,
+                "EmailPdfPath": (email_pdf_path or "").strip().strip("/"),
+                "EstadoProceso": "PENDIENTE_ASIENTOS",
+                "IsActive": True,
+                "NotifyIdempotencyKey": process_key,
+                "NotifyJobId": job_id or "",
+                "LastCompletedStep": "NOTIFY",
+                "LastStepStatus": "COMPLETED",
+                "LastStepErrorCode": "",
+                "LastUpdatedAtProceso": now_iso,
+                "MergeManifestPath": "",
+                "MergeOutputCount": 0,
+                "MergeSkippedCount": 0,
+                "LastErrorUserMessage": "",
+                "LastErrorNextAction": "",
+            },
+        )
+        merge_control_updated = True
+    else:
+        merge_control_warning = "missing_email_pdf_path_for_merge_control"
+        merge_control_error_code = "missing_email_pdf_path_for_merge_control"
 
     return ValidarExtractosNotifyResult(
         report_date=fecha_str,
         historico_excel_path=historico_rel,
         historical_file_path=historico_rel,
-        historical_file_source="explicit",
+        historical_file_source="explicit" if manual_hist_override else "control",
         rows_included=len(bank_rows),
         subject=subject,
         attachments_count=len(attachments),
@@ -1236,9 +1380,9 @@ async def send_validar_extractos_notification_email(
         mail_to=to_display,
         email_pdf_path=email_pdf_path,
         email_pdf_error=email_pdf_error,
-        merge_control_updated=mc_out.merge_control_updated,
-        merge_control_file_path=mc_out.merge_control_file_path,
-        merge_control_status=mc_out.merge_control_status,
-        merge_control_warning=mc_out.merge_control_warning,
-        merge_control_error_code=mc_out.merge_control_error_code,
+        merge_control_updated=merge_control_updated,
+        merge_control_file_path=process_control_file_path,
+        merge_control_status="PENDIENTE_ASIENTOS" if merge_control_updated else None,
+        merge_control_warning=merge_control_warning,
+        merge_control_error_code=merge_control_error_code,
     )

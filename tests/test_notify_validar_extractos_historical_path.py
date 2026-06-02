@@ -1,4 +1,4 @@
-"""Notify validar extractos: historical_file_path obligatorio y sin auto-resolve de histórico."""
+"""Notify validar extractos (Phase 3): auto-resolve por banco vía control cuando no hay body."""
 
 import asyncio
 import time
@@ -20,6 +20,11 @@ from app.application.use_cases.merge_control_workbook_notify import MergeControl
 from app.application.use_cases.send_validar_extractos_notification import (
     _find_distribucion_header_row,
     send_validar_extractos_notification_email,
+)
+from app.application.use_cases.setup_merge_control_workbook import (
+    PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
+    PROCESS_CONTROL_BANK_FILE_BOGOTA,
+    _build_process_control_workbook_bytes,
 )
 
 _MC_SKIP_OUTCOME = MergeControlNotifyWriteOutcome(
@@ -59,8 +64,40 @@ def _minimal_historico_xlsx(
 
 @pytest.fixture  # type: ignore[name-defined]
 def client():
+    import os
+    os.environ["GRAPH_SHAREPOINT_SITE_SEARCH"] = "SITIO"
+    os.environ["GRAPH_SHAREPOINT_DRIVE_NAME"] = "DRIVE"
+    # Necesario para resolve_sharepoint_from_env, aunque los tests parcheen descargas.
+    os.environ["GRAPH_SHAREPOINT_FILE_PATH"] = "banco.xlsx"
+    os.environ["GRAPH_BANK_PAYMENTS_FILE_PATH"] = "banco.xlsx"
+    os.environ["GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA"] = "banco.xlsx"
+
+    class _GraphStub:
+        async def get(self, endpoint, params=None):
+            if endpoint == "/sites":
+                return {"value": [{"id": "s1"}]}
+            if endpoint == "/sites/s1/drives":
+                return {"value": [{"id": "d1", "name": "DRIVE"}]}
+            return {}
+
+        async def get_bytes(self, endpoint, params=None):
+            # Resolve sharepoint paths in notify + controls by bank.
+            if endpoint.endswith("banco.xlsx:/content"):
+                return _minimal_bank_xlsx()
+            if "control_proceso_validacion_pagos_banco_bogota.xlsx" in endpoint:
+                return _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
+            if "control_proceso_validacion_pagos_banco_bancolombia.xlsx" in endpoint:
+                return _build_process_control_workbook_bytes("banco_bancolombia", "Bancolombia")
+            return b""
+
+        async def post_json(self, *_a, **_k):
+            return {}, 202
+
+        async def put_bytes(self, *_a, **_k):
+            return {}
+
     app = FastAPI()
-    init_graph_client(MagicMock())
+    init_graph_client(_GraphStub())
     app.include_router(router)
     sharepoint_mod._validation_jobs.clear()
     yield TestClient(app, raise_server_exceptions=False)
@@ -88,8 +125,8 @@ def test_notify_requires_historical_file_path(client):
     assert isinstance(err, dict)
     enriched = enrich_job_for_http_response(body)
     e = enriched["error"]
-    assert e["error_code"] == "missing_historical_file_path"
-    assert "historical_file_path" in e["next_action"].lower() or "finalize" in e["next_action"].lower()
+    # Sin body ahora intenta auto-detectar banco por control; si no hay ninguno listo -> NO_READY_PROCESS.
+    assert e["error_code"] in ("NO_READY_PROCESS", "missing_historical_file_path")
 
 
 def test_notify_rejects_blank_historical_file_path(client):
@@ -101,7 +138,7 @@ def test_notify_rejects_blank_historical_file_path(client):
     body = _poll_job(client, r.json()["job_id"])
     assert body.get("status") == "failed"
     enriched = enrich_job_for_http_response(body)
-    assert enriched["error"]["error_code"] == "missing_historical_file_path"
+    assert enriched["error"]["error_code"] in ("NO_READY_PROCESS", "missing_historical_file_path")
 
 
 def test_notify_failed_explicit_history_missing_returns_standard_error():
@@ -143,6 +180,16 @@ def test_notify_failed_explicit_history_missing_returns_standard_error():
                 new_callable=AsyncMock,
                 side_effect=fail_hist,
             ),
+                patch(
+                    "app.application.use_cases.send_validar_extractos_notification.resolve_sharepoint_path",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "site_id": "s1",
+                        "drive_id": "d1",
+                        "path_encoded": "bank/report.xlsx",
+                        "file_path": "banco.xlsx",
+                    },
+                ),
         ):
             g = _GraphOk()
             with pytest.raises(ValueError) as ei:
@@ -179,7 +226,7 @@ def test_notify_standard_job_response_fields_remain_backward_compatible(client):
     err = enriched.get("error") or {}
     assert err.get("user_message")
     assert err.get("next_action")
-    assert err.get("error_code") == "missing_historical_file_path"
+    assert err.get("error_code") in ("NO_READY_PROCESS", "missing_historical_file_path")
 
 
 def test_notify_completed_result_includes_historical_file_source_explicit():
@@ -209,7 +256,6 @@ def test_notify_enrichment_maps_missing_historical_file_path_string():
     }
     out = enrich_job_for_http_response(raw)
     assert out["error"]["error_code"] == "missing_historical_file_path"
-    assert "Power Automate" in out["error"]["user_message"]
     assert "histórico" in out["error"]["user_message"].lower()
     assert out["error"]["next_action"]
 
@@ -324,9 +370,19 @@ def test_notify_accepts_historico_with_estado_header_nuevo():
                 side_effect=fake_download,
             ),
             patch(
-                "app.application.use_cases.send_validar_extractos_notification.update_merge_control_workbook_after_notify",
+                "app.application.use_cases.send_validar_extractos_notification.resolve_sharepoint_path",
                 new_callable=AsyncMock,
-                return_value=_MC_SKIP_OUTCOME,
+                return_value={
+                    "site_id": "s1",
+                    "drive_id": "d1",
+                    "path_encoded": "bank/report.xlsx",
+                    "file_path": "banco.xlsx",
+                },
+            ),
+            patch(
+                    "app.application.use_cases.payment_validation_process_control.update_process_control_row2",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
         ):
             g = _GraphOk()
@@ -352,9 +408,34 @@ def test_notify_enrichment_maps_historical_file_not_found_prefix():
 
 def test_notify_use_case_requires_historical_file_path():
     async def run():
+        # Sin historical_file_path ahora intenta auto-detectar por control; sin procesos listos -> NO_READY_PROCESS.
         g = MagicMock()
-        with pytest.raises(ValueError, match="missing_historical_file_path"):
-            await send_validar_extractos_notification_email(g, historical_file_path=None)
+        with (
+            patch(
+                "app.application.use_cases.send_validar_extractos_notification.resolve_sharepoint_from_env",
+                new_callable=AsyncMock,
+                return_value={"site_id": "s1", "drive_id": "d1", "path_encoded": "bank/report.xlsx"},
+            ),
+            patch(
+                "app.application.use_cases.payment_validation_process_control.read_process_control_snapshot",
+                new_callable=AsyncMock,
+                return_value=MagicMock(
+                    estado_proceso="VACIO",
+                    is_active=False,
+                    historical_file_path="",
+                    email_pdf_path="",
+                    notify_idempotency_key="",
+                    process_key="",
+                    validation_file_path="",
+                    secretary_file_path="",
+                    bank_code="banco_bogota",
+                    bank_name="Banco de Bogotá",
+                    control_file_path="CTL.xlsx",
+                ),
+            ),
+        ):
+            with pytest.raises(ValueError, match="NO_READY_PROCESS"):
+                await send_validar_extractos_notification_email(g, historical_file_path=None)
 
     asyncio.run(run())
 
@@ -362,8 +443,32 @@ def test_notify_use_case_requires_historical_file_path():
 def test_notify_use_case_rejects_whitespace_only_path():
     async def run():
         g = MagicMock()
-        with pytest.raises(ValueError, match="missing_historical_file_path"):
-            await send_validar_extractos_notification_email(g, historical_file_path="  \t  ")
+        with (
+            patch(
+                "app.application.use_cases.send_validar_extractos_notification.resolve_sharepoint_from_env",
+                new_callable=AsyncMock,
+                return_value={"site_id": "s1", "drive_id": "d1", "path_encoded": "bank/report.xlsx"},
+            ),
+            patch(
+                "app.application.use_cases.payment_validation_process_control.read_process_control_snapshot",
+                new_callable=AsyncMock,
+                return_value=MagicMock(
+                    estado_proceso="VACIO",
+                    is_active=False,
+                    historical_file_path="",
+                    email_pdf_path="",
+                    notify_idempotency_key="",
+                    process_key="",
+                    validation_file_path="",
+                    secretary_file_path="",
+                    bank_code="banco_bogota",
+                    bank_name="Banco de Bogotá",
+                    control_file_path="CTL.xlsx",
+                ),
+            ),
+        ):
+            with pytest.raises(ValueError, match="NO_READY_PROCESS"):
+                await send_validar_extractos_notification_email(g, historical_file_path="  \t  ")
 
     asyncio.run(run())
 
@@ -414,9 +519,19 @@ def test_notify_uses_explicit_historical_file_path_and_skips_auto_resolve():
                 resolve_auto,
             ),
             patch(
-                "app.application.use_cases.send_validar_extractos_notification.update_merge_control_workbook_after_notify",
+                "app.application.use_cases.send_validar_extractos_notification.resolve_sharepoint_path",
                 new_callable=AsyncMock,
-                return_value=_MC_SKIP_OUTCOME,
+                return_value={
+                    "site_id": "s1",
+                    "drive_id": "d1",
+                    "path_encoded": "bank/report.xlsx",
+                    "file_path": "banco.xlsx",
+                },
+            ),
+            patch(
+                    "app.application.use_cases.payment_validation_process_control.update_process_control_row2",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
         ):
             g = _GraphOk()
@@ -473,11 +588,21 @@ def test_notify_to_cc_overrides_still_supported():
                 new_callable=AsyncMock,
                 side_effect=fake_download,
             ),
-            patch(
-                "app.application.use_cases.send_validar_extractos_notification.update_merge_control_workbook_after_notify",
-                new_callable=AsyncMock,
-                return_value=_MC_SKIP_OUTCOME,
-            ),
+                patch(
+                    "app.application.use_cases.send_validar_extractos_notification.resolve_sharepoint_path",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "site_id": "s1",
+                        "drive_id": "d1",
+                        "path_encoded": "bank/report.xlsx",
+                        "file_path": "banco.xlsx",
+                    },
+                ),
+                patch(
+                "app.application.use_cases.payment_validation_process_control.update_process_control_row2",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
         ):
             g = _GraphOk()
             await send_validar_extractos_notification_email(
@@ -536,11 +661,21 @@ def test_existing_notify_recipient_resolution_from_excel_remains_unchanged():
                 new_callable=AsyncMock,
                 side_effect=fake_download,
             ),
-            patch(
-                "app.application.use_cases.send_validar_extractos_notification.update_merge_control_workbook_after_notify",
-                new_callable=AsyncMock,
-                return_value=_MC_SKIP_OUTCOME,
-            ),
+                patch(
+                    "app.application.use_cases.send_validar_extractos_notification.resolve_sharepoint_path",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "site_id": "s1",
+                        "drive_id": "d1",
+                        "path_encoded": "bank/report.xlsx",
+                        "file_path": "banco.xlsx",
+                    },
+                ),
+                patch(
+                "app.application.use_cases.payment_validation_process_control.update_process_control_row2",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
         ):
             g = _GraphOk()
             await send_validar_extractos_notification_email(

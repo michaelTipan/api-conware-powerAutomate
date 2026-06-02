@@ -32,15 +32,19 @@ class NotifyValidarExtractosRequest(BaseModel):
     `historical_file_path`: ruta relativa al root del drive de validación (la misma que
     `result.historical_file_path` de Finalize). No usar `webUrl` ni URL pública.
 
-    Obligatorio para ejecutar el job: si falta, está vacío o es solo espacios, el job falla
-    con `missing_historical_file_path` (Power Automate debe enviar siempre el path devuelto por Finalize).
+    Opcional: si no se envía, el endpoint resuelve HistoricalFilePath desde el control oficial
+    por banco (cuando exactamente un banco esté listo para notificar).
 
     `to` / `cc`: overrides opcionales respecto a CORREOS.xlsx (columnas EMISOR / RECEPTORES).
     """
 
     historical_file_path: str | None = Field(
         default=None,
-        description="Ruta relativa al root del drive (igual que Finalize). Obligatorio para el job.",
+        description="Ruta relativa al root del drive (igual que Finalize). Override manual opcional.",
+    )
+    bank_code: str | None = Field(
+        default=None,
+        description="Override técnico opcional: banco_bogota | banco_bancolombia. Si falta, auto-detección.",
     )
     to: str | None = None
     cc: str | None = None

@@ -111,6 +111,8 @@ async def _run_notify_validar_extractos_job(
         result = await send_validar_extractos_notification_email(
             graph,
             historical_file_path=payload.historical_file_path,
+            bank_code=payload.bank_code,
+            job_id=job_id,
             to_override=payload.to,
             cc_override=payload.cc,
         )
@@ -574,9 +576,9 @@ async def notify_validar_extractos_email(
     body: NotifyValidarExtractosRequest | None = Body(default=None),
 ) -> dict:
     """
-    Body JSON debe incluir ``historical_file_path``: ruta relativa al root del drive (la misma
-    que ``result.historical_file_path`` de Finalize), no ``webUrl``. Sin path válido el job falla
-    con ``missing_historical_file_path``.
+    Si el body NO incluye ``historical_file_path``, el job resuelve el histórico desde el control
+    oficial por banco (cuando exactamente un banco esté listo: EstadoProceso=FINALIZADO, IsActive=true,
+    HistoricalFilePath no vacío). Opcionalmente, puede enviar ``bank_code`` como override.
 
     Lee el Excel del reporte (GRAPH_SHAREPOINT_FILE_PATH) para la tabla del correo y la fecha mínima
     en la columna Fecha. El histórico de validación **solo** se obtiene por ``historical_file_path``

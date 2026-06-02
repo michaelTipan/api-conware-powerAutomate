@@ -281,14 +281,38 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
 
     if job_type == "notify_validar_extractos":
         mstripped = msg.strip()
+        if mstripped == "NO_READY_PROCESS":
+            return (
+                "No hay ningún histórico listo para notificar.",
+                "Ejecute Finalize del banco correspondiente hasta que el control por banco quede en FINALIZADO. "
+                "Luego ejecute Notify sin body o indique bank_code.",
+                "NO_READY_PROCESS",
+            )
+        if mstripped.startswith("MULTIPLE_READY_PROCESSES"):
+            return (
+                "Hay más de un banco listo para notificar.",
+                "Indique bank_code o use un flujo específico por banco para evitar ambigüedad.",
+                "MULTIPLE_READY_PROCESSES",
+            )
+        if mstripped == "control_not_ready_for_notify":
+            return (
+                "El control del banco no está en estado FINALIZADO activo; no se puede notificar.",
+                "Ejecute Finalize para ese banco y vuelva a intentar Notify.",
+                "control_not_ready_for_notify",
+            )
+        if mstripped == "already_notified":
+            return (
+                "El correo ya estaba registrado como notificado en el control del banco.",
+                "El siguiente paso es ejecutar Merge.",
+                "already_notified",
+            )
         if mstripped == "missing_historical_file_path" or mstripped.startswith(
             "missing_historical_file_path|"
         ):
             return (
-                "El envío de correo no arrancó porque Power Automate no indicó qué archivo histórico usar "
-                "(falta la ruta del Excel de cartera validada del día).",
-                "Ejecute primero Finalize del mismo día. En el flujo de correo, envíe exactamente la ruta "
-                "que devolvió Finalize en historical_file_path (carpeta 02 HISTORICO), no la URL de SharePoint.",
+                "No se pudo resolver el histórico para el correo (falta la ruta del Excel cartera_validada).",
+                "Ejecute Finalize para ese banco (debe dejar HistoricalFilePath en el control) o envíe historical_file_path "
+                "como override manual (ruta relativa al drive, no webUrl).",
                 "missing_historical_file_path",
             )
         if mstripped.startswith("historical_file_not_found"):

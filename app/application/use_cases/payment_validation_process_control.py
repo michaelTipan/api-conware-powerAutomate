@@ -76,6 +76,8 @@ class ProcessControlSnapshot:
     validation_file_path: str
     historical_file_path: str
     secretary_file_path: str
+    email_pdf_path: str
+    notify_idempotency_key: str
     bank_code: str
     bank_name: str
 
@@ -95,6 +97,8 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
         vpath = str(ws.cell(row=2, column=_col_index("ValidationFilePath")).value or "").strip().strip("/")
         hpath = str(ws.cell(row=2, column=_col_index("HistoricalFilePath")).value or "").strip().strip("/")
         spath = str(ws.cell(row=2, column=_col_index("SecretaryFilePath")).value or "").strip().strip("/")
+        epdf = str(ws.cell(row=2, column=_col_index("EmailPdfPath")).value or "").strip().strip("/")
+        nid = str(ws.cell(row=2, column=_col_index("NotifyIdempotencyKey")).value or "").strip()
         bc = str(ws.cell(row=2, column=_col_index("BankCode")).value or "").strip()
         bn = str(ws.cell(row=2, column=_col_index("BankName")).value or "").strip()
 
@@ -106,6 +110,8 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
             validation_file_path=vpath,
             historical_file_path=hpath,
             secretary_file_path=spath,
+            email_pdf_path=epdf,
+            notify_idempotency_key=nid,
             bank_code=bc,
             bank_name=bn,
         )

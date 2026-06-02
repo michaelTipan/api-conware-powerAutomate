@@ -1,7 +1,7 @@
 """
 Lectura/actualización del control oficial por banco (fila 2, hoja Procesos).
 
-Este módulo NO depende del legacy control_merge_pdfs.xlsx.
+Única fuente operativa del flujo Generate → Apply.
 """
 
 from __future__ import annotations

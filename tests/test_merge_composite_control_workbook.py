@@ -1,4 +1,4 @@
-"""Merge composite: control_merge_pdfs.xlsx, asientos y actualización de estado."""
+"""Merge composite: PDFs consolidados y control por banco."""
 
 from __future__ import annotations
 
@@ -26,15 +26,10 @@ from app.application.use_cases.merge_composite_validado_pdfs import (
     _pick_single_asiento_pdf,
     merge_composite_validado_pdfs,
 )
-from app.application.use_cases.merge_control_workbook_merge import (
-    MergeControlValidationError,
-    merge_control_parse_row2_validate_for_merge,
-    merge_control_upload_row2_updates,
-)
 from app.application.use_cases.setup_merge_control_workbook import (
     MERGE_CONTROL_COLUMNS,
     SHEET_NAME,
-    apply_merge_control_worksheet_protection,
+    apply_process_control_worksheet_protection,
 )
 
 
@@ -134,7 +129,7 @@ def _control_row_bytes(
     row["CreatedAtProceso"] = ""
     row["LastUpdatedAtProceso"] = ""
     ws.append([row[c] for c in MERGE_CONTROL_COLUMNS])
-    apply_merge_control_worksheet_protection(ws)
+    apply_process_control_worksheet_protection(ws)
     bio = BytesIO()
     wb.save(bio)
     return bio.getvalue()
@@ -235,16 +230,9 @@ class _MergeGraph:
 
 
 def test_merge_fails_when_historical_missing_ruta_asientos_contables_column(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     hist = "HIST/no_asientos_col.xlsx"
     email = "EMAIL/mail.pdf"
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     wb = Workbook()
     ws = wb.active
@@ -282,174 +270,12 @@ def test_merge_fails_when_historical_missing_ruta_asientos_contables_column(monk
     asyncio.run(run())
 
 
-def test_merge_reads_historical_and_email_paths_from_control_workbook():
-    hist = "HIST/cartera.xlsx"
-    email = "EMAIL/correo.pdf"
-    raw = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
-    snap = merge_control_parse_row2_validate_for_merge(raw)
-    assert snap.historical_file_path == hist
-    assert snap.email_pdf_path == email
 
 
-def test_merge_fails_when_no_pending_control_process():
-    raw = _control_row_bytes(
-        estado="CONSOLIDADO",
-        is_active=False,
-        hist="H/a.xlsx",
-        email="E/m.pdf",
-    )
-    with pytest.raises(MergeControlValidationError) as ei:
-        merge_control_parse_row2_validate_for_merge(raw)
-    assert ei.value.error_code == "merge_control_no_pending_process"
 
 
-def test_merge_fails_when_control_missing_historical_file_path():
-    raw = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist="",
-        email="E/m.pdf",
-    )
-    with pytest.raises(MergeControlValidationError) as ei:
-        merge_control_parse_row2_validate_for_merge(raw)
-    assert ei.value.error_code == "missing_historical_file_path"
 
 
-def test_merge_fails_when_control_missing_email_pdf_path():
-    raw = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist="H/a.xlsx",
-        email="",
-    )
-    with pytest.raises(MergeControlValidationError) as ei:
-        merge_control_parse_row2_validate_for_merge(raw)
-    assert ei.value.error_code == "missing_email_pdf_path"
-
-
-def test_merge_sets_control_status_consolidando_before_work(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
-    raw = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist="H/h.xlsx",
-        email="E/e.pdf",
-    )
-    g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = raw
-
-    from app.application.use_cases.merge_control_workbook_merge import merge_control_set_consolidando
-
-    async def _run():
-        await merge_control_set_consolidando(g, "s1", "d1", "CTL/control.xlsx")
-
-    asyncio.run(_run())
-    assert "CTL/control.xlsx" in g.uploaded
-    wb = load_workbook(BytesIO(g.uploaded["CTL/control.xlsx"]), data_only=True)
-    try:
-        ws = wb[SHEET_NAME]
-        c_est = MERGE_CONTROL_COLUMNS.index("EstadoProceso") + 1
-        assert ws.cell(2, c_est).value == "CONSOLIDANDO"
-    finally:
-        wb.close()
-
-
-def test_merge_updates_control_status_consolidado_on_success(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
-    raw = _control_row_bytes(
-        estado="CONSOLIDANDO",
-        is_active=True,
-        hist="H/h.xlsx",
-        email="E/e.pdf",
-    )
-    g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = raw
-    from app.application.use_cases.merge_control_workbook_merge import merge_control_set_consolidado_success
-
-    async def _run():
-        await merge_control_set_consolidado_success(g, "s1", "d1", "CTL/control.xlsx", outputs_count=3)
-
-    asyncio.run(_run())
-    wb = load_workbook(BytesIO(g.uploaded["CTL/control.xlsx"]), data_only=True)
-    try:
-        ws = wb[SHEET_NAME]
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("EstadoProceso") + 1).value == "CONSOLIDADO"
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("IsActive") + 1).value is False
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("MergeOutputCount") + 1).value == 3
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("MergeSkippedCount") + 1).value == 0
-    finally:
-        wb.close()
-
-
-def test_merge_updates_control_status_merge_parcial_on_skipped(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
-    raw = _control_row_bytes(
-        estado="CONSOLIDANDO",
-        is_active=True,
-        hist="H/h.xlsx",
-        email="E/e.pdf",
-    )
-    g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = raw
-    from app.application.use_cases.merge_control_workbook_merge import merge_control_set_merge_parcial
-
-    async def _run():
-        await merge_control_set_merge_parcial(
-            g,
-            "s1",
-            "d1",
-            "CTL/control.xlsx",
-            outputs_count=1,
-            skipped_count=2,
-            user_message="Hubo omisiones.",
-            next_action="Revise skipped.",
-        )
-
-    asyncio.run(_run())
-    wb = load_workbook(BytesIO(g.uploaded["CTL/control.xlsx"]), data_only=True)
-    try:
-        ws = wb[SHEET_NAME]
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("EstadoProceso") + 1).value == "MERGE_PARCIAL"
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("MergeSkippedCount") + 1).value == 2
-    finally:
-        wb.close()
-
-
-def test_merge_updates_control_status_error_merge_on_failure(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
-    raw = _control_row_bytes(
-        estado="CONSOLIDANDO",
-        is_active=True,
-        hist="H/h.xlsx",
-        email="E/e.pdf",
-    )
-    g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = raw
-    from app.application.use_cases.merge_control_workbook_merge import merge_control_set_error_merge
-
-    async def _run():
-        await merge_control_set_error_merge(
-            g,
-            "s1",
-            "d1",
-            "CTL/control.xlsx",
-            user_message="Falló algo.",
-            next_action="Reintente.",
-        )
-
-    asyncio.run(_run())
-    wb = load_workbook(BytesIO(g.uploaded["CTL/control.xlsx"]), data_only=True)
-    try:
-        ws = wb[SHEET_NAME]
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("EstadoProceso") + 1).value == "ERROR_MERGE"
-        assert ws.cell(2, MERGE_CONTROL_COLUMNS.index("IsActive") + 1).value is True
-    finally:
-        wb.close()
 
 
 def test_merge_does_not_call_auto_historical_resolver():
@@ -528,7 +354,6 @@ def test_merge_skip_line_includes_fields():
 
 
 def test_merge_multi_credit_two_extracts_validates_each_credit(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -541,12 +366,6 @@ def test_merge_multi_credit_two_extracts_validates_each_credit(monkeypatch):
 
     pdf = _tiny_pdf()
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_workbook_bytes(
         [
@@ -601,7 +420,6 @@ def test_merge_multi_credit_two_extracts_validates_each_credit(monkeypatch):
 
 
 def test_merge_parcial_no_delete_when_second_id_fails(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -613,12 +431,6 @@ def test_merge_parcial_no_delete_when_second_id_fails(monkeypatch):
 
     pdf = _tiny_pdf()
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_workbook_bytes(
         [
@@ -672,7 +484,6 @@ def test_merge_parcial_no_delete_when_second_id_fails(monkeypatch):
 
 
 def test_merge_multi_credit_credit_number_not_resolved_when_no_folder_nor_row_credit(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -681,12 +492,6 @@ def test_merge_multi_credit_credit_number_not_resolved_when_no_folder_nor_row_cr
 
     pdf = _tiny_pdf()
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     d_sin = "clientes/GEO/SIN_CREDITO/ASIENTOS CONTABLES CRED 0"
     g.initial[hist] = _hist_workbook_bytes(
@@ -739,7 +544,6 @@ def test_merge_multi_credit_credit_number_not_resolved_when_no_folder_nor_row_cr
 
 
 def test_merge_id_pago_two_credits_missing_one_asiento_partial_merge(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -751,12 +555,6 @@ def test_merge_id_pago_two_credits_missing_one_asiento_partial_merge(monkeypatch
 
     pdf = _tiny_pdf()
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_workbook_bytes(
         [
@@ -812,7 +610,6 @@ def test_merge_id_pago_two_credits_missing_one_asiento_partial_merge(monkeypatch
 
 
 def test_merge_terminado_credit_folder_consolidates(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -821,12 +618,6 @@ def test_merge_terminado_credit_folder_consolidates(monkeypatch):
     asiento_rel = f"{asiento_dir}/Asiento 254.pdf"
 
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_workbook_bytes(
         [["VALIDAR", "", "P254", "GEOEXCON", "254", asiento_dir]]
@@ -875,7 +666,6 @@ def test_merge_terminado_credit_folder_consolidates(monkeypatch):
 
 
 def test_merge_terminado_extract_wrong_asiento_folder_not_credit_unresolved(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -885,12 +675,6 @@ def test_merge_terminado_extract_wrong_asiento_folder_not_credit_unresolved(monk
     asiento_wrong = f"{asiento_dir_231}/Asiento 231.pdf"
 
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_workbook_bytes(
         [["VALIDAR", "", "P254", "GEOEXCON", "254", asiento_dir_254]]
@@ -943,7 +727,6 @@ def test_merge_parcial_retry_does_not_duplicate_existing_output(monkeypatch):
         _merge_composite_output_basename,
     )
 
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -954,12 +737,6 @@ def test_merge_parcial_retry_does_not_duplicate_existing_output(monkeypatch):
     out_rel = f"OUT/PDFS/{out_base}"
 
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_bytes()
     g.initial[email] = _tiny_pdf()
@@ -1038,7 +815,6 @@ def test_merge_skips_when_asiento_filename_does_not_match_credit_number():
 
 
 def test_merge_success_does_not_delete_asientos(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -1047,12 +823,6 @@ def test_merge_success_does_not_delete_asientos(monkeypatch):
     asiento_rel = f"{asiento_dir}/asiento_264.pdf"
 
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_bytes()
     g.initial[email] = _tiny_pdf()
@@ -1101,7 +871,6 @@ def test_merge_success_does_not_delete_asientos(monkeypatch):
 
 
 def test_merge_does_not_delete_asiento_when_upload_fails(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -1111,12 +880,6 @@ def test_merge_does_not_delete_asiento_when_upload_fails(monkeypatch):
 
     g = _MergeGraph()
     g.put_fail_substr = "OUT/PDFS"
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_bytes()
     g.initial[email] = _tiny_pdf()
@@ -1180,35 +943,6 @@ def test_merge_result_includes_outputs_count_and_skipped_count():
     assert r.skipped_count == 1
 
 
-def test_merge_preserves_control_workbook_protection(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
-    raw = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist="H/h.xlsx",
-        email="E/e.pdf",
-    )
-    g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = raw
-
-    async def _run():
-        await merge_control_upload_row2_updates(
-            g,
-            "s1",
-            "d1",
-            "CTL/control.xlsx",
-            updates={"EstadoProceso": "CONSOLIDANDO"},
-        )
-
-    asyncio.run(_run())
-    wb = load_workbook(BytesIO(g.uploaded["CTL/control.xlsx"]), data_only=False)
-    try:
-        ws = wb[SHEET_NAME]
-        assert ws.protection.sheet is True
-        assert ws.cell(1, 1).protection.locked is True
-    finally:
-        wb.close()
-
 
 def test_merge_failed_job_enrichment_merge_control_no_pending():
     raw = {
@@ -1232,7 +966,7 @@ def test_merge_completed_example_success_payload():
             "status": "ok",
             "merge_control_updated": True,
             "merge_control_status": "CONSOLIDADO",
-            "merge_control_file_path": "CTL/control_merge_pdfs.xlsx",
+            "merge_control_file_path": "00 CONTROL/control_proceso_validacion_pagos_banco_bogota.xlsx",
             "outputs_count": 2,
             "skipped_count": 0,
             "outputs": [
@@ -1255,7 +989,6 @@ def test_merge_completed_example_success_payload():
 def test_merge_writes_manifest_json(monkeypatch):
     import json
 
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     monkeypatch.setenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "LOGS")
     hist = "HIST/hist.xlsx"
@@ -1265,12 +998,6 @@ def test_merge_writes_manifest_json(monkeypatch):
     asiento_rel = f"{asiento_dir}/asiento_264.pdf"
 
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_bytes()
     g.initial[email] = _tiny_pdf()
@@ -1321,7 +1048,6 @@ def test_merge_writes_manifest_json(monkeypatch):
 def test_merge_two_asientos_same_credit_consolidates_both_and_manifest_paths(monkeypatch):
     import json
 
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     monkeypatch.setenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "LOGS")
     hist = "HIST/hist.xlsx"
@@ -1332,12 +1058,6 @@ def test_merge_two_asientos_same_credit_consolidates_both_and_manifest_paths(mon
     asiento_cuota = f"{asiento_dir}/Asiento cuota credito 264.pdf"
 
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_bytes()
     g.initial[email] = _tiny_pdf()

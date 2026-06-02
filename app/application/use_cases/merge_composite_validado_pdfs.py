@@ -7,8 +7,8 @@ En cada carpeta ASIENTOS CONTABLES del crédito debe existir al menos un PDF vá
 todos deben corresponder al crédito y se incluyen en orden estable por nombre.
 
 La fecha del reporte es la mínima de la columna Fecha del Excel de reporte (GRAPH_SHAREPOINT_FILE_PATH),
-solo para nombrar salidas. El histórico y el PDF del correo se leen desde ``control_merge_pdfs.xlsx``
-(fila 2), no por auto-resolución por fecha.
+solo para nombrar salidas. El histórico y el PDF del correo se leen desde el control oficial
+por banco (``payment_validation_process_control``, fila 2), salvo overrides en el body.
 """
 
 from __future__ import annotations

@@ -16,7 +16,7 @@ Los valores actuales **`VALIDAR`, `REPROGRAMAR`, `VALIDAR_PARCIAL`, `NO_VALIDAR`
 
 - **Creación one-shot:** `POST /graph/sharepoint/payment-validation/setup/audit-tracking-workbooks` (idempotente; no pisa archivos existentes).
 - **Carpeta base:** `GRAPH_PAYMENT_VALIDATION_CONTROL_PATH` o, si falta, la misma ruta por defecto que el control Merge (`…/00 CONTROL`). Override opcional: `GRAPH_AUDIT_PAGOS_ADELANTADOS_PATH` / `GRAPH_AUDIT_PAGOS_INCOMPLETOS_PATH`.
-- **Hoja:** `Registros`. **Tablas Excel:** `tblPagosAdelantados` / `tblPagosIncompletos`. Estilo cabecera = mismo criterio visual que `control_merge_pdfs` (azul `#002060`); **sin** protección de hoja para permitir append programático.
+- **Hoja:** `Registros`. **Tablas Excel:** `tblPagosAdelantados` / `tblPagosIncompletos`. Estilo cabecera = mismo criterio visual que los controles de proceso (azul `#002060`); **sin** protección de hoja para permitir append programático.
 - **Encabezados fila 1 (orden fijo):** Fecha proceso, Fecha hora registro, ID Pago, Cliente, Crédito, Fecha banco, Fecha límite, Monto banco, Valor extracto, Aplicar a extracto, Mora a aplicar, Otros valores, Total aplicado, Saldo por asignar, Estado Pago, Validar Pago, Observación, Ruta, Link extracto, Link carpeta crédito, Archivo histórico.
 
 Finalize debe **añadir filas bajo esa tabla** (o insertar en la tabla) sin renombrar hoja/columnas.
@@ -89,7 +89,7 @@ Notify/Merge
 
 ### Merge
 
-- Leer **únicamente** **RutaAsientosContables** por fila (histórico vía `control_merge_pdfs.xlsx`) y listar PDFs hijos (mismo patrón que **Ruta** para extractos).
+- Leer **únicamente** **RutaAsientosContables** por fila (histórico vía control oficial por banco) y listar PDFs hijos (mismo patrón que **Ruta** para extractos).
 - **Sin fallback:** no usar `parent(ruta_extracto)` ni `GRAPH_ASIENTOS_CONTABLES_FOLDER_NAME` para adivinar carpetas. Históricos sin columna o con celda vacía en filas incluidas en el merge → **error** (p. ej. `missing_ruta_asientos_contables`) con mensaje que indique re-ejecutar Finalize tras despliegue.
 - Eliminar o dejar de invocar la heurística actual en `merge_composite_validado_pdfs` una vez implementado el contrato de columna.
 

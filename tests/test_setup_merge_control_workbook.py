@@ -16,7 +16,6 @@ from app.application.use_cases.setup_merge_control_workbook import (
     BANK_CODE_BANCOLOMBIA,
     BANK_CODE_BOGOTA,
     MERGE_CONTROL_COLUMNS,
-    MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
     PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
     PROCESS_CONTROL_BANK_FILE_BOGOTA,
     PROCESS_CONTROL_COLUMNS,
@@ -38,7 +37,7 @@ class MockGraphSetup:
         self.files: dict[str, bytes] = {}
         self.put_count = 0
         self.post_json_count = 0
-        self.web_url = "https://comwareec.sharepoint.com/sites/x/control_merge_pdfs.xlsx"
+        self.web_url = "https://comwareec.sharepoint.com/sites/x/control.xlsx"
         self.get_item_meta: dict = {"webUrl": self.web_url}
         self.put_response: dict = {"webUrl": self.web_url}
         self.force_403_on_put = False
@@ -60,8 +59,6 @@ class MockGraphSetup:
         if self.force_403_on_list:
             raise _http_error(403)
         p = self._path_from_endpoint(endpoint)
-        if p == MERGE_CONTROL_WORKBOOK_RELATIVE_PATH and endpoint.endswith(":") and "/content" not in endpoint:
-            return dict(self.get_item_meta)
         return {"value": []}
 
     async def get_bytes(self, endpoint: str, params=None):
@@ -113,7 +110,10 @@ def test_setup_merge_control_workbook_creates_file_when_missing(mock_resolve):
     out = asyncio.run(setup_merge_control_workbook(g))
     assert out["status"] == "success"
     assert len(out["banks"]) == 2
-    assert "legacy_merge_control" not in out
+    assert out.get("official_control_file_names") == [
+        "control_proceso_validacion_pagos_banco_bogota.xlsx",
+        "control_proceso_validacion_pagos_banco_bancolombia.xlsx",
+    ]
     assert PROCESS_CONTROL_BANK_FILE_BOGOTA in g.files
     assert PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA in g.files
 

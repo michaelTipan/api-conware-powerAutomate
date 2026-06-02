@@ -119,7 +119,6 @@ def test_build_pdf_order_asientos_before_single_extract(monkeypatch):
 
 
 def test_merge_two_credits_credit_items_and_no_duplicate_extract_265(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     monkeypatch.setenv("GRAPH_PAYMENT_VALIDATION_LOGS_PATH", "LOGS")
     hist = "HIST/hist.xlsx"
@@ -134,12 +133,6 @@ def test_merge_two_credits_credit_items_and_no_duplicate_extract_265(monkeypatch
 
     pdf = _tiny_pdf()
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_workbook_bytes(
         [
@@ -210,7 +203,6 @@ def test_merge_two_credits_credit_items_and_no_duplicate_extract_265(monkeypatch
 
 
 def test_merge_force_rebuild_uploads_when_pdf_exists(monkeypatch):
-    monkeypatch.setenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "CTL/control.xlsx")
     monkeypatch.setenv("GRAPH_MERGE_COMPOSITE_OUTPUT_FOLDER_PATH", "OUT/PDFS")
     hist = "HIST/hist.xlsx"
     email = "EMAIL/mail.pdf"
@@ -219,12 +211,6 @@ def test_merge_force_rebuild_uploads_when_pdf_exists(monkeypatch):
     asiento_rel = f"{asiento_dir}/asiento_264.pdf"
 
     g = _MergeGraph()
-    g.initial["CTL/control.xlsx"] = _control_row_bytes(
-        estado="PENDIENTE_ASIENTOS",
-        is_active=True,
-        hist=hist,
-        email=email,
-    )
     g.initial["bank/report.xlsx"] = _bank_bytes()
     g.initial[hist] = _hist_workbook_bytes(
         [["VALIDAR", "", "G1", "ACME", "264", asiento_dir]]

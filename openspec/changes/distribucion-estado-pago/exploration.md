@@ -101,7 +101,7 @@ Combinar **2) + 3)** para robustez y mensajes claros, y en paralelo **validar en
 
 **Origen del dato “extracto” en Merge**
 
-- `merge_composite_validado_pdfs` lee el **histórico** (`cartera_validada_*.xlsx` vía `control_merge_pdfs.xlsx` fila 2), hoja **Distribución**.
+- `merge_composite_validado_pdfs` lee el **histórico** (`cartera_validada_*.xlsx` vía control oficial por banco, fila 2), hoja **Distribución**.
 - Los PDFs de extracto no se “descubren” otra vez con la lógica de carpetas de Generate: se toman de la columna **Ruta** (y filtros por estado / Validar Pago vía `distrib_row_included_for_validar_extractos`), usando **`_collect_pdf_paths_from_ruta_cell`** definida en `send_validar_extractos_notification.py`.
 - Esa función resuelve **fragmentos** de celda (coma/salto/`;`), prueba `.pdf` directo, carpeta → PDFs hijos, etc. Es la **misma** resolución semántica que **Notify** para adjuntos.
 

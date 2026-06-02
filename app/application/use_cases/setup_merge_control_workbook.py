@@ -6,9 +6,8 @@ Crea o repara (sin sobrescribir datos de fila 2) los controles oficiales:
 * ``control_proceso_validacion_pagos_banco_bogota.xlsx``
 * ``control_proceso_validacion_pagos_banco_bancolombia.xlsx``
 
-Nota: ``control_merge_pdfs.xlsx`` queda obsoleto. Este setup NO lo crea ni lo repara.
-
 Hoja ``Procesos``, tabla ``tblControlProcesosPagos``.
+Solo crea/repara los controles oficiales por banco en ``00 CONTROL``.
 """
 
 from __future__ import annotations
@@ -36,16 +35,13 @@ MERGE_CONTROL_FOLDER_RELATIVE_PATH = (
     "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/00 CONTROL"
 )
 
-# Legacy: Notify / Merge / amortización siguen leyendo esta ruta (env o default).
-MERGE_CONTROL_WORKBOOK_RELATIVE_PATH = f"{MERGE_CONTROL_FOLDER_RELATIVE_PATH}/control_merge_pdfs.xlsx"
-
 SHEET_NAME = "Procesos"
 
-# Legacy table name (control_merge_pdfs.xlsx y workbooks antiguos).
-TABLE_DISPLAY_NAME = "tblControlMergePDFs"
-
-# Tabla oficial en controles por banco (nuevos archivos).
+# Tabla oficial en controles por banco.
 PROCESS_CONTROL_TABLE_DISPLAY_NAME = "tblControlProcesosPagos"
+
+# Alias de tabla en workbooks por banco creados antes de la migración de nombre.
+_PRE_MIGRATION_TABLE_DISPLAY_NAME = "tblControlMergePDFs"
 
 MERGE_CONTROL_COLUMNS: tuple[str, ...] = (
     "Title",
@@ -347,7 +343,7 @@ def _resize_control_table_and_filter(
 
 def _resize_merge_control_table_and_filter(ws: Any) -> None:
     _resize_control_table_and_filter(
-        ws, columns=MERGE_CONTROL_COLUMNS, table_names=(TABLE_DISPLAY_NAME,)
+        ws, columns=MERGE_CONTROL_COLUMNS, table_names=(_PRE_MIGRATION_TABLE_DISPLAY_NAME,)
     )
 
 
@@ -355,8 +351,8 @@ def _resize_process_control_table_and_filter(ws: Any) -> None:
     names: list[str] = []
     if PROCESS_CONTROL_TABLE_DISPLAY_NAME in ws.tables:
         names.append(PROCESS_CONTROL_TABLE_DISPLAY_NAME)
-    if TABLE_DISPLAY_NAME in ws.tables:
-        names.append(TABLE_DISPLAY_NAME)
+    if _PRE_MIGRATION_TABLE_DISPLAY_NAME in ws.tables:
+        names.append(_PRE_MIGRATION_TABLE_DISPLAY_NAME)
     _resize_control_table_and_filter(
         ws,
         columns=PROCESS_CONTROL_COLUMNS,
@@ -451,21 +447,6 @@ def _initial_process_control_row_values(bank_code: str, bank_name: str) -> dict[
     return values
 
 
-def merge_control_workbook_relative_path() -> str:
-    """Ruta relativa al root del drive del Excel de control Merge legacy (env o default)."""
-    p = os.getenv("GRAPH_MERGE_CONTROL_WORKBOOK_PATH", "").strip()
-    return p or MERGE_CONTROL_WORKBOOK_RELATIVE_PATH
-
-
-def apply_merge_control_worksheet_protection(ws: Any) -> None:
-    """Bloquea filas 1-2 del contrato legacy y activa protección de hoja sin contraseña."""
-    ncols = len(MERGE_CONTROL_COLUMNS)
-    for r in (1, 2):
-        for c in range(1, ncols + 1):
-            ws.cell(row=r, column=c).protection = _PROT_LOCKED
-    ws.protection.sheet = True
-
-
 def apply_process_control_worksheet_protection(ws: Any) -> None:
     """Bloquea filas 1-2 del contrato completo de proceso."""
     ncols = len(PROCESS_CONTROL_COLUMNS)
@@ -493,7 +474,8 @@ def _add_table(ws: Any, *, display_name: str, ncols: int) -> None:
     ws.add_table(tab)
 
 
-def _build_legacy_workbook_bytes() -> bytes:
+def _build_workbook_with_base_columns_only() -> bytes:
+    """Workbook de prueba con solo columnas base (sin extensiones de proceso)."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = SHEET_NAME
@@ -531,17 +513,12 @@ def _build_legacy_workbook_bytes() -> bytes:
 
     ws.auto_filter.ref = f"A1:{get_column_letter(ncols)}2"
     ws.freeze_panes = "A2"
-    _add_table(ws, display_name=TABLE_DISPLAY_NAME, ncols=ncols)
-    apply_merge_control_worksheet_protection(ws)
+    _add_table(ws, display_name=_PRE_MIGRATION_TABLE_DISPLAY_NAME, ncols=ncols)
+    apply_process_control_worksheet_protection(ws)
 
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
-
-
-def _build_workbook_bytes() -> bytes:
-    """Alias legacy para tests que importan ``_build_workbook_bytes``."""
-    return _build_legacy_workbook_bytes()
 
 
 def _build_process_control_workbook_bytes(bank_code: str, bank_name: str) -> bytes:
@@ -576,13 +553,6 @@ def _build_process_control_workbook_bytes(bank_code: str, bank_name: str) -> byt
     return buf.getvalue()
 
 
-def _header_row_matches(ws: Any) -> bool:
-    if not merge_control_prefix_headers_match(ws):
-        return False
-    col_map = merge_control_header_column_map(ws)
-    return MERGE_CONTROL_AMORTIZATION_COLUMN in col_map
-
-
 def _process_control_header_row_matches(ws: Any) -> bool:
     if not merge_control_prefix_headers_match(ws):
         return False
@@ -592,74 +562,9 @@ def _process_control_header_row_matches(ws: Any) -> bool:
 
 def _process_control_table_ok(ws: Any) -> bool:
     return (
-        PROCESS_CONTROL_TABLE_DISPLAY_NAME in ws.tables or TABLE_DISPLAY_NAME in ws.tables
+        PROCESS_CONTROL_TABLE_DISPLAY_NAME in ws.tables
+        or _PRE_MIGRATION_TABLE_DISPLAY_NAME in ws.tables
     )
-
-
-def _validate_and_repair_legacy_workbook(data: bytes) -> tuple[list[str], bool, bool, bytes | None]:
-    warnings: list[str] = []
-    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=False)
-    modified = False
-    try:
-        if SHEET_NAME not in wb.sheetnames:
-            warnings.append("needs_manual_review: falta la hoja Procesos")
-            return warnings, False, False, None
-
-        ws = wb[SHEET_NAME]
-
-        if not merge_control_prefix_headers_match(ws):
-            warnings.append("needs_manual_review: encabezados no coinciden con el contrato esperado")
-            return warnings, False, ws.protection.sheet is True, None
-
-        if ensure_merge_control_worksheet_columns(ws):
-            warnings.append("repaired: se añadieron columnas faltantes del contrato legacy")
-            modified = True
-
-        if ws.max_row < 2:
-            warnings.append("needs_manual_review: falta la fila 2 de control")
-            return warnings, False, ws.protection.sheet is True, None
-
-        if TABLE_DISPLAY_NAME not in ws.tables:
-            ref = f"A1:{get_column_letter(len(MERGE_CONTROL_COLUMNS))}2"
-            tab = Table(displayName=TABLE_DISPLAY_NAME, ref=ref)
-            tab.tableStyleInfo = _TABLE_STYLE
-            ws.add_table(tab)
-            warnings.append("repaired: se añadió la tabla tblControlMergePDFs faltante")
-            modified = True
-
-        if not ws.protection.sheet:
-            warnings.append("repaired: se activó protección de hoja")
-            modified = True
-
-        need_relock = False
-        for r in (1, 2):
-            for c in range(1, len(MERGE_CONTROL_COLUMNS) + 1):
-                cell = ws.cell(row=r, column=c)
-                if getattr(cell, "protection", None) is None or cell.protection.locked is not True:
-                    need_relock = True
-                    break
-            if need_relock:
-                break
-        if need_relock:
-            modified = True
-
-        if modified:
-            apply_merge_control_worksheet_protection(ws)
-
-        struct_ok = _header_row_matches(ws) and ws.max_row >= 2 and TABLE_DISPLAY_NAME in ws.tables
-        protection_on = ws.protection.sheet is True
-
-        new_bytes: bytes | None = None
-        if modified:
-            buf = io.BytesIO()
-            wb.save(buf)
-            new_bytes = buf.getvalue()
-
-        return warnings, struct_ok, protection_on, new_bytes
-    finally:
-        closer = getattr(wb, "close", None)
-        if callable(closer):
-            closer()
 
 
 def _validate_and_repair_process_control_workbook(
@@ -700,7 +605,10 @@ def _validate_and_repair_process_control_workbook(
             ws.add_table(tab)
             warnings.append("repaired: se añadió la tabla tblControlProcesosPagos faltante")
             modified = True
-        elif PROCESS_CONTROL_TABLE_DISPLAY_NAME not in ws.tables and TABLE_DISPLAY_NAME in ws.tables:
+        elif (
+            PROCESS_CONTROL_TABLE_DISPLAY_NAME not in ws.tables
+            and _PRE_MIGRATION_TABLE_DISPLAY_NAME in ws.tables
+        ):
             _resize_process_control_table_and_filter(ws)
             modified = True
 
@@ -835,7 +743,7 @@ async def _setup_process_control_bank_workbook(
             "file_url": file_url,
             "sheet_name": SHEET_NAME,
             "table_name": PROCESS_CONTROL_TABLE_DISPLAY_NAME,
-            "legacy_table_name": TABLE_DISPLAY_NAME,
+            "previous_table_display_name": _PRE_MIGRATION_TABLE_DISPLAY_NAME,
             "warnings": warnings,
             "excel_protection_applied": excel_protection,
         }
@@ -862,7 +770,7 @@ async def _setup_process_control_bank_workbook(
         "file_url": file_url,
         "sheet_name": SHEET_NAME,
         "table_name": PROCESS_CONTROL_TABLE_DISPLAY_NAME,
-        "legacy_table_name": TABLE_DISPLAY_NAME,
+        "previous_table_display_name": _PRE_MIGRATION_TABLE_DISPLAY_NAME,
         "warnings": warnings,
         "excel_protection_applied": excel_protection,
     }
@@ -918,7 +826,7 @@ async def setup_merge_control_workbook(graph: GraphApiPort) -> dict[str, Any]:
             "control_proceso_validacion_pagos_banco_bancolombia.xlsx",
         ],
         "process_control_columns": list(PROCESS_CONTROL_COLUMNS),
-        "legacy_columns": list(MERGE_CONTROL_COLUMNS),
+        "base_columns": list(MERGE_CONTROL_COLUMNS),
         "row_mode": "single_active_row",
         "sharepoint_permission_applied": False,
         "security_warning": SECURITY_WARNING,

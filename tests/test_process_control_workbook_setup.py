@@ -12,15 +12,13 @@ from app.application.use_cases.setup_merge_control_workbook import (
     BANK_CODE_BANCOLOMBIA,
     BANK_CODE_BOGOTA,
     MERGE_CONTROL_COLUMNS,
-    MERGE_CONTROL_WORKBOOK_RELATIVE_PATH,
     PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
     PROCESS_CONTROL_BANK_FILE_BOGOTA,
     PROCESS_CONTROL_COLUMNS,
     PROCESS_CONTROL_EXTENSION_COLUMNS,
     PROCESS_CONTROL_TABLE_DISPLAY_NAME,
     SHEET_NAME,
-    TABLE_DISPLAY_NAME,
-    _build_legacy_workbook_bytes,
+    _build_workbook_with_base_columns_only,
     _build_process_control_workbook_bytes,
     build_payment_validation_process_key,
     setup_merge_control_workbook,
@@ -207,7 +205,7 @@ def test_process_control_initial_bank_values_bancolombia(mock_resolve):
 
 def test_setup_adds_missing_extension_columns_to_legacy_twelve_col_workbook(mock_resolve):
     g = MultiFileMockGraph()
-    g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA] = _build_legacy_workbook_bytes()
+    g.files[PROCESS_CONTROL_BANK_FILE_BOGOTA] = _build_workbook_with_base_columns_only()
     g.put_count = 0
     out = asyncio.run(setup_merge_control_workbook(g))
     bogota = _bank_result(out, BANK_CODE_BOGOTA)
@@ -243,9 +241,11 @@ def test_build_process_control_bytes_standalone():
         wb.close()
 
 
-def test_setup_does_not_create_legacy_merge_control_workbook(mock_resolve):
+def test_setup_only_creates_official_bank_controls(mock_resolve):
     g = MultiFileMockGraph()
     out = asyncio.run(setup_merge_control_workbook(g))
     assert out["status"] == "success"
-    assert "legacy_merge_control" not in out
-    assert MERGE_CONTROL_WORKBOOK_RELATIVE_PATH not in g.files
+    assert set(g.files) == {
+        PROCESS_CONTROL_BANK_FILE_BOGOTA,
+        PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
+    }

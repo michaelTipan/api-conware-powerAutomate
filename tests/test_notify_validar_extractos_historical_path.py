@@ -16,7 +16,6 @@ from app.adapters.primary.http.deps import init_graph_client
 from app.adapters.primary.http.routers import sharepoint as sharepoint_mod
 from app.adapters.primary.http.routers.sharepoint import router
 from app.application.job_status_enrichment import enrich_job_for_http_response
-from app.application.use_cases.merge_control_workbook_notify import MergeControlNotifyWriteOutcome
 from app.application.use_cases.send_validar_extractos_notification import (
     _find_distribucion_header_row,
     send_validar_extractos_notification_email,
@@ -26,17 +25,6 @@ from app.application.use_cases.setup_merge_control_workbook import (
     PROCESS_CONTROL_BANK_FILE_BOGOTA,
     _build_process_control_workbook_bytes,
 )
-
-_MC_SKIP_OUTCOME = MergeControlNotifyWriteOutcome(
-    merge_control_updated=False,
-    merge_control_file_path=(
-        "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/00 CONTROL/control_merge_pdfs.xlsx"
-    ),
-    merge_control_status=None,
-    merge_control_warning=None,
-    merge_control_error_code=None,
-)
-
 
 def _minimal_bank_xlsx() -> bytes:
     wb = Workbook()

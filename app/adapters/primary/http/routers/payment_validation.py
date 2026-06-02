@@ -435,7 +435,7 @@ async def queue_amortization_dry_run(
 ) -> dict[str, Any]:
     """
     Encola análisis preliminar de amortización (dry-run) contra SharePoint.
-    Sin body usa ``MergeManifestPath`` de control_merge_pdfs.xlsx (escrito por Merge).
+    Sin body resuelve insumos desde el control oficial por banco (auto-detección; Merge escribe MergeManifestPath).
     Consulte ``GET /jobs/{job_id}`` para el resultado.
     """
     payload = body or AmortizationDryRunRequest()
@@ -576,7 +576,8 @@ async def post_setup_merge_control_workbook(graph: GraphClientDep) -> dict[str, 
   * ``control_proceso_validacion_pagos_banco_bogota.xlsx``
   * ``control_proceso_validacion_pagos_banco_bancolombia.xlsx``
 
-  Nota: ``control_merge_pdfs.xlsx`` queda obsoleto y este setup ya NO lo crea ni lo repara.
+  Crea o repara solo ``control_proceso_validacion_pagos_banco_bogota.xlsx`` y
+  ``control_proceso_validacion_pagos_banco_bancolombia.xlsx`` en 00 CONTROL.
   La migración funcional de endpoints se hará en fases posteriores.
     """
     try:

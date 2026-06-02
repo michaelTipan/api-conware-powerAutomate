@@ -29,6 +29,12 @@ _UNKNOWN_NEXT = (
     "Indique la fecha del reporte y copie el detalle técnico que aparece en el mismo mensaje de error."
 )
 
+_PROCESS_CONTROL_FILES_HINT = (
+    "el control de proceso del banco en 00 CONTROL "
+    "(control_proceso_validacion_pagos_banco_bogota.xlsx o "
+    "control_proceso_validacion_pagos_banco_bancolombia.xlsx)"
+)
+
 _GENERATE_MESSAGES: dict[str, tuple[str, str]] = {
     "review_folder_not_empty": (
         "No se pudo generar el archivo nuevo porque en 01 REVISION todavía hay un Excel de un día anterior.",
@@ -446,16 +452,17 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
         if mstripped == "merge_control_no_pending_process":
             return (
                 "No se puede unir PDFs porque el sistema no tiene un proceso activo registrado tras el correo del día.",
-                "Ejecute en este orden: Finalize → envío de correo de extractos (debe quedar registrado en "
-                "control_merge_pdfs.xlsx con estado pendiente de asientos). Luego ejecute Unir PDFs. "
-                "Si el correo de hoy no actualizó el control, reenvíe el correo o pida a soporte.",
+                "Ejecute en este orden: Finalize → envío de correo de extractos (debe quedar "
+                f"PENDIENTE_ASIENTOS en {_PROCESS_CONTROL_FILES_HINT}). Luego ejecute Unir PDFs. "
+                "Si el correo de hoy no actualizó el control del banco, reenvíe el correo o pida a soporte.",
                 "merge_control_no_pending_process",
             )
         if mstripped == "missing_historical_file_path":
             return (
                 "El archivo de control no tiene la ruta del histórico de validación necesaria para unir PDFs.",
-                "Vuelva a ejecutar el envío de correo del día (debe registrar historical_file_path en control_merge_pdfs). "
-                "Si el control está vacío o dañado, pida a soporte restaurar control_merge_pdfs.xlsx en 00 CONTROL.",
+                f"Vuelva a ejecutar el envío de correo del día (debe registrar HistoricalFilePath en "
+                f"{_PROCESS_CONTROL_FILES_HINT}). "
+                "Si el control del banco está vacío o dañado, ejecute setup de controles por banco o pida a soporte.",
                 "missing_historical_file_path",
             )
         if mstripped == "missing_email_pdf_path":
@@ -467,15 +474,16 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
             )
         if mstripped == "merge_control_workbook_not_found":
             return (
-                "No existe control_merge_pdfs.xlsx en 00 CONTROL; sin ese archivo no puede iniciar la unión de PDFs.",
-                "Pida a soporte crear el archivo de control una sola vez (setup). "
+                f"No existe el control de proceso del banco en 00 CONTROL; sin {_PROCESS_CONTROL_FILES_HINT} "
+                "no puede iniciar la unión de PDFs.",
+                "Ejecute POST setup/merge-control-workbook para crear los controles oficiales por banco. "
                 "Luego: correo del día → Unir PDFs.",
                 "merge_control_workbook_not_found",
             )
         if mstripped == "merge_control_invalid_structure":
             return (
-                "control_merge_pdfs.xlsx está dañado o fue editado (falta hoja Procesos, encabezados o fila 2).",
-                "No modifique ese Excel a mano. Pida a soporte restaurar la plantilla en 00 CONTROL y repita correo + Unir PDFs.",
+                f"El control de proceso del banco está dañado o fue editado (falta hoja Procesos, encabezados o fila 2).",
+                f"No modifique {_PROCESS_CONTROL_FILES_HINT} a mano. Ejecute setup o pida a soporte y repita correo + Unir PDFs.",
                 "merge_control_invalid_structure",
             )
         if "no se encontró pdf de correo" in mlow:
@@ -608,20 +616,21 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
         mstripped = msg.strip()
         if mstripped == "merge_control_manifest_path_missing":
             return (
-                "En control_merge_pdfs.xlsx falta la ruta del manifest de Merge (columna MergeManifestPath).",
+                f"En el control de proceso del banco falta MergeManifestPath (manifest de Merge).",
                 "Ejecute Merge hasta que termine en CONSOLIDADO o MERGE_PARCIAL y vuelva a intentar amortización.",
                 "merge_control_manifest_path_missing",
             )
         if mstripped == "merge_control_amortization_not_ready":
             return (
                 "El proceso de Merge aún no está listo para amortización (estado distinto de CONSOLIDADO/MERGE_PARCIAL).",
-                "Espere a que Merge finalice o corrija el estado en control_merge_pdfs.xlsx antes de aplicar amortización.",
+                "Espere a que Merge finalice o corrija el estado en el control del banco (CONSOLIDADO/MERGE_PARCIAL) "
+                "antes de aplicar amortización.",
                 "merge_control_amortization_not_ready",
             )
         if mstripped == "merge_control_workbook_not_found":
             return (
-                "No existe control_merge_pdfs.xlsx en SharePoint.",
-                "Ejecute el setup del control merge y el flujo Notify antes de amortización.",
+                f"No existe el control de proceso del banco en SharePoint.",
+                "Ejecute setup de controles por banco y el flujo Notify/Merge antes de amortización.",
                 "merge_control_workbook_not_found",
             )
         if mstripped in (
@@ -629,8 +638,8 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
             "missing_historical_file_path",
         ):
             return (
-                "El archivo control_merge_pdfs.xlsx no tiene la estructura esperada o faltan rutas.",
-                "Restaure la plantilla del control o contacte soporte; no edite encabezados a mano.",
+                f"El control de proceso del banco no tiene la estructura esperada o faltan rutas.",
+                "Ejecute setup de controles por banco o contacte soporte; no edite encabezados a mano.",
                 mstripped,
             )
 
@@ -711,7 +720,7 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
         if ec == "merge_control_active_process_exists":
             return (
                 "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
-                "Para el siguiente paso (unir PDFs): en 00 CONTROL / control_merge_pdfs.xlsx ya hay un proceso "
+                f"Para el siguiente paso (unir PDFs): en 00 CONTROL el control del banco ya tiene un proceso "
                 "pendiente. Termine o cancele ese proceso antes de volver a registrar uno nuevo.",
                 "warning",
             )
@@ -726,24 +735,23 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
         if ec == "merge_control_workbook_not_found":
             return (
                 "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
-                "No se actualizó control_merge_pdfs.xlsx porque el archivo no existe en 00 CONTROL. "
-                "Pida a soporte ejecutar una sola vez el setup del archivo de control; después el flujo de correo "
-                "quedará listo para el paso de unir PDFs.",
+                f"No se actualizó el control de proceso del banco porque no existe en 00 CONTROL. "
+                "Ejecute setup de controles por banco; después el flujo de correo quedará listo para unir PDFs.",
                 "warning",
             )
         if ec == "merge_control_invalid_structure":
             return (
                 "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
-                "No se pudo actualizar control_merge_pdfs.xlsx porque el formato del archivo no es el esperado "
-                "(hoja Procesos, encabezados o fila 2). Pida a soporte restaurar o recrear el archivo de control.",
+                f"No se pudo actualizar el control de proceso del banco: formato no esperado "
+                "(hoja Procesos, encabezados o fila 2). Ejecute setup o pida a soporte restaurar el control del banco.",
                 "warning",
             )
         if ec in ("merge_control_read_failed", "merge_control_write_failed"):
             return (
                 "Hizo bien el envío del correo: los destinatarios deberían haberlo recibido.",
                 wtxt
-                or "No se pudo leer o guardar control_merge_pdfs.xlsx (permisos o archivo abierto). "
-                "Cierre ese Excel en SharePoint y reintente; si persiste, contacte soporte.",
+                or f"No se pudo leer o guardar el control de proceso del banco (permisos o archivo abierto). "
+                "Cierre el Excel del banco en SharePoint y reintente; si persiste, contacte soporte.",
                 "warning",
             )
         if not result.get("merge_control_updated") and wtxt and not ec:

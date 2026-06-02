@@ -7,6 +7,7 @@ import inspect
 import unicodedata
 from datetime import date
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import unquote
 
@@ -35,6 +36,70 @@ from app.application.use_cases.setup_merge_control_workbook import (
     SHEET_NAME,
     apply_merge_control_worksheet_protection,
 )
+
+
+@pytest.fixture(autouse=True)
+def _merge_phase4_env(monkeypatch):
+    # Para Phase 4 (control por banco): Merge requiere resolver el reporte del banco.
+    monkeypatch.setenv("GRAPH_SHAREPOINT_SITE_SEARCH", "TEST_SITE")
+    monkeypatch.setenv("GRAPH_SHAREPOINT_DRIVE_NAME", "TEST_DRIVE")
+    monkeypatch.setenv("GRAPH_SHAREPOINT_FILE_PATH", "bank/report.xlsx")
+
+
+def _pc_snapshot(
+    *,
+    hist: str,
+    email: str,
+    estado: str = "PENDIENTE_ASIENTOS",
+    is_active: bool = True,
+    process_key: str = "payment-validation|banco_bogota|2026-05-12",
+):
+    return SimpleNamespace(
+        control_file_path="CTL/ignored.xlsx",
+        estado_proceso=estado,
+        is_active=is_active,
+        process_key=process_key,
+        validation_file_path="",
+        historical_file_path=hist,
+        secretary_file_path="",
+        email_pdf_path=email,
+        notify_idempotency_key="",
+        merge_manifest_path="",
+        merge_idempotency_key="",
+        bank_code="banco_bogota",
+        bank_name="Banco de Bogotá",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _merge_phase4_patches(monkeypatch):
+    """
+    Merge Phase 4 lee/escribe control por banco; la mayoría de estos tests son unitarios del merge
+    de PDFs y usan overrides manuales. Parcheamos el acceso al control para evitar dependencias de
+    SharePoint/control oficial en este set de pruebas.
+    """
+    import app.application.sharepoint_resolution as spr
+    import app.application.use_cases.payment_validation_process_control as pc
+    import app.application.use_cases.merge_composite_validado_pdfs as m
+
+    async def _fake_read(_g, _s, _d, *, bank_code: str):
+        return _pc_snapshot(hist="", email="", process_key=f"payment-validation|{bank_code}|2026-05-12")
+
+    async def _fake_update(_g, _s, _d, *, bank_code: str, updates: dict):
+        return True
+
+    async def _fake_resolve(_g, _site_search: str, _drive_name: str, _path: str):
+        return {
+            "site_id": "s1",
+            "drive_id": "d1",
+            "path_encoded": encode_graph_drive_path("bank/report.xlsx"),
+            "file_path": "bank/report.xlsx",
+        }
+
+    monkeypatch.setattr(pc, "read_process_control_snapshot", _fake_read)
+    monkeypatch.setattr(pc, "update_process_control_row2", _fake_update)
+    monkeypatch.setattr(spr, "resolve_sharepoint_path", _fake_resolve)
+    monkeypatch.setattr(m, "resolve_sharepoint_path", _fake_resolve)
 
 
 def _tiny_pdf() -> bytes:
@@ -199,13 +264,20 @@ def test_merge_fails_when_historical_missing_ruta_asientos_contables_column(monk
     }
 
     async def run():
-        with patch(
-            "app.application.use_cases.merge_composite_validado_pdfs.resolve_sharepoint_from_env",
-            new_callable=AsyncMock,
-            return_value=ctx,
+        with (
+            patch(
+                "app.application.use_cases.merge_composite_validado_pdfs.resolve_sharepoint_from_env",
+                new_callable=AsyncMock,
+                return_value=ctx,
+            ),
         ):
             with pytest.raises(ValueError, match="RutaAsientosContables"):
-                await merge_composite_validado_pdfs(g)
+                    await merge_composite_validado_pdfs(
+                        g,
+                        bank_code="banco_bogota",
+                        historical_file_path=hist,
+                        email_pdf_path=email,
+                    )
 
     asyncio.run(run())
 
@@ -514,7 +586,12 @@ def test_merge_multi_credit_two_extracts_validates_each_credit(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 1
@@ -580,7 +657,12 @@ def test_merge_parcial_no_delete_when_second_id_fails(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 1
@@ -642,7 +724,12 @@ def test_merge_multi_credit_credit_number_not_resolved_when_no_folder_nor_row_cr
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 0
@@ -708,7 +795,12 @@ def test_merge_id_pago_two_credits_missing_one_asiento_partial_merge(monkeypatch
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 1
@@ -767,7 +859,12 @@ def test_merge_terminado_credit_folder_consolidates(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 1
@@ -827,7 +924,12 @@ def test_merge_terminado_extract_wrong_asiento_folder_not_credit_unresolved(monk
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 0
@@ -889,7 +991,12 @@ def test_merge_parcial_retry_does_not_duplicate_existing_output(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 1
@@ -977,7 +1084,12 @@ def test_merge_success_does_not_delete_asientos(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 1
@@ -1035,7 +1147,12 @@ def test_merge_does_not_delete_asiento_when_upload_fails(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 0
@@ -1184,19 +1301,15 @@ def test_merge_writes_manifest_json(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
-    assert r.merge_manifest_path.startswith("LOGS/merge_manifest_")
-    ctl_path = "CTL/control.xlsx"
-    assert ctl_path in g.uploaded
-    ctl_wb = load_workbook(filename=BytesIO(g.uploaded[ctl_path]), data_only=True)
-    try:
-        ctl_ws = ctl_wb[SHEET_NAME]
-        col_manifest = MERGE_CONTROL_COLUMNS.index("MergeManifestPath") + 1
-        assert str(ctl_ws.cell(2, col_manifest).value or "").strip() == r.merge_manifest_path
-    finally:
-        ctl_wb.close()
+    assert "merge_manifest_banco_bogota_" in r.merge_manifest_path
     manifest_key = next(k for k in g.uploaded if k.endswith(".json"))
     data = json.loads(g.uploaded[manifest_key].decode("utf-8"))
     assert data["historico_excel_path"] == hist
@@ -1260,7 +1373,12 @@ def test_merge_two_asientos_same_credit_consolidates_both_and_manifest_paths(mon
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+            return await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r = asyncio.run(run())
     assert r.outputs_count == 1

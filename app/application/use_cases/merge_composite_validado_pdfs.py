@@ -20,7 +20,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from io import BytesIO
 from typing import Any
 
@@ -28,16 +28,10 @@ import httpx
 from openpyxl import load_workbook
 from pypdf import PdfReader, PdfWriter
 
-from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_from_env
-from app.application.use_cases.merge_control_workbook_merge import (
-    MergeControlValidationError,
-    merge_control_download_workbook_bytes,
-    merge_control_parse_row2_validate_for_merge,
-    merge_control_set_consolidado_success,
-    merge_control_set_consolidando,
-    merge_control_set_error_merge,
-    merge_control_set_merge_manifest_path,
-    merge_control_set_merge_parcial,
+from app.application.sharepoint_resolution import (
+    encode_graph_drive_path,
+    resolve_sharepoint_from_env,
+    resolve_sharepoint_path,
 )
 from app.application.use_cases.send_validar_extractos_notification import (
     _collect_pdf_paths_from_ruta_cell,
@@ -50,7 +44,6 @@ from app.application.use_cases.send_validar_extractos_notification import (
     _sanitize_pdf_filename_component,
     distrib_row_included_for_validar_extractos,
 )
-from app.application.use_cases.setup_merge_control_workbook import merge_control_workbook_relative_path
 from app.application.use_cases.validate_payment_report import _graph_download_by_path
 from app.domain.ports.graph import GraphApiPort
 
@@ -59,6 +52,35 @@ logger = logging.getLogger(__name__)
 _DEFAULT_OUTPUT_FOLDER = (
     "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/06 ASIENTO CONTABLES GENERADOS"
 )
+
+
+async def _auto_detect_bank_ready_for_merge(
+    graph: GraphApiPort, site_id: str, drive_id: str
+) -> tuple[str | None, list[str]]:
+    """
+    Auto-detección Phase 4:
+    listo para Merge cuando EstadoProceso=PENDIENTE_ASIENTOS, IsActive=true,
+    HistoricalFilePath y EmailPdfPath no vacíos.
+    """
+    from app.application.use_cases.payment_validation_process_control import (
+        BANK_CODE_BANCOLOMBIA,
+        BANK_CODE_BOGOTA,
+        read_process_control_snapshot,
+    )
+
+    ready: list[str] = []
+    for bc in (BANK_CODE_BOGOTA, BANK_CODE_BANCOLOMBIA):
+        snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bc)
+        if (
+            (snap.estado_proceso or "").strip() == "PENDIENTE_ASIENTOS"
+            and snap.is_active
+            and (snap.historical_file_path or "").strip()
+            and (snap.email_pdf_path or "").strip()
+        ):
+            ready.append(bc)
+    if len(ready) == 1:
+        return ready[0], ready
+    return None, ready
 
 
 def _merge_pdf_bytes(parts: list[bytes]) -> bytes:
@@ -710,6 +732,24 @@ class MergeCompositeValidadoPdfsResult:
     outputs_count: int = 0
     skipped_count: int = 0
     merge_manifest_path: str = ""
+    # Phase 4 observabilidad (control por banco)
+    bank_code: str = ""
+    bank_name: str = ""
+    bank_code_source: str = ""
+    ready_banks_detected: tuple[str, ...] = ()
+    process_key: str = ""
+    process_control_file_path: str = ""
+    process_control_updated: bool = False
+    process_control_estado: str = ""
+    historical_file_source: str = ""
+    email_pdf_source: str = ""
+    already_merged: bool = False
+    file_action: str = ""
+    merge_idempotency_key: str = ""
+    pdf_created: bool = False
+    pdf_reused: bool = False
+    already_consolidated: bool = False
+    force_rebuild_used: bool = False
 
 
 def _merge_logs_folder_relative() -> str:
@@ -764,11 +804,13 @@ async def _upload_merge_manifest(
     graph: GraphApiPort,
     site_id: str,
     drive_id: str,
+    *,
+    bank_code: str,
     report_date_iso: str,
     payload: dict[str, Any],
 ) -> str:
     folder = _merge_logs_folder_relative()
-    rel = f"{folder}/merge_manifest_{report_date_iso}.json".replace("//", "/")
+    rel = f"{folder}/merge_manifest_{bank_code}_{report_date_iso}.json".replace("//", "/")
     enc = encode_graph_drive_path(rel)
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     await graph.put_bytes(
@@ -783,35 +825,159 @@ async def merge_composite_validado_pdfs(
     graph: GraphApiPort,
     *,
     force_rebuild: bool = False,
+    bank_code: str | None = None,
+    historical_file_path: str | None = None,
+    email_pdf_path: str | None = None,
+    job_id: str | None = None,
 ) -> MergeCompositeValidadoPdfsResult:
     estado = os.getenv("GRAPH_VALIDAR_EXTRACTO_ESTADO_CONTAINS", "VALIDAR").strip()
     if not estado:
         estado = "VALIDAR"
 
-    control_rel = merge_control_workbook_relative_path().strip().strip("/")
+    from app.application.use_cases.payment_validation_process_control import (
+        BANK_CODE_BANCOLOMBIA,
+        BANK_CODE_BOGOTA,
+        read_process_control_snapshot,
+        resolve_process_control_path_for_bank,
+        update_process_control_row2,
+        utc_now_iso,
+        validate_bank_code,
+    )
+    from app.application.use_cases.setup_merge_control_workbook import build_payment_validation_process_key
+
+    manual_hist = bool((historical_file_path or "").strip())
+    manual_email = bool((email_pdf_path or "").strip())
+
+    bank_code_source = "body" if (bank_code or "").strip() else "auto_detected"
+    bank_code = (bank_code or "").strip() or None
+    if bank_code:
+        validate_bank_code(bank_code)
+
     ctx = await resolve_sharepoint_from_env(graph)
     site_id = ctx["site_id"]
     drive_id = ctx["drive_id"]
 
+    ready_banks_detected: list[str] = []
+    historico_rel = (historical_file_path or "").strip().strip("/")
+    email_rel = (email_pdf_path or "").strip().strip("/")
+
+    if not bank_code and not (manual_hist or manual_email):
+        detected, ready = await _auto_detect_bank_ready_for_merge(graph, site_id, drive_id)
+        ready_banks_detected = list(ready)
+        if not detected:
+            if not ready:
+                raise ValueError("NO_READY_PROCESS")
+            raise ValueError("MULTIPLE_READY_PROCESSES|" + ",".join(ready))
+        bank_code = detected
+        bank_code_source = "auto_detected"
+        if not ready:
+            raise ValueError("NO_READY_PROCESS")
+
+    if not bank_code:
+        # If paths were provided but bank_code missing, infer by substrings (best-effort).
+        low = f"{historico_rel}/{email_rel}".lower()
+        if "banco_bancolombia" in low:
+            bank_code = BANK_CODE_BANCOLOMBIA
+            bank_code_source = "body"
+        else:
+            bank_code = BANK_CODE_BOGOTA
+            bank_code_source = "body"
+
+    validate_bank_code(bank_code)
+    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
+
+    snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bank_code)
+    process_key = (snap.process_key or "").strip()
+    if not process_key:
+        process_key = build_payment_validation_process_key(bank_code, datetime.now(timezone.utc).date().isoformat())
+
+    # Idempotencia: si ya consolidado y hay manifest, reusar cuando force_rebuild=false.
+    if (
+        not force_rebuild
+        and (snap.process_key or "").strip() == process_key
+        and (snap.estado_proceso or "").strip() == "CONSOLIDADO"
+        and (snap.merge_manifest_path or "").strip()
+        and (snap.merge_idempotency_key or "").strip()
+    ):
+        return MergeCompositeValidadoPdfsResult(
+            report_date_iso="",
+            historico_excel_path=snap.historical_file_path,
+            estado_linea_contains=estado,
+            email_pdf_used=snap.email_pdf_path,
+            outputs=(),
+            skipped=(),
+            merge_control_file_path=process_control_file_path,
+            merge_control_updated=False,
+            merge_control_status="CONSOLIDADO",
+            outputs_count=0,
+            skipped_count=0,
+            merge_manifest_path=snap.merge_manifest_path,
+            bank_code=bank_code,
+            bank_name=bank_name,
+            bank_code_source=bank_code_source,
+            ready_banks_detected=tuple(ready_banks_detected),
+            process_key=process_key,
+            process_control_file_path=process_control_file_path,
+            process_control_updated=False,
+            process_control_estado="CONSOLIDADO",
+            historical_file_source="control",
+            email_pdf_source="control",
+            already_merged=True,
+            file_action="reused",
+            merge_idempotency_key=snap.merge_idempotency_key,
+            pdf_created=False,
+            pdf_reused=True,
+            already_consolidated=True,
+            force_rebuild_used=force_rebuild,
+        )
+
+    # Resolver insumos: body override > control.
+    if not historico_rel:
+        historico_rel = (snap.historical_file_path or "").strip().strip("/")
+    if not email_rel:
+        email_rel = (snap.email_pdf_path or "").strip().strip("/")
+
+    if not historico_rel:
+        raise ValueError("missing_historical_file_path")
+    if not email_rel:
+        raise ValueError("missing_email_pdf_path")
+    if not (manual_hist or manual_email):
+        if (snap.estado_proceso or "").strip() != "PENDIENTE_ASIENTOS" or not snap.is_active:
+            raise ValueError("control_not_ready_for_merge")
+
     consolidando_started = False
     try:
-        try:
-            _, control_raw = await merge_control_download_workbook_bytes(graph, site_id, drive_id)
-        except httpx.HTTPStatusError as exc:
-            code = exc.response.status_code if exc.response else 0
-            if code == 404:
-                raise MergeControlValidationError("merge_control_workbook_not_found") from exc
-            raise
-
-        snapshot = merge_control_parse_row2_validate_for_merge(control_raw)
-        historico_rel = snapshot.historical_file_path
-        email_rel = snapshot.email_pdf_path
-
-        await merge_control_set_consolidando(graph, site_id, drive_id, control_rel)
+        await update_process_control_row2(
+            graph,
+            site_id,
+            drive_id,
+            bank_code=bank_code,
+            updates={
+                "EstadoProceso": "CONSOLIDANDO",
+                "LastStepStatus": "RUNNING",
+                "LastUpdatedAtProceso": utc_now_iso(),
+            },
+        )
         consolidando_started = True
 
+        # Reporte del banco para fecha mínima (por banco).
+        site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
+        drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
+        report_path = ""
+        if bank_code == BANK_CODE_BOGOTA:
+            report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
+        else:
+            report_path = os.getenv("GRAPH_SHAREPOINT_FILE_PATH_BANCOLOMBIA", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH_BANCOLOMBIA", "").strip()
+            if not report_path:
+                bog = os.getenv("GRAPH_SHAREPOINT_FILE_PATH", "").strip() or os.getenv("GRAPH_BANK_PAYMENTS_FILE_PATH", "").strip()
+                if bog.endswith("BANCO_BOGOTA.xlsx"):
+                    report_path = bog.replace("BANCO_BOGOTA.xlsx", "BANCO_BANCOLOMBIA.xlsx")
+        if not report_path:
+            raise ValueError("missing_sharepoint_folder")
+        report_info = await resolve_sharepoint_path(graph, site_search, drive_name, report_path)
         report_bytes = await graph.get_bytes(
-            f"/sites/{site_id}/drives/{drive_id}/root:/{ctx['path_encoded']}:/content"
+            f"/sites/{report_info['site_id']}/drives/{report_info['drive_id']}/root:/{report_info['path_encoded']}:/content"
         )
         report_d, _, _ = _parse_bank_report_table_and_min_date(report_bytes)
         iso = report_d.isoformat()
@@ -1053,27 +1219,8 @@ async def merge_composite_validado_pdfs(
         merge_control_updated = True
 
         if oc > 0 and sc == 0:
-            await merge_control_set_consolidado_success(
-                graph, site_id, drive_id, control_rel, outputs_count=oc
-            )
             final_status = "CONSOLIDADO"
         else:
-            await merge_control_set_merge_parcial(
-                graph,
-                site_id,
-                drive_id,
-                control_rel,
-                outputs_count=oc,
-                skipped_count=sc,
-                user_message=(
-                    "La consolidación terminó con omisiones: revise los pagos listados en skipped "
-                    "y cargue o corrija los PDF de asientos o extractos faltantes."
-                ),
-                next_action=(
-                    "Corrija las rutas en el histórico o suba los archivos requeridos y ejecute de nuevo "
-                    "el endpoint de Merge."
-                ),
-            )
             final_status = "MERGE_PARCIAL"
 
         manifest_path = ""
@@ -1102,19 +1249,43 @@ async def merge_composite_validado_pdfs(
                 "skipped": list(skipped),
             }
             manifest_path = await _upload_merge_manifest(
-                graph, site_id, drive_id, iso, manifest_payload
+                graph,
+                site_id,
+                drive_id,
+                bank_code=bank_code,
+                report_date_iso=iso,
+                payload=manifest_payload,
             )
             logger.info("merge_composite_validado: manifest %s", manifest_path)
-            if manifest_path:
-                await merge_control_set_merge_manifest_path(
-                    graph,
-                    site_id,
-                    drive_id,
-                    control_rel,
-                    merge_manifest_path=manifest_path,
-                )
         except Exception as man_exc:
             logger.warning("merge_composite_validado: no se pudo subir manifest: %s", man_exc)
+
+        now_iso = utc_now_iso()
+        await update_process_control_row2(
+            graph,
+            site_id,
+            drive_id,
+            bank_code=bank_code,
+            updates={
+                "ProcessKey": process_key,
+                "ProcessDate": iso,
+                "BankCode": bank_code,
+                "BankName": bank_name,
+                "HistoricalFilePath": historico_rel,
+                "EmailPdfPath": email_rel,
+                "MergeManifestPath": manifest_path,
+                "EstadoProceso": final_status,
+                "IsActive": True,
+                "MergeIdempotencyKey": process_key,
+                "MergeJobId": job_id or "",
+                "MergeOutputCount": int(oc),
+                "MergeSkippedCount": int(sc),
+                "LastCompletedStep": "MERGE",
+                "LastStepStatus": "COMPLETED" if final_status == "CONSOLIDADO" else "COMPLETED_WITH_WARNINGS",
+                "LastStepErrorCode": "",
+                "LastUpdatedAtProceso": now_iso,
+            },
+        )
 
         return MergeCompositeValidadoPdfsResult(
             report_date_iso=iso,
@@ -1123,28 +1294,48 @@ async def merge_composite_validado_pdfs(
             email_pdf_used=email_rel,
             outputs=tuple(outputs),
             skipped=tuple(skipped),
-            merge_control_file_path=control_rel,
-            merge_control_updated=merge_control_updated,
+            merge_control_file_path=process_control_file_path,
+            merge_control_updated=True,
             merge_control_status=final_status,
             outputs_count=oc,
             skipped_count=sc,
             merge_manifest_path=manifest_path,
+            bank_code=bank_code,
+            bank_name=bank_name,
+            bank_code_source=bank_code_source,
+            ready_banks_detected=tuple(ready_banks_detected),
+            process_key=process_key,
+            process_control_file_path=process_control_file_path,
+            process_control_updated=True,
+            process_control_estado=final_status,
+            historical_file_source="body" if manual_hist else "control",
+            email_pdf_source="body" if manual_email else "control",
+            already_merged=False,
+            file_action="partial" if final_status == "MERGE_PARCIAL" else "created",
+            merge_idempotency_key=process_key,
+            pdf_created=oc > 0,
+            pdf_reused=False,
+            already_consolidated=any(
+                str(o.sources_summary).startswith("already_consolidated") for o in outputs
+            ),
+            force_rebuild_used=force_rebuild,
         )
 
-    except MergeControlValidationError as e:
-        raise ValueError(e.error_code) from e
     except Exception:
         if consolidando_started:
             try:
-                await merge_control_set_error_merge(
+                await update_process_control_row2(
                     graph,
                     site_id,
                     drive_id,
-                    control_rel,
-                    user_message="Ocurrió un error durante la consolidación de PDFs.",
-                    next_action=(
-                        "Revise el detalle técnico del job, corrija el problema y vuelva a ejecutar Merge."
-                    ),
+                    bank_code=bank_code,
+                    updates={
+                        "EstadoProceso": "ERROR_MERGE",
+                        "LastCompletedStep": "MERGE",
+                        "LastStepStatus": "FAILED",
+                        "LastStepErrorCode": "ERROR_MERGE",
+                        "LastUpdatedAtProceso": utc_now_iso(),
+                    },
                 )
             except Exception:
                 logger.exception("merge_composite_validado: no se pudo escribir ERROR_MERGE en el control")

@@ -53,6 +53,18 @@ class NotifyValidarExtractosRequest(BaseModel):
 class MergeCompositeValidadoRequest(BaseModel):
     """Opciones para POST merge-composite-validado-pdfs. Body opcional (compatibilidad PA)."""
 
+    bank_code: str | None = Field(
+        default=None,
+        description="Override técnico opcional: banco_bogota | banco_bancolombia. Si falta, auto-detección.",
+    )
+    historical_file_path: str | None = Field(
+        default=None,
+        description="Override manual opcional: ruta relativa del histórico (igual que Finalize).",
+    )
+    email_pdf_path: str | None = Field(
+        default=None,
+        description="Override manual opcional: ruta relativa del PDF del correo (05 EMAIL).",
+    )
     force_rebuild: bool = Field(
         default=False,
         description=(

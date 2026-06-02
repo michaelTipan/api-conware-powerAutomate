@@ -168,6 +168,9 @@ async def _run_merge_composite_validado_pdfs_job(
     graph: GraphClientDep,
     *,
     force_rebuild: bool = False,
+    bank_code: str | None = None,
+    historical_file_path: str | None = None,
+    email_pdf_path: str | None = None,
 ) -> None:
     await _set_job(
         job_id,
@@ -181,7 +184,14 @@ async def _run_merge_composite_validado_pdfs_job(
     logger.info("job %s: merge_composite_validado_pdfs iniciado", job_id)
     started_ts = perf_counter()
     try:
-        result = await merge_composite_validado_pdfs(graph, force_rebuild=force_rebuild)
+        result = await merge_composite_validado_pdfs(
+            graph,
+            force_rebuild=force_rebuild,
+            bank_code=bank_code,
+            historical_file_path=historical_file_path,
+            email_pdf_path=email_pdf_path,
+            job_id=job_id,
+        )
         elapsed_ms = round((perf_counter() - started_ts) * 1000, 2)
         await _set_job(
             job_id,
@@ -220,6 +230,23 @@ async def _run_merge_composite_validado_pdfs_job(
                     "merge_manifest_path": result.merge_manifest_path,
                     "outputs_count": result.outputs_count,
                     "skipped_count": result.skipped_count,
+                    "bank_code": result.bank_code,
+                    "bank_name": result.bank_name,
+                    "bank_code_source": result.bank_code_source,
+                    "ready_banks_detected": list(result.ready_banks_detected),
+                    "process_key": result.process_key,
+                    "process_control_file_path": result.process_control_file_path,
+                    "process_control_updated": result.process_control_updated,
+                    "process_control_estado": result.process_control_estado,
+                    "historical_file_source": result.historical_file_source,
+                    "email_pdf_source": result.email_pdf_source,
+                    "already_merged": result.already_merged,
+                    "file_action": result.file_action,
+                    "merge_idempotency_key": result.merge_idempotency_key,
+                    "pdf_created": result.pdf_created,
+                    "pdf_reused": result.pdf_reused,
+                    "already_consolidated": result.already_consolidated,
+                    "force_rebuild_used": result.force_rebuild_used,
                 },
                 "error": None,
             },
@@ -555,7 +582,12 @@ async def post_merge_composite_validado_pdfs(
         }
     create_task(
         _run_merge_composite_validado_pdfs_job(
-            job_id, graph, force_rebuild=payload.force_rebuild
+            job_id,
+            graph,
+            force_rebuild=payload.force_rebuild,
+            bank_code=payload.bank_code,
+            historical_file_path=payload.historical_file_path,
+            email_pdf_path=payload.email_pdf_path,
         )
     )
     logger.info("job %s: encolado merge_composite_validado_pdfs", job_id)

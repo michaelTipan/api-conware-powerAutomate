@@ -78,6 +78,8 @@ class ProcessControlSnapshot:
     secretary_file_path: str
     email_pdf_path: str
     notify_idempotency_key: str
+    merge_manifest_path: str
+    merge_idempotency_key: str
     bank_code: str
     bank_name: str
 
@@ -99,6 +101,8 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
         spath = str(ws.cell(row=2, column=_col_index("SecretaryFilePath")).value or "").strip().strip("/")
         epdf = str(ws.cell(row=2, column=_col_index("EmailPdfPath")).value or "").strip().strip("/")
         nid = str(ws.cell(row=2, column=_col_index("NotifyIdempotencyKey")).value or "").strip()
+        mmp = str(ws.cell(row=2, column=_col_index("MergeManifestPath")).value or "").strip().strip("/")
+        mid = str(ws.cell(row=2, column=_col_index("MergeIdempotencyKey")).value or "").strip()
         bc = str(ws.cell(row=2, column=_col_index("BankCode")).value or "").strip()
         bn = str(ws.cell(row=2, column=_col_index("BankName")).value or "").strip()
 
@@ -112,6 +116,8 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
             secretary_file_path=spath,
             email_pdf_path=epdf,
             notify_idempotency_key=nid,
+            merge_manifest_path=mmp,
+            merge_idempotency_key=mid,
             bank_code=bc,
             bank_name=bn,
         )

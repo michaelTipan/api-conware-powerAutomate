@@ -23,6 +23,53 @@ from tests.test_merge_composite_control_workbook import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _merge_phase4_patches(monkeypatch):
+    # Merge Phase 4 requiere control por banco; aquí usamos overrides manuales.
+    monkeypatch.setenv("GRAPH_SHAREPOINT_SITE_SEARCH", "TEST_SITE")
+    monkeypatch.setenv("GRAPH_SHAREPOINT_DRIVE_NAME", "TEST_DRIVE")
+    monkeypatch.setenv("GRAPH_SHAREPOINT_FILE_PATH", "bank/report.xlsx")
+
+    import app.application.use_cases.merge_composite_validado_pdfs as m
+    import app.application.use_cases.payment_validation_process_control as pc
+
+    async def _fake_read(_g, _s, _d, *, bank_code: str):
+        return type(
+            "Snap",
+            (),
+            {
+                "control_file_path": "CTL/ignored.xlsx",
+                "estado_proceso": "PENDIENTE_ASIENTOS",
+                "is_active": True,
+                "process_key": f"payment-validation|{bank_code}|2026-06-01",
+                "validation_file_path": "",
+                "historical_file_path": "",
+                "secretary_file_path": "",
+                "email_pdf_path": "",
+                "notify_idempotency_key": "",
+                "merge_manifest_path": "",
+                "merge_idempotency_key": "",
+                "bank_code": bank_code,
+                "bank_name": "",
+            },
+        )()
+
+    async def _fake_update(_g, _s, _d, *, bank_code: str, updates: dict):
+        return True
+
+    async def _fake_resolve(_g, _site_search: str, _drive_name: str, _path: str):
+        return {
+            "site_id": "s1",
+            "drive_id": "d1",
+            "path_encoded": encode_graph_drive_path("bank/report.xlsx"),
+            "file_path": "bank/report.xlsx",
+        }
+
+    monkeypatch.setattr(pc, "read_process_control_snapshot", _fake_read)
+    monkeypatch.setattr(pc, "update_process_control_row2", _fake_update)
+    monkeypatch.setattr(m, "resolve_sharepoint_path", _fake_resolve)
+
+
 def test_unique_paths_preserve_order_case_insensitive():
     paths = [
         "clientes/X/Extracto 265.pdf",
@@ -136,7 +183,12 @@ def test_merge_two_credits_credit_items_and_no_duplicate_extract_265(monkeypatch
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g)
+                return await merge_composite_validado_pdfs(
+                    g,
+                    bank_code="banco_bogota",
+                    historical_file_path=hist,
+                    email_pdf_path=email,
+                )
 
     r = asyncio.run(run())
     out = r.outputs[0]
@@ -205,7 +257,13 @@ def test_merge_force_rebuild_uploads_when_pdf_exists(monkeypatch):
                 side_effect=fake_collect,
             ),
         ):
-            return await merge_composite_validado_pdfs(g, force_rebuild=force)
+            return await merge_composite_validado_pdfs(
+                g,
+                force_rebuild=force,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
 
     r1 = asyncio.run(run(False))
     out_rel = r1.outputs[0].output_relative_path

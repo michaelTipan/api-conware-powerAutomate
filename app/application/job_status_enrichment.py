@@ -195,6 +195,31 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
         "Marcó Validar Pago = SI pero el total aplicado es cero o negativo (NORMAL, INCOMPLETO o ATRASADO).",
         "Ingrese los montos a aplicar o cambie Validar Pago a NO con observación. Guarde y vuelva a finalizar.",
     ),
+    "invalid_bank_code": (
+        "El parámetro bank_code no es válido para Finalize.",
+        "Use banco_bogota o banco_bancolombia (o ejecute Finalize sin body para auto-detección cuando solo un banco esté listo).",
+    ),
+    "NO_READY_PROCESS": (
+        "No hay ninguna revisión lista para finalizar.",
+        "Verifique que la secretaría marcó Procesar=SI y Estado=EN_REVISION en el Excel de revisión del banco. "
+        "Si ya lo hizo, ejecute Generate para ese banco o revise el control por banco.",
+    ),
+    "MULTIPLE_READY_PROCESSES": (
+        "Hay más de un banco listo para finalizar.",
+        "Indique bank_code o use un flujo específico por banco para evitar ambigüedad.",
+    ),
+    "control_not_ready_for_finalize": (
+        "El control del banco no está en estado REVISION_CREADA activo; no se puede finalizar.",
+        "Ejecute Generate para iniciar un proceso nuevo o corrija el estado en el control por banco si aplica.",
+    ),
+    "missing_validation_file_path": (
+        "El control del banco no tiene ValidationFilePath; no se puede resolver el Excel de revisión.",
+        "Ejecute Generate de nuevo para ese banco o indique validation_file_path manualmente.",
+    ),
+    "active_process_exists": (
+        "Ya existe un proceso activo en el control del banco y no se puede finalizar otro proceso distinto.",
+        "Finalice o cancele el proceso actual y vuelva a intentar.",
+    ),
 }
 
 

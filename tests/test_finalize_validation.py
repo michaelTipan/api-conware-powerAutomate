@@ -30,6 +30,11 @@ from app.application.use_cases.payment_validation_finalize import (
     _secretary_link_visible_text,
     finalize_payment_validation,
 )
+from app.application.use_cases.setup_merge_control_workbook import (
+    PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
+    PROCESS_CONTROL_BANK_FILE_BOGOTA,
+    _build_process_control_workbook_bytes,
+)
 
 
 def _norm_fill_rgb(cell) -> str | None:
@@ -135,6 +140,10 @@ class MockGraphClient:
             raise httpx.HTTPStatusError("404", request=req, response=resp)
         if file_path in self.downloaded_files:
             return self.downloaded_files[file_path]
+        if file_path == PROCESS_CONTROL_BANK_FILE_BOGOTA:
+            return _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
+        if file_path == PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA:
+            return _build_process_control_workbook_bytes("banco_bancolombia", "Bancolombia")
         return b""
 
     async def put_bytes(self, endpoint, content, content_type):
@@ -446,7 +455,9 @@ def test_finalize_validar_accepts_zero_intereses_mora():
         client = MockGraphClient()
         r, _ = make_distrib_row(mora=0, valor_int=100, abono_k=0)
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        res = await finalize_payment_validation(
+            client, "val_latest.xlsx", process_date=date(2026, 5, 10), bank_code="banco_bogota"
+        )
         assert res["status"] == "success"
 
     _run(run_test())
@@ -474,7 +485,9 @@ def test_finalize_accepts_legacy_estado_linea_header():
         out = io.BytesIO()
         wb.save(out)
         client.downloaded_files["revision/val_latest.xlsx"] = out.getvalue()
-        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        res = await finalize_payment_validation(
+            client, "val_latest.xlsx", process_date=date(2026, 5, 10), bank_code="banco_bogota"
+        )
         assert res["status"] == "success"
 
     _run(run_test())
@@ -493,7 +506,9 @@ def test_finalize_accepts_legacy_distrib_column_headers():
         out = io.BytesIO()
         wb.save(out)
         client.downloaded_files["revision/val_latest.xlsx"] = out.getvalue()
-        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        res = await finalize_payment_validation(
+            client, "val_latest.xlsx", process_date=date(2026, 5, 10), bank_code="banco_bogota"
+        )
         assert res["status"] == "success"
 
     _run(run_test())
@@ -832,7 +847,7 @@ def test_finalize_respects_validation_file_path_when_provided():
         )
         assert res["status"] == "success"
         assert res["validation_file_path"] == exact_path
-        assert "history/cartera_validada_2026-05-10.xlsx" in client.uploaded_files
+        assert "history/cartera_validada_banco_bogota_2026-05-10.xlsx" in client.uploaded_files
 
     _run(run_test())
 
@@ -1467,6 +1482,22 @@ def test_finalize_falls_back_to_latest_prefixed_review_file_when_none_provided()
             {"name": "val_new.xlsx", "lastModifiedDateTime": "2026-05-10T10:00:00Z", "file": {}},
         ]
         client.downloaded_files["revision/val_new.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
+        # Phase 2: Finalize sin body resuelve primero por control por banco.
+        ctrl = _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
+        wb = openpyxl.load_workbook(io.BytesIO(ctrl), data_only=False)
+        try:
+            ws = wb["Procesos"]
+            headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+            col = {h: i + 1 for i, h in enumerate(headers)}
+            ws.cell(2, col["EstadoProceso"], value="REVISION_CREADA")
+            ws.cell(2, col["IsActive"], value=True)
+            ws.cell(2, col["ValidationFilePath"], value="revision/val_new.xlsx")
+            ws.cell(2, col["ProcessKey"], value="payment-validation|banco_bogota|2026-05-10")
+            buf = io.BytesIO()
+            wb.save(buf)
+            client.downloaded_files[PROCESS_CONTROL_BANK_FILE_BOGOTA] = buf.getvalue()
+        finally:
+            wb.close()
         res = await finalize_payment_validation(client, process_date=date(2026, 5, 10))
         assert res["validation_file"] == "val_new.xlsx"
 

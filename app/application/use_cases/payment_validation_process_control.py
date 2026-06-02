@@ -74,6 +74,8 @@ class ProcessControlSnapshot:
     is_active: bool
     process_key: str
     validation_file_path: str
+    historical_file_path: str
+    secretary_file_path: str
     bank_code: str
     bank_name: str
 
@@ -91,6 +93,8 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
         is_active = _is_active_cell(ws.cell(row=2, column=_col_index("IsActive")).value)
         pkey = str(ws.cell(row=2, column=_col_index("ProcessKey")).value or "").strip()
         vpath = str(ws.cell(row=2, column=_col_index("ValidationFilePath")).value or "").strip().strip("/")
+        hpath = str(ws.cell(row=2, column=_col_index("HistoricalFilePath")).value or "").strip().strip("/")
+        spath = str(ws.cell(row=2, column=_col_index("SecretaryFilePath")).value or "").strip().strip("/")
         bc = str(ws.cell(row=2, column=_col_index("BankCode")).value or "").strip()
         bn = str(ws.cell(row=2, column=_col_index("BankName")).value or "").strip()
 
@@ -100,6 +104,8 @@ def parse_process_control_row2(raw: bytes, *, control_file_path: str) -> Process
             is_active=is_active,
             process_key=pkey,
             validation_file_path=vpath,
+            historical_file_path=hpath,
+            secretary_file_path=spath,
             bank_code=bc,
             bank_name=bn,
         )

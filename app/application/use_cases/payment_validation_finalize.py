@@ -1116,6 +1116,8 @@ async def finalize_payment_validation(
     validation_file: str = None,
     validation_file_path: str | None = None,
     process_date: date | str | None = None,
+    bank_code: str | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
     drive_name = os.getenv("GRAPH_SHAREPOINT_DRIVE_NAME", "").strip()
@@ -1126,7 +1128,137 @@ async def finalize_payment_validation(
     extract_keyword = os.getenv("GRAPH_EXTRACT_KEYWORD", "Extracto").strip() or "Extracto"
     effective_process_date = _normalize_process_date(process_date)
 
+    from app.application.use_cases.payment_validation_process_control import (
+        BANK_CODE_BANCOLOMBIA,
+        BANK_CODE_BOGOTA,
+        normalize_bank_code,
+        read_process_control_snapshot,
+        resolve_process_control_path_for_bank,
+        update_process_control_row2,
+        utc_now_iso,
+        validate_bank_code,
+    )
+    from app.application.use_cases.setup_merge_control_workbook import (
+        build_payment_validation_process_key,
+    )
+
+    def _infer_bank_code_from_path(p: str | None) -> str | None:
+        low = (p or "").lower()
+        if "banco_bancolombia" in low:
+            return BANK_CODE_BANCOLOMBIA
+        if "banco_bogota" in low:
+            return BANK_CODE_BOGOTA
+        return None
+
+    bank_code_source = "body" if (bank_code or "").strip() else "auto_detected"
+    bank_code = (bank_code or "").strip() or None
+    if bank_code:
+        validate_bank_code(bank_code)
+
     rev_info = await resolve_sharepoint_path(client, site_search, drive_name, review_path)
+
+    site_id = rev_info["site_id"]
+    drive_id = rev_info["drive_id"]
+
+    # Si hay override manual (validation_file / validation_file_path) y no hay bank_code,
+    # intentamos inferirlo por el nombre; si no se puede, caemos en bogotá por compatibilidad.
+    manual_override = bool((validation_file_path or "").strip() or (validation_file or "").strip())
+    if manual_override and not bank_code:
+        inferred = _infer_bank_code_from_path(validation_file_path) or _infer_bank_code_from_path(validation_file)
+        bank_code = inferred or BANK_CODE_BOGOTA
+        bank_code_source = "body"
+
+    # Auto-detección si no hay bank_code y no hay override manual.
+    ready_banks_detected: list[str] = []
+    validation_file_source = "body" if (validation_file_path or "").strip() or (validation_file or "").strip() else "control"
+    if not bank_code and not manual_override:
+        candidates: list[str] = []
+        for bc in (BANK_CODE_BOGOTA, BANK_CODE_BANCOLOMBIA):
+            snap = await read_process_control_snapshot(client, site_id, drive_id, bank_code=bc)
+            if (
+                (snap.estado_proceso or "").strip() == "REVISION_CREADA"
+                and snap.is_active
+                and (snap.validation_file_path or "").strip()
+            ):
+                candidates.append(bc)
+        if not candidates:
+            raise ValueError("NO_READY_PROCESS")
+        if len(candidates) > 1:
+            raise ValueError("MULTIPLE_READY_PROCESSES|" + ",".join(candidates))
+        bank_code = candidates[0]
+        bank_code_source = "auto_detected"
+        ready_banks_detected = list(candidates)
+
+    if bank_code:
+        validate_bank_code(bank_code)
+    bank_name = "Banco de Bogotá" if bank_code == BANK_CODE_BOGOTA else "Bancolombia"
+    process_control_file_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
+
+    snap = await read_process_control_snapshot(client, site_id, drive_id, bank_code=bank_code)
+    estado_control = (snap.estado_proceso or "").strip()
+
+    # Resolver ProcessKey desde control (o construir si falta)
+    process_key = (snap.process_key or "").strip()
+    if not process_key:
+        process_key = build_payment_validation_process_key(bank_code, effective_process_date.isoformat())
+
+    # Idempotencia: si ya finalizado y paths existen, reusar.
+    if (
+        (snap.process_key or "").strip() == process_key
+        and estado_control == "FINALIZADO"
+        and (snap.historical_file_path or "").strip()
+        and (snap.secretary_file_path or "").strip()
+    ):
+        return {
+            "status": "success",
+            "historical_file_path": snap.historical_file_path,
+            "historical_file_url": None,
+            "secretary_file_path": snap.secretary_file_path,
+            "secretary_file_url": None,
+            "validated_rows": 0,
+            "amortization_updated": False,
+            "bank_cleaned": False,
+            "history_file": snap.historical_file_path.rsplit("/", 1)[-1],
+            "validation_file": validation_file or "",
+            "validation_file_path": validation_file_path or snap.validation_file_path,
+            "process_date": effective_process_date.isoformat(),
+            "payment_followup_warnings": [],
+            "bank_code": bank_code,
+            "bank_name": bank_name,
+            "bank_code_source": bank_code_source,
+            "ready_banks_detected": ready_banks_detected,
+            "process_key": process_key,
+            "process_control_file_path": process_control_file_path,
+            "process_control_updated": False,
+            "process_control_estado": "FINALIZADO",
+            "validation_file_source": validation_file_source,
+            "already_finalized": True,
+            "file_action": "reused",
+            "finalize_idempotency_key": process_key,
+        }
+
+    terminal = {
+        "VACIO",
+        "CONSOLIDADO",
+        "MERGE_PARCIAL",
+        "AMORTIZACION_APLICADA",
+        "ERROR_GENERATE",
+        "ERROR_FINALIZE",
+        "ERROR_NOTIFY",
+        "ERROR_MERGE",
+        "ERROR_APPLY",
+    }
+    if snap.is_active and estado_control and (estado_control not in terminal) and (snap.process_key or "").strip() != process_key:
+        raise ValueError(f"active_process_exists|{snap.process_key}|{estado_control}")
+
+    # Resolver archivo de revisión: body override (validation_file_path o validation_file) > control.
+    if not (validation_file_path or "").strip() and not (validation_file or "").strip():
+        if estado_control != "REVISION_CREADA" or not snap.is_active:
+            raise ValueError("control_not_ready_for_finalize")
+        if not (snap.validation_file_path or "").strip():
+            raise ValueError("missing_validation_file_path")
+        validation_file_path = snap.validation_file_path
+        validation_file_source = "control"
 
     if validation_file_path:
         file_path = validation_file_path
@@ -1323,8 +1455,8 @@ async def finalize_payment_validation(
         ws_hist_dist, hist_dist_header, distributions, asientos_by_row
     )
 
-    hist_name = f"cartera_validada_{effective_process_date.isoformat()}.xlsx"
-    sec_name = f"soporte_asientos_contables_{effective_process_date.isoformat()}.xlsx"
+    hist_name = f"cartera_validada_{bank_code}_{effective_process_date.isoformat()}.xlsx"
+    sec_name = f"soporte_asientos_contables_{bank_code}_{effective_process_date.isoformat()}.xlsx"
 
     hist_info = await resolve_sharepoint_path(client, site_search, drive_name, history_path)
     hist_full_path = f"{history_path}/{hist_name}"
@@ -1357,7 +1489,27 @@ async def finalize_payment_validation(
     except Exception as e:
         raise Exception(f"upload_failed|{hist_full_path}|{sec_full_path}|{str(e)}") from e
 
-    return {
+    # Escribir control por banco al éxito.
+    now_iso = utc_now_iso()
+    updates: dict[str, Any] = {
+        "ProcessKey": process_key,
+        "ProcessDate": effective_process_date.isoformat(),
+        "BankCode": bank_code,
+        "BankName": bank_name,
+        "HistoricalFilePath": hist_full_path.strip().strip("/"),
+        "SecretaryFilePath": sec_full_path.strip().strip("/"),
+        "EstadoProceso": "FINALIZADO",
+        "IsActive": True,
+        "FinalizeIdempotencyKey": process_key,
+        "FinalizeJobId": job_id or "",
+        "LastCompletedStep": "FINALIZE",
+        "LastStepStatus": "COMPLETED",
+        "LastStepErrorCode": "",
+        "LastUpdatedAtProceso": now_iso,
+    }
+    await update_process_control_row2(client, site_id, drive_id, bank_code=bank_code, updates=updates)
+
+    out = {
         "status": "success",
         "historical_file_path": hist_full_path,
         "historical_file_url": historical_file_url,
@@ -1371,4 +1523,17 @@ async def finalize_payment_validation(
         "validation_file_path": file_path,
         "process_date": effective_process_date.isoformat(),
         "payment_followup_warnings": payment_followup_warnings,
+        "bank_code": bank_code,
+        "bank_name": bank_name,
+        "bank_code_source": bank_code_source,
+        "ready_banks_detected": ready_banks_detected,
+        "process_key": process_key,
+        "process_control_file_path": process_control_file_path,
+        "process_control_updated": True,
+        "process_control_estado": "FINALIZADO",
+        "validation_file_source": validation_file_source,
+        "already_finalized": False,
+        "file_action": "created",
+        "finalize_idempotency_key": process_key,
     }
+    return out

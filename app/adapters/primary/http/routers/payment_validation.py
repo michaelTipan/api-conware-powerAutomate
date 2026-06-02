@@ -48,6 +48,7 @@ class FinalizeRequest(BaseModel):
     validation_file: str | None = None
     validation_file_path: str | None = None
     process_date: str | None = None
+    bank_code: str | None = None
 
 
 class PaymentFollowupSetupRequest(BaseModel):
@@ -109,6 +110,7 @@ async def _run_finalize_job(
     validation_file: str | None,
     validation_file_path: str | None,
     process_date: date,
+    bank_code: str | None,
 ) -> None:
     jm = JobManager()
     await jm.set_job(job_id, {
@@ -124,6 +126,8 @@ async def _run_finalize_job(
             validation_file=validation_file,
             validation_file_path=validation_file_path,
             process_date=process_date,
+            bank_code=bank_code,
+            job_id=job_id,
         )
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         await jm.set_job(job_id, {
@@ -383,6 +387,7 @@ async def queue_finalize(
     body = body or FinalizeRequest()
     validation_file = body.validation_file or None
     validation_file_path = body.validation_file_path or None
+    bank_code = body.bank_code or None
 
     try:
         pd_str = body.process_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -408,6 +413,7 @@ async def queue_finalize(
         validation_file,
         validation_file_path,
         process_date,
+        bank_code,
     )
     logger.info("job %s: finalize encolado", job_id)
 

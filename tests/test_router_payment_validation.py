@@ -58,7 +58,7 @@ def client():
 def test_finalize_queue_accepts_validation_file(client, monkeypatch):
     captured = {}
 
-    async def fake_run_finalize_job(job_id, graph, validation_file, validation_file_path, process_date):
+    async def fake_run_finalize_job(job_id, graph, validation_file, validation_file_path, process_date, bank_code):
         captured["job_id"] = job_id
         captured["validation_file"] = validation_file
         captured["validation_file_path"] = validation_file_path
@@ -79,7 +79,7 @@ def test_finalize_queue_accepts_validation_file(client, monkeypatch):
 def test_finalize_queue_accepts_validation_file_path(client, monkeypatch):
     captured = {}
 
-    async def fake_run_finalize_job(job_id, graph, validation_file, validation_file_path, process_date):
+    async def fake_run_finalize_job(job_id, graph, validation_file, validation_file_path, process_date, bank_code):
         captured["validation_file"] = validation_file
         captured["validation_file_path"] = validation_file_path
         captured["process_date"] = process_date.isoformat()
@@ -99,7 +99,7 @@ def test_finalize_queue_accepts_validation_file_path(client, monkeypatch):
 def test_finalize_queue_accepts_process_date(client, monkeypatch):
     captured = {}
 
-    async def fake_run_finalize_job(job_id, graph, validation_file, validation_file_path, process_date):
+    async def fake_run_finalize_job(job_id, graph, validation_file, validation_file_path, process_date, bank_code):
         captured["process_date"] = process_date.isoformat()
 
     monkeypatch.setattr(payment_validation_router, "_run_finalize_job", fake_run_finalize_job)

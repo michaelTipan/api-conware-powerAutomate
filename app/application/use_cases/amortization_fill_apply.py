@@ -38,8 +38,17 @@ from app.application.use_cases.amortization_fill_dry_run import (
     _resolve_amortization_inputs,
     run_amortization_fill_dry_run,
 )
+from app.application.config.payment_validation_settings import (
+    BANK_CODE_BANCOLOMBIA,
+    BANK_CODE_BOGOTA,
+    normalize_bank_code,
+    resolve_bank_display_name,
+    validate_bank_code,
+)
 from app.application.use_cases.payment_validation_process_control import (
+    ProcessControlSnapshot,
     read_process_control_snapshot,
+    resolve_process_control_path_for_bank,
     update_process_control_row2,
     utc_now_iso,
 )
@@ -493,6 +502,146 @@ async def _apply_one_table(
             closer()
 
 
+def _is_coarse_apply_already_done(snap: ProcessControlSnapshot) -> bool:
+    """True si el control indica apply completo para el ProcessKey vigente."""
+    estado = (snap.estado_proceso or "").strip()
+    process_key = (snap.process_key or "").strip()
+    apply_key = (snap.apply_idempotency_key or "").strip()
+    return (
+        estado == "AMORTIZACION_APLICADA"
+        and bool(process_key)
+        and bool(apply_key)
+        and apply_key == process_key
+    )
+
+
+def _infer_bank_code_from_paths(
+    merge_manifest_path: str | None,
+    historical_file_path: str | None,
+) -> str | None:
+    low = f"{(merge_manifest_path or '').lower()}/{(historical_file_path or '').lower()}"
+    if "banco_bancolombia" in low:
+        return BANK_CODE_BANCOLOMBIA
+    if "banco_bogota" in low:
+        return BANK_CODE_BOGOTA
+    return None
+
+
+async def _try_coarse_apply_early_return(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    *,
+    bank_code_param: str | None,
+    merge_manifest_path: str | None,
+    historical_file_path: str | None,
+) -> dict[str, Any] | None:
+    """
+    Si el proceso ya está AMORTIZACION_APLICADA, retorna payload idempotente sin dry-run.
+    """
+    bank_param = (bank_code_param or "").strip()
+    if bank_param:
+        validate_bank_code(bank_param)
+        bc = normalize_bank_code(bank_param)
+        snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bc)
+        if _is_coarse_apply_already_done(snap):
+            return _build_already_applied_result(
+                snap=snap,
+                bank_code=bc,
+                bank_code_param=bank_code_param,
+            )
+        return None
+
+    inferred = _infer_bank_code_from_paths(merge_manifest_path, historical_file_path)
+    if inferred:
+        snap = await read_process_control_snapshot(
+            graph, site_id, drive_id, bank_code=inferred
+        )
+        if _is_coarse_apply_already_done(snap):
+            return _build_already_applied_result(
+                snap=snap,
+                bank_code=inferred,
+                bank_code_param=bank_code_param,
+            )
+        return None
+
+    applied_banks: list[tuple[str, ProcessControlSnapshot]] = []
+    for bc in (BANK_CODE_BOGOTA, BANK_CODE_BANCOLOMBIA):
+        try:
+            snap = await read_process_control_snapshot(
+                graph, site_id, drive_id, bank_code=bc
+            )
+        except Exception as exc:
+            logger.debug(
+                "apply early idempotency: no se leyó control %s: %s", bc, exc
+            )
+            continue
+        if _is_coarse_apply_already_done(snap):
+            applied_banks.append((bc, snap))
+
+    if len(applied_banks) == 1:
+        bc, snap = applied_banks[0]
+        return _build_already_applied_result(
+            snap=snap,
+            bank_code=bc,
+            bank_code_param=bank_code_param,
+        )
+    return None
+
+
+def _build_already_applied_result(
+    *,
+    snap: ProcessControlSnapshot,
+    bank_code: str,
+    bank_code_param: str | None,
+) -> dict[str, Any]:
+    process_key = (snap.process_key or "").strip()
+    manifest_rel = (snap.merge_manifest_path or "").strip().strip("/")
+    hist_path = (snap.historical_file_path or "").strip().strip("/") or None
+    bank_name = resolve_bank_display_name(bank_code)
+    control_path = resolve_process_control_path_for_bank(bank_code).strip().strip("/")
+    base = _apply_observability_base(
+        resolved_bank_code=bank_code,
+        resolved_bank_name=bank_name,
+        bank_code_param=bank_code_param,
+        resolved_process_key=process_key,
+        resolved_control_path=control_path,
+        ready_banks_detected=[],
+        merge_manifest_source="control",
+        historical_file_source="control",
+        manifest_rel=manifest_rel,
+        hist_path=hist_path,
+        process_control_updated=False,
+        process_control_estado="AMORTIZACION_APLICADA",
+    )
+    return {
+        **base,
+        "status": "ok",
+        "mode": "apply",
+        "already_applied": True,
+        "file_action": "reused",
+        "apply_idempotency_key": (snap.apply_idempotency_key or "").strip() or process_key,
+        "apply_wrote_changes": False,
+        "tables_uploaded_count": 0,
+        "tables_skipped_count": 0,
+        "idempotent_skips_count": 0,
+        "items": [],
+        "tables_uploaded": [],
+        "tables_summary": [],
+        "apply_errors": [],
+        "summary": _apply_summarize([]),
+        "manifest_path": manifest_rel,
+        "preflight": None,
+        "user_message": (
+            "La amortización de este proceso ya fue aplicada; no se repite dry-run ni movimiento de asientos."
+        ),
+        "next_action": (
+            "Si necesita un nuevo corte, inicie un nuevo proceso (Generate) para ese banco y fecha/lote."
+        ),
+        **empty_accounting_pdf_move_summary(),
+    }
+
+
 def _apply_observability_base(
     *,
     resolved_bank_code: str,
@@ -537,6 +686,22 @@ async def run_amortization_fill_apply(
     Preflight (dry-run) y escritura real en tablas de amortización.
     """
     site_id, drive_id = await _drive_context(graph)
+
+    early = await _try_coarse_apply_early_return(
+        graph,
+        site_id,
+        drive_id,
+        bank_code_param=bank_code,
+        merge_manifest_path=merge_manifest_path,
+        historical_file_path=historical_file_path,
+    )
+    if early is not None:
+        logger.info(
+            "amortization apply: coarse idempotency (AMORTIZACION_APLICADA) bank=%s",
+            early.get("bank_code"),
+        )
+        return early
+
     (
         resolved_manifest,
         resolved_date,
@@ -569,48 +734,17 @@ async def run_amortization_fill_apply(
         )
         if not apply_idempotency_key:
             apply_idempotency_key = (snap.process_key or "").strip()
-        if (
-            (snap.estado_proceso or "").strip() == "AMORTIZACION_APLICADA"
-            and (snap.apply_idempotency_key or "").strip()
-            and apply_idempotency_key
-            and (snap.apply_idempotency_key or "").strip() == apply_idempotency_key
+        if _is_coarse_apply_already_done(snap) and (
+            not apply_idempotency_key
+            or (snap.apply_idempotency_key or "").strip() == apply_idempotency_key
         ):
-            base = _apply_observability_base(
-                resolved_bank_code=resolved_bank_code,
-                resolved_bank_name=resolved_bank_name,
+            return _build_already_applied_result(
+                snap=snap,
+                bank_code=resolved_bank_code,
                 bank_code_param=bank_code,
-                resolved_process_key=apply_idempotency_key,
-                resolved_control_path=resolved_control_path,
-                ready_banks_detected=ready_banks_detected,
-                merge_manifest_source=merge_manifest_source,
-                historical_file_source=historical_file_source,
-                manifest_rel=manifest_rel,
-                hist_path=hist_path,
-                process_control_updated=False,
-                process_control_estado="AMORTIZACION_APLICADA",
             )
-            return {
-                **base,
-                "status": "ok",
-                "mode": "apply",
-                "already_applied": True,
-                "file_action": "reused",
-                "apply_idempotency_key": snap.apply_idempotency_key,
-                "apply_wrote_changes": False,
-                "tables_uploaded_count": 0,
-                "tables_skipped_count": 0,
-                "idempotent_skips_count": 0,
-                "items": [],
-                "tables_uploaded": [],
-                "tables_summary": [],
-                "apply_errors": [],
-                "summary": _apply_summarize([]),
-                "manifest_path": manifest_rel,
-                "preflight": None,
-                **empty_accounting_pdf_move_summary(),
-            }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("apply: no se pudo revalidar control para idempotencia: %s", exc)
 
     try:
         await update_process_control_row2(

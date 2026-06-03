@@ -30,6 +30,12 @@ Tras **Apply** exitoso (tabla verificada y eventos `APPLIED`):
 - Los asientos no usados en ese apply permanecen en la carpeta original del crédito.
 - El resultado del job incluye `accounting_pdfs_moves` y contadores (`accounting_pdfs_moved_count`, etc.).
 
+Reintento de **Apply** con el mismo proceso (`EstadoProceso=AMORTIZACION_APLICADA` y `ApplyIdempotencyKey` igual a `ProcessKey` en control):
+
+- Respuesta idempotente (`already_applied=true`, `apply_wrote_changes=false`) **antes** de dry-run/preflight.
+- No descarga PDFs de asiento en la ruta original (aunque ya estén en `PROCESADOS/`).
+- No mueve asientos ni reescribe tablas.
+
 Setup opcional (una vez o reparación): `POST .../setup/payment-followup-workbooks`, `POST .../setup/ibr-workbook`.
 
 ## Body típico

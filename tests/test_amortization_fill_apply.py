@@ -283,6 +283,143 @@ def test_apply_displaced_application_row(monkeypatch):
     assert out["items"][0]["application_row"] == 10
 
 
+def test_apply_retry_already_applied_skips_preflight_and_move(monkeypatch):
+    """Segundo apply con control AMORTIZACION_APLICADA: sin dry-run ni movimiento de PDFs."""
+    fecha = date(2026, 4, 22)
+    hist = _hist_bytes("851eb0f6", "CREDITO # 258", "TABLAS/amort.xlsx", fecha)
+    asiento = "clientes/EQUINORTE/CREDITO # 258/ASIENTOS CONTABLES CRED 258/asiento.pdf"
+    process_key = f"payment-validation|banco_bogota|{fecha.isoformat()}"
+    manifest_key = f"LOGS/merge_manifest_banco_bogota_{fecha.isoformat()}.json"
+    manifest = {
+        "report_date_iso": fecha.isoformat(),
+        "historico_excel_path": "HIST/cartera.xlsx",
+        "outputs": [
+            {
+                "id_pago": "851eb0f6",
+                "cliente": "EQUINORTE",
+                "credito": "CREDITO # 258",
+                "asiento_pdf_path": asiento,
+            }
+        ],
+    }
+    files = _base_files(
+        hist=hist,
+        amort=_amort_table_date_at_row(fecha, 8),
+        asiento_pdf=_asiento_pdf_placeholder(),
+        ibr=_ibr_bytes(),
+        fecha=fecha,
+    )
+    files[manifest_key] = json.dumps(manifest).encode("utf-8")
+    g = MockGraphApply(files)
+    dry_run_calls: list[int] = []
+    move_calls: list[int] = []
+    control_phase = {"done": False}
+
+    async def _track_dry_run(graph, **kwargs):
+        dry_run_calls.append(1)
+        return await run_amortization_fill_dry_run(graph, **kwargs)
+
+    async def _track_move(*_a, **_k):
+        move_calls.append(1)
+        from app.application.services.accounting_pdf_processed_move import (
+            process_used_accounting_pdfs_after_apply,
+        )
+
+        return await process_used_accounting_pdfs_after_apply(*_a, **_k)
+
+    from app.application.use_cases.payment_validation_process_control import (
+        ProcessControlSnapshot,
+    )
+
+    consolidado = ProcessControlSnapshot(
+        control_file_path="CTL/bogota.xlsx",
+        estado_proceso="CONSOLIDADO",
+        is_active=True,
+        process_key=process_key,
+        validation_file_path="",
+        historical_file_path="HIST/cartera.xlsx",
+        secretary_file_path="",
+        email_pdf_path="",
+        notify_idempotency_key="",
+        merge_manifest_path=manifest_key,
+        merge_idempotency_key="",
+        apply_idempotency_key="",
+        bank_code="banco_bogota",
+        bank_name="Banco de Bogotá",
+    )
+    aplicada = ProcessControlSnapshot(
+        control_file_path=consolidado.control_file_path,
+        estado_proceso="AMORTIZACION_APLICADA",
+        is_active=True,
+        process_key=process_key,
+        validation_file_path="",
+        historical_file_path=consolidado.historical_file_path,
+        secretary_file_path="",
+        email_pdf_path="",
+        notify_idempotency_key="",
+        merge_manifest_path=consolidado.merge_manifest_path,
+        merge_idempotency_key="",
+        apply_idempotency_key=process_key,
+        bank_code="banco_bogota",
+        bank_name="Banco de Bogotá",
+    )
+
+    async def _read_snap(_g, _s, _d, *, bank_code: str):
+        if control_phase["done"]:
+            return aplicada
+        return consolidado
+
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_apply.read_process_control_snapshot",
+        _read_snap,
+    )
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_apply.run_amortization_fill_dry_run",
+        _track_dry_run,
+    )
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_apply.process_used_accounting_pdfs_after_apply",
+        _track_move,
+    )
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_dry_run.extract_text_from_pdf",
+        lambda _b: _accounting_text(),
+    )
+
+    out1 = asyncio.run(
+        run_amortization_fill_apply(
+            g,
+            merge_manifest_path=manifest_key,
+            historical_file_path="HIST/cartera.xlsx",
+            bank_code="banco_bogota",
+        )
+    )
+    control_phase["done"] = True
+    assert out1["already_applied"] is False
+    assert out1["summary"]["applied"] == 1
+    assert out1["accounting_pdfs_moved_count"] == 1
+    assert asiento not in g.files
+
+    out2 = asyncio.run(
+        run_amortization_fill_apply(
+            g,
+            merge_manifest_path=manifest_key,
+            historical_file_path="HIST/cartera.xlsx",
+            bank_code="banco_bogota",
+        )
+    )
+    assert out2["status"] == "ok"
+    assert out2["already_applied"] is True
+    assert out2["file_action"] == "reused"
+    assert out2["apply_wrote_changes"] is False
+    assert out2["process_control_estado"] == "AMORTIZACION_APLICADA"
+    assert out2["accounting_pdfs_moved_count"] == 0
+    assert out2["accounting_pdfs_processed_count"] == 0
+    assert "user_message" in out2
+    assert len(dry_run_calls) == 1
+    assert len(move_calls) == 1
+
+
 def test_apply_idempotent_on_second_run(monkeypatch):
     async def _noop_move(*_a, **_k):
         from app.application.services.accounting_pdf_processed_move import (

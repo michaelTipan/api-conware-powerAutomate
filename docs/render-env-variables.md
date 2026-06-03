@@ -68,6 +68,7 @@ Por banco (`BOGOTA` / `BANCOLOMBIA`):
 | `PAYMENT_BANK_*_NAME` | Nombre display |
 | `PAYMENT_BANK_*_INPUT_FILE_PATH` | `<relative-path>/BANCO_….xlsx` |
 | `PAYMENT_BANK_*_CONTROL_FILE` | `control_proceso_validacion_pagos_banco_….xlsx` |
+| `PAYMENT_BANK_*_EMAIL_LABEL` | Etiqueta visible en cuerpo `{banco}` (ej. `BANCO BOGOTA`) |
 | `PAYMENT_BANK_*_EMAIL_SUBJECT` | `ABONOS BANCO …` |
 | `PAYMENT_BANK_*_EMAIL_PDF_NAME_TEMPLATE` | `ABONOS … {fecha}.pdf` |
 
@@ -78,14 +79,14 @@ Alias legacy: `GRAPH_BANK_PAYMENTS_FILE_PATH`, `GRAPH_BANK_PAYMENTS_FILE_PATH_BA
 | Variable | Obligatoria | Notas |
 |----------|-------------|-------|
 | `GRAPH_VALIDAR_NOTIFY_CORREOS_XLSX_PATH` | Recomendada | `…/CORREOS.xlsx` |
-| `GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT` | Opcional | Override global (Bogotá si vacío por banco) |
+| `GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT` | **Obsoleta multi-banco** | Ignorada; use `PAYMENT_BANK_*_EMAIL_SUBJECT` |
 | `GRAPH_VALIDAR_NOTIFY_BODY_INTRO_TEMPLATE` | Opcional | HTML intro |
 | `GRAPH_VALIDAR_EXTRACTO_ESTADO_CONTAINS` | Opcional | Default `VALIDAR` |
 | `GRAPH_VALIDAR_ESTADO_PAGO_CONTAINS` | Opcional | Filtro extra |
 | `GRAPH_VALIDAR_NOTIFY_ATTACH_PDFS` | Opcional | Default `true` |
 | `GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF` | Opcional | Default `true` |
 | `GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_FOLDER_PATH` | Opcional | Carpeta `05 EMAIL` |
-| `GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE` | Opcional | Override nombre PDF |
+| `GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE` | **Obsoleta multi-banco** | Ignorada; use `PAYMENT_BANK_*_EMAIL_PDF_NAME_TEMPLATE` |
 | `GRAPH_MAIL_ATTACH_MAX_BYTES` | Opcional | |
 
 Remitente/destinatarios: **CORREOS.xlsx**, no variables de mail sueltas.
@@ -122,6 +123,8 @@ Remitente/destinatarios: **CORREOS.xlsx**, no variables de mail sueltas.
 |----------|--------|
 | `GRAPH_MERGE_CONTROL_WORKBOOK_PATH` | `control_merge_pdfs.xlsx` retirado |
 | `GRAPH_NOTIFY_BANK_NAME` | No la lee la app |
+| `GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT` | Ignorada; fuerza asunto incorrecto en multi-banco |
+| `GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE` | Ignorada; usar `PAYMENT_BANK_*_EMAIL_PDF_NAME_TEMPLATE` |
 | `GRAPH_MAIL_SENDER_EMAIL` | CORREOS.xlsx |
 | `GRAPH_VALIDAR_NOTIFY_TO` / `GRAPH_VALIDAR_NOTIFY_CC` | CORREOS.xlsx |
 | `GRAPH_PAYMENT_VALIDATION_BASE_PATH` | No implementada |

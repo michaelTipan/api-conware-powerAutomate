@@ -32,6 +32,7 @@ from app.application.config.payment_validation_settings import (
     BANK_CODE_BANCOLOMBIA,
     BANK_CODE_BOGOTA,
     resolve_bank_display_name,
+    resolve_bank_email_label,
     resolve_bank_report_path,
     resolve_logs_folder_path,
     resolve_merge_output_folder_path,
@@ -683,14 +684,22 @@ def _credit_tokens_ordered_for_rows(
     return out
 
 
-def _merge_composite_output_basename(report_d: date, client: str, credit_part: str) -> str:
+def _merge_composite_output_basename(
+    report_d: date,
+    client: str,
+    credit_part: str,
+    *,
+    bank_code: str,
+) -> str:
     day = report_d.day
     mes = _mes_reporte_upper(report_d)
+    bc = (bank_code or "").strip() or BANK_CODE_BOGOTA
+    bank_token = resolve_bank_email_label(bc)
     cli = _merge_composite_client_token(client)
     cred = _merge_composite_credit_for_filename_display(credit_part)
     if not cli:
         cli = "CLIENTE"
-    base = f"{day} {mes} PAGO {cli} {cred}.pdf"
+    base = f"{day} {mes} {bank_token} PAGO {cli} {cred}.pdf"
     return _sanitize_pdf_filename_component(base) or base
 
 
@@ -1143,7 +1152,9 @@ async def merge_composite_validado_pdfs(
             if not client_display:
                 client_display = "CLIENTE"
 
-            out_base = _merge_composite_output_basename(report_d, client_display, credit_for_filename)
+            out_base = _merge_composite_output_basename(
+                report_d, client_display, credit_for_filename, bank_code=bank_code
+            )
             base_rel = f"{out_folder}/{out_base}".replace("//", "/")
             already_exists = await _drive_item_exists(graph, site_id, drive_id, base_rel)
 
@@ -1181,7 +1192,9 @@ async def merge_composite_validado_pdfs(
                 continue
 
             merged = _merge_pdf_bytes(parts)
-            out_base = _merge_composite_output_basename(report_d, client_display, credit_for_filename)
+            out_base = _merge_composite_output_basename(
+                report_d, client_display, credit_for_filename, bank_code=bank_code
+            )
             out_name = _allocate_duplicate_pdf_name(out_base, out_name_tallies)
             out_rel = f"{out_folder}/{out_name}".replace("//", "/")
             if already_exists and force_rebuild:

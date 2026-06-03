@@ -20,6 +20,10 @@ BANK_CODE_BANCOLOMBIA = "banco_bancolombia"
 DEFAULT_BANK_NAME_BOGOTA = "Banco de Bogotá"
 DEFAULT_BANK_NAME_BANCOLOMBIA = "Bancolombia"
 
+# Etiqueta visible en correo (subject, cuerpo {banco}, PDF exportado del mail).
+DEFAULT_BANK_EMAIL_LABEL_BOGOTA = "BANCO BOGOTA"
+DEFAULT_BANK_EMAIL_LABEL_BANCOLOMBIA = "BANCO BANCOLOMBIA"
+
 DEFAULT_INPUT_FILENAME_BOGOTA = "BANCO_BOGOTA.xlsx"
 DEFAULT_INPUT_FILENAME_BANCOLOMBIA = "BANCO_BANCOLOMBIA.xlsx"
 
@@ -27,10 +31,10 @@ DEFAULT_CONTROL_FILENAME_BOGOTA = "control_proceso_validacion_pagos_banco_bogota
 DEFAULT_CONTROL_FILENAME_BANCOLOMBIA = "control_proceso_validacion_pagos_banco_bancolombia.xlsx"
 
 DEFAULT_EMAIL_SUBJECT_BOGOTA = "ABONOS BANCO BOGOTA"
-DEFAULT_EMAIL_SUBJECT_BANCOLOMBIA = "ABONOS BANCOLOMBIA"
+DEFAULT_EMAIL_SUBJECT_BANCOLOMBIA = "ABONOS BANCO BANCOLOMBIA"
 
 DEFAULT_EMAIL_PDF_TEMPLATE_BOGOTA = "ABONOS BANCO BOGOTA {fecha}.pdf"
-DEFAULT_EMAIL_PDF_TEMPLATE_BANCOLOMBIA = "ABONOS BANCOLOMBIA {fecha}.pdf"
+DEFAULT_EMAIL_PDF_TEMPLATE_BANCOLOMBIA = "ABONOS BANCO BANCOLOMBIA {fecha}.pdf"
 
 DEFAULT_CORREOS_FILENAME = "CORREOS.xlsx"
 DEFAULT_IBR_FILENAME = "IBR_DIARIO.xlsx"
@@ -94,6 +98,7 @@ class PaymentValidationPaths:
 class PaymentBankConfig:
     bank_code: str
     bank_name: str
+    bank_email_label: str
     input_file_path: str
     control_file_path: str
     email_subject_default: str
@@ -238,6 +243,7 @@ def _build_bank_config(bank_code: str) -> PaymentBankConfig:
     if bank_code == BANK_CODE_BOGOTA:
         code = _strip_env("PAYMENT_BANK_BOGOTA_CODE") or BANK_CODE_BOGOTA
         name = _strip_env("PAYMENT_BANK_BOGOTA_NAME") or DEFAULT_BANK_NAME_BOGOTA
+        email_label = _strip_env("PAYMENT_BANK_BOGOTA_EMAIL_LABEL") or DEFAULT_BANK_EMAIL_LABEL_BOGOTA
         input_path = _resolve_input_path_for_bogota()
         subject = _strip_env("PAYMENT_BANK_BOGOTA_EMAIL_SUBJECT") or DEFAULT_EMAIL_SUBJECT_BOGOTA
         pdf_tpl = (
@@ -247,6 +253,7 @@ def _build_bank_config(bank_code: str) -> PaymentBankConfig:
     elif bank_code == BANK_CODE_BANCOLOMBIA:
         code = _strip_env("PAYMENT_BANK_BANCOLOMBIA_CODE") or BANK_CODE_BANCOLOMBIA
         name = _strip_env("PAYMENT_BANK_BANCOLOMBIA_NAME") or DEFAULT_BANK_NAME_BANCOLOMBIA
+        email_label = _strip_env("PAYMENT_BANK_BANCOLOMBIA_EMAIL_LABEL") or DEFAULT_BANK_EMAIL_LABEL_BANCOLOMBIA
         input_path = _resolve_input_path_for_bancolombia()
         subject = _strip_env("PAYMENT_BANK_BANCOLOMBIA_EMAIL_SUBJECT") or DEFAULT_EMAIL_SUBJECT_BANCOLOMBIA
         pdf_tpl = (
@@ -259,6 +266,7 @@ def _build_bank_config(bank_code: str) -> PaymentBankConfig:
     return PaymentBankConfig(
         bank_code=code,
         bank_name=name,
+        bank_email_label=email_label,
         input_file_path=input_path,
         control_file_path=_resolve_control_path(bank_code),
         email_subject_default=subject,
@@ -285,24 +293,39 @@ def resolve_bank_control_file_path(bank_code: str) -> str:
 
 
 def resolve_bank_display_name(bank_code: str) -> str:
+    """Nombre legible en control Excel (p. ej. Banco de Bogotá), no etiqueta de correo."""
     return get_payment_bank_config(bank_code).bank_name
 
 
+def resolve_bank_email_label(bank_code: str) -> str:
+    """Etiqueta visible en correo: subject, cuerpo {banco}, PDF del mail."""
+    return get_payment_bank_config(bank_code).bank_email_label
+
+
+def _warn_deprecated_global_notify_env(var_name: str, bank_code: str) -> None:
+    if _strip_env(var_name):
+        logger.warning(
+            "payment_validation_settings: %s is set but ignored for multi-bank notify; "
+            "use PAYMENT_BANK_%s_EMAIL_* per bank instead (requested bank_code=%s).",
+            var_name,
+            "BOGOTA" if normalize_bank_code(bank_code) == BANK_CODE_BOGOTA else "BANCOLOMBIA",
+            normalize_bank_code(bank_code),
+        )
+
+
 def resolve_email_subject(bank_code: str) -> str:
-    """Asunto por defecto del banco (GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT puede sobrescribir en notify)."""
-    cfg = get_payment_bank_config(bank_code)
-    legacy_global = _strip_env("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT")
-    if legacy_global and normalize_bank_code(bank_code) == BANK_CODE_BOGOTA:
-        return legacy_global
-    return cfg.email_subject_default
+    """Asunto del correo por banco (prioridad PAYMENT_BANK_*_EMAIL_SUBJECT)."""
+    _warn_deprecated_global_notify_env("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT", bank_code)
+    return get_payment_bank_config(bank_code).email_subject_default
 
 
 def resolve_email_pdf_name_template(bank_code: str) -> str:
-    cfg = get_payment_bank_config(bank_code)
-    legacy_global = _strip_env("GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE")
-    if legacy_global and normalize_bank_code(bank_code) == BANK_CODE_BOGOTA:
-        return legacy_global
-    return cfg.email_pdf_name_template_default
+    """Plantilla de nombre del PDF exportado del correo por banco."""
+    _warn_deprecated_global_notify_env(
+        "GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE",
+        bank_code,
+    )
+    return get_payment_bank_config(bank_code).email_pdf_name_template_default
 
 
 def resolve_correos_xlsx_path() -> str:

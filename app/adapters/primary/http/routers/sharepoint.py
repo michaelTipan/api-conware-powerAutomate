@@ -97,6 +97,7 @@ async def _run_notify_validar_extractos_job(
                     "merge_control_error_code": result.merge_control_error_code,
                     "bank_code": result.bank_code,
                     "bank_name": result.bank_name,
+                    "bank_email_label": result.bank_email_label,
                     "bank_code_source": result.bank_code_source,
                     "process_key": result.process_key,
                     "process_control_file_path": result.process_control_file_path,

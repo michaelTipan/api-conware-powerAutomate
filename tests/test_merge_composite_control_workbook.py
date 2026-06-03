@@ -733,7 +733,17 @@ def test_merge_parcial_retry_does_not_duplicate_existing_output(monkeypatch):
     extract = "clientes/ACME/CREDITO# 264/Extracto.pdf"
     asiento_dir = "clientes/ACME/CREDITO# 264/ASIENTOS CONTABLES CRED 264"
     asiento_rel = f"{asiento_dir}/asiento_264.pdf"
-    out_base = _merge_composite_output_basename(date(2026, 5, 12), "Acme", "264")
+    out_base = _merge_composite_output_basename(
+        date(2026, 5, 12), "Acme", "264", bank_code="banco_bogota"
+    )
+    assert "BANCO BOGOTA" in out_base
+    assert "banco_bogota" not in out_base.lower()
+    out_bancol = _merge_composite_output_basename(
+        date(2026, 5, 12), "Acme", "264", bank_code="banco_bancolombia"
+    )
+    assert "BANCO BANCOLOMBIA" in out_bancol
+    assert "banco_bancolombia" not in out_bancol.lower()
+    assert out_base != out_bancol
     out_rel = f"OUT/PDFS/{out_base}"
 
     g = _MergeGraph()

@@ -116,3 +116,97 @@ def test_defaults_when_env_empty() -> None:
     assert "00 CONTROL" in control
     bogota = pvs.resolve_bank_input_file_path(pvs.BANK_CODE_BOGOTA)
     assert bogota.endswith(pvs.DEFAULT_INPUT_FILENAME_BOGOTA)
+
+
+def test_bank_codes_remain_technical_slugs() -> None:
+    bogota = pvs.get_payment_bank_config(pvs.BANK_CODE_BOGOTA)
+    bancol = pvs.get_payment_bank_config(pvs.BANK_CODE_BANCOLOMBIA)
+    assert bogota.bank_code == pvs.BANK_CODE_BOGOTA
+    assert bancol.bank_code == pvs.BANK_CODE_BANCOLOMBIA
+
+
+def test_bank_email_labels_defaults() -> None:
+    assert pvs.resolve_bank_email_label(pvs.BANK_CODE_BOGOTA) == "BANCO BOGOTA"
+    assert pvs.resolve_bank_email_label(pvs.BANK_CODE_BANCOLOMBIA) == "BANCO BANCOLOMBIA"
+
+
+def test_email_subject_and_pdf_defaults_per_bank() -> None:
+    assert pvs.resolve_email_subject(pvs.BANK_CODE_BOGOTA) == "ABONOS BANCO BOGOTA"
+    assert pvs.resolve_email_subject(pvs.BANK_CODE_BANCOLOMBIA) == "ABONOS BANCO BANCOLOMBIA"
+    assert (
+        pvs.resolve_email_pdf_name_template(pvs.BANK_CODE_BOGOTA)
+        == "ABONOS BANCO BOGOTA {fecha}.pdf"
+    )
+    assert (
+        pvs.resolve_email_pdf_name_template(pvs.BANK_CODE_BANCOLOMBIA)
+        == "ABONOS BANCO BANCOLOMBIA {fecha}.pdf"
+    )
+
+
+def test_global_notify_env_ignored_for_subject(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT", "GLOBAL WRONG")
+    assert pvs.resolve_email_subject(pvs.BANK_CODE_BANCOLOMBIA) == "ABONOS BANCO BANCOLOMBIA"
+    assert any("ignored" in r.message.lower() for r in caplog.records)
+
+
+def test_global_notify_pdf_template_ignored(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv(
+        "GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE",
+        "GLOBAL {fecha}.pdf",
+    )
+    assert (
+        pvs.resolve_email_pdf_name_template(pvs.BANK_CODE_BOGOTA)
+        == "ABONOS BANCO BOGOTA {fecha}.pdf"
+    )
+    assert any("ignored" in r.message.lower() for r in caplog.records)
+
+
+def test_email_label_override_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAYMENT_BANK_BOGOTA_EMAIL_LABEL", "CUSTOM LABEL")
+    assert pvs.resolve_bank_email_label(pvs.BANK_CODE_BOGOTA) == "CUSTOM LABEL"
+
+
+def test_technical_control_filenames_unchanged() -> None:
+    bogota = pvs.get_payment_bank_config(pvs.BANK_CODE_BOGOTA)
+    bancol = pvs.get_payment_bank_config(pvs.BANK_CODE_BANCOLOMBIA)
+    assert bogota.control_file_path.endswith(pvs.DEFAULT_CONTROL_FILENAME_BOGOTA)
+    assert bancol.control_file_path.endswith(pvs.DEFAULT_CONTROL_FILENAME_BANCOLOMBIA)
+
+
+def test_merge_composite_pdf_basename_uses_email_label() -> None:
+    from app.application.use_cases.merge_composite_validado_pdfs import (
+        _merge_composite_output_basename,
+    )
+    from datetime import date
+
+    bogota = _merge_composite_output_basename(
+        date(2026, 4, 23), "EQUINORTE", "258, 265", bank_code=pvs.BANK_CODE_BOGOTA
+    )
+    bancol = _merge_composite_output_basename(
+        date(2026, 4, 23), "EQUINORTE", "258, 265", bank_code=pvs.BANK_CODE_BANCOLOMBIA
+    )
+    assert bogota.startswith("23 ABRIL BANCO BOGOTA PAGO ")
+    assert bancol.startswith("23 ABRIL BANCO BANCOLOMBIA PAGO ")
+    assert bogota != bancol
+
+
+def test_notify_body_intro_uses_email_label_not_display_name() -> None:
+    intro = (
+        "Buenos días. El día {fecha} ingresaron a la cuenta {banco} los siguientes valores, "
+        "que corresponden a:"
+    )
+    bogota_body = intro.format(
+        fecha="02/06/2026",
+        banco=pvs.resolve_bank_email_label(pvs.BANK_CODE_BOGOTA),
+    )
+    bancol_body = intro.format(
+        fecha="02/06/2026",
+        banco=pvs.resolve_bank_email_label(pvs.BANK_CODE_BANCOLOMBIA),
+    )
+    assert "cuenta BANCO BOGOTA los" in bogota_body
+    assert "cuenta BANCO BANCOLOMBIA los" in bancol_body
+    assert pvs.resolve_bank_display_name(pvs.BANK_CODE_BOGOTA) not in bogota_body

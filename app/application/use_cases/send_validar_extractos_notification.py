@@ -198,6 +198,7 @@ class ValidarExtractosNotifyResult:
     merge_control_error_code: str | None = None
     bank_code: str = ""
     bank_name: str = ""
+    bank_email_label: str = ""
     bank_code_source: str = ""
     process_key: str = ""
     process_control_file_path: str = ""
@@ -1012,6 +1013,7 @@ async def send_validar_extractos_notification_email(
         BANK_CODE_BANCOLOMBIA,
         BANK_CODE_BOGOTA,
         resolve_bank_display_name,
+        resolve_bank_email_label,
         resolve_bank_report_path,
         resolve_email_pdf_name_template,
         resolve_email_subject,
@@ -1104,6 +1106,7 @@ async def send_validar_extractos_notification_email(
                 merge_control_error_code="already_notified",
                 bank_code=bank_code,
                 bank_name=resolve_bank_display_name(bank_code),
+                bank_email_label=resolve_bank_email_label(bank_code),
                 bank_code_source=bank_code_source,
                 process_key=process_key,
                 process_control_file_path=process_control_file_path,
@@ -1120,7 +1123,7 @@ async def send_validar_extractos_notification_email(
         raise ValueError("invalid_bank_code")
 
     bank_name = resolve_bank_display_name(bank_code)
-    banco = bank_name.upper()
+    banco = resolve_bank_email_label(bank_code)
 
     sender, to_recipients = await _load_sender_and_recipients_from_correos_xlsx(graph, site_id, drive_id)
     if (to_override or "").strip():
@@ -1151,7 +1154,7 @@ async def send_validar_extractos_notification_email(
     report_d, bank_headers, bank_rows = _parse_bank_report_table_and_min_date(report_bytes)
     fecha_str = report_d.strftime("%d/%m/%Y")
 
-    subject = os.getenv("GRAPH_VALIDAR_NOTIFY_EMAIL_SUBJECT", "").strip() or resolve_email_subject(bank_code)
+    subject = resolve_email_subject(bank_code)
     _body_intro_default = (
         "Buenos días. El día {fecha} ingresaron a la cuenta {banco} los siguientes valores, "
         "que corresponden a:"
@@ -1292,10 +1295,7 @@ async def send_validar_extractos_notification_email(
             pdf_bytes = cover_pdf
 
             pdf_folder = resolve_email_export_folder_path()
-            pdf_name_tpl = (
-                os.getenv("GRAPH_VALIDAR_NOTIFY_EXPORT_EMAIL_PDF_NAME_TEMPLATE", "").strip()
-                or resolve_email_pdf_name_template(bank_code)
-            )
+            pdf_name_tpl = resolve_email_pdf_name_template(bank_code)
             pdf_name = pdf_name_tpl.format(
                 fecha=report_d.isoformat(),
                 fecha_ddmmyyyy=fecha_str,
@@ -1391,6 +1391,7 @@ async def send_validar_extractos_notification_email(
         merge_control_error_code=merge_control_error_code,
         bank_code=bank_code,
         bank_name=bank_name,
+        bank_email_label=banco,
         bank_code_source=bank_code_source,
         process_key=process_key,
         process_control_file_path=process_control_file_path,

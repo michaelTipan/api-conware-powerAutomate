@@ -581,7 +581,8 @@ async def post_setup_merge_control_workbook(graph: GraphClientDep) -> dict[str, 
 
   Crea o repara solo ``control_proceso_validacion_pagos_banco_bogota.xlsx`` y
   ``control_proceso_validacion_pagos_banco_bancolombia.xlsx`` en 00 CONTROL.
-  La migración funcional de endpoints se hará en fases posteriores.
+  El flujo productivo Generate/Finalize/Notify/Merge/dry-run/apply ya usa estos controles
+  para encadenamiento, trazabilidad e idempotencia.
     """
     try:
         return await setup_merge_control_workbook(graph)

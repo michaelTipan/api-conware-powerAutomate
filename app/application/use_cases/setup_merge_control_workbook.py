@@ -126,8 +126,9 @@ SECURITY_WARNING = (
 )
 
 SETUP_PHASE_NOTE = (
-    "Este endpoint solo prepara la estructura de los controles por banco. La migración funcional "
-    "de Generate/Finalize/Notify/Merge/dry-run/apply a estos controles se hará en fases posteriores."
+    "Este endpoint prepara y repara la estructura de los controles oficiales por banco. "
+    "El flujo productivo Generate/Finalize/Notify/Merge/dry-run/apply ya usa estos controles "
+    "para encadenamiento, trazabilidad e idempotencia."
 )
 
 _FILL_HEADER = PatternFill(fill_type="solid", fgColor="002060")

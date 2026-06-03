@@ -18,6 +18,7 @@ from app.application.services.accounting_pdf_parser import (
 from app.application.services.amortization_workbook import (
     AUTOMATION_LOG_SHEET,
     load_automation_log_idempotency_keys,
+    _is_formula_value,
 )
 from app.application.use_cases.amortization_fill_apply import (
     AmortizationPreflightError,
@@ -31,6 +32,7 @@ from tests.test_amortization_fill_dry_run import (
     _amort_table_date_at_row,
     _amort_table_displaced_application,
     _amort_table_two_dates_at_rows,
+    _amort_table_with_op_formulas,
     _asiento_pdf_placeholder,
     _base_files,
     _hist_bytes,
@@ -182,7 +184,9 @@ def test_apply_single_table_writes_and_logs(monkeypatch):
     assert item["write_plan"].get("valor_pagado_cliente") == "formula"
     log_ws = wb[AUTOMATION_LOG_SHEET]
     assert log_ws.max_row >= 2
+    assert log_ws.protection.sheet is True
     assert load_automation_log_idempotency_keys(wb)
+    assert out.get("automation_log_protected") is True
     assert out["accounting_pdfs_moved_count"] == 1
     move = out["accounting_pdfs_moves"][0]
     assert move["status"] == "moved"
@@ -693,3 +697,131 @@ def test_apply_excel_locked_does_not_count_as_applied(monkeypatch):
     assert out["summary"]["errors"] == 1
     assert out["items"][0]["apply_error_code"] == "EXCEL_LOCKED"
     assert out["tables_uploaded"] == []
+
+
+def test_apply_extends_op_formulas_to_application_row(monkeypatch):
+    fecha = date(2026, 4, 22)
+    hist = _hist_bytes("7785e37e", "CREDITO # 258", "TABLAS/amort.xlsx", fecha)
+    g = MockGraphApply(
+        _base_files(
+            hist=hist,
+            amort=_amort_table_with_op_formulas(fecha, due_row=8, formula_through_row=7, max_row=9),
+            asiento_pdf=_asiento_pdf_placeholder(),
+            ibr=_ibr_bytes(),
+            fecha=fecha,
+        )
+    )
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_dry_run.extract_text_from_pdf",
+        lambda _b: _accounting_text(),
+    )
+    out = asyncio.run(
+        run_amortization_fill_apply(
+            g,
+            report_date_iso=fecha.isoformat(),
+            historical_file_path="HIST/cartera.xlsx",
+        )
+    )
+    assert out["summary"]["applied"] == 1
+    assert out["formula_fill_last_row"] == 8
+    wb = openpyxl.load_workbook(io.BytesIO(g.uploaded["TABLAS/amort.xlsx"]), data_only=False)
+    ws = wb["EQUINORTE"]
+    assert str(ws.cell(8, 15).value).upper() == "=+C8/30"
+    assert str(ws.cell(8, 16).value).upper() == "=+O8*10"
+
+
+def test_apply_extends_op_formulas_to_second_application_row(monkeypatch):
+    """Dos asientos en filas 8 y 9: O9:P9 se rellenan desde plantilla en fila 8."""
+    fecha = date(2026, 4, 22)
+    hist = _hist_bytes("7785e37e", "CREDITO # 265", "TABLAS/amort_265.xlsx", fecha)
+    asiento_a = "clientes/E/CREDITO # 265/ASIENTOS CONTABLES CRED 265/a1.pdf"
+    asiento_b = "clientes/E/CREDITO # 265/ASIENTOS CONTABLES CRED 265/a2.pdf"
+    amort = _amort_table_two_dates_at_rows(fecha, 8, 9)
+    wb = openpyxl.load_workbook(io.BytesIO(amort), data_only=False)
+    ws = wb["EQUINORTE"]
+    for r in range(4, 8):
+        ws.cell(r, 3, 30.0)
+        ws.cell(r, 15, f"=+C{r}/30")
+        ws.cell(r, 16, f"=+O{r}*10")
+    buf = io.BytesIO()
+    wb.save(buf)
+    manifest = {
+        "report_date_iso": fecha.isoformat(),
+        "historico_excel_path": "HIST/cartera.xlsx",
+        "outputs": [
+            {
+                "id_pago": "7785e37e",
+                "cliente": "EQUINORTE",
+                "credito": "CREDITO # 265",
+                "asiento_pdf_paths": [asiento_a, asiento_b],
+            }
+        ],
+    }
+    files = {
+        "CTL/dummy.xlsx": b"x",
+        f"LOGS/merge_manifest_{fecha.isoformat()}.json": json.dumps(manifest).encode("utf-8"),
+        "HIST/cartera.xlsx": hist,
+        "TABLAS/amort_265.xlsx": buf.getvalue(),
+        asiento_a: _asiento_pdf_placeholder(),
+        asiento_b: _asiento_pdf_placeholder(),
+        "CTL/IBR_DIARIO.xlsx": _ibr_bytes(),
+    }
+    g = MockGraphApply(files)
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_dry_run.extract_text_from_pdf",
+        lambda _b: _accounting_text(),
+    )
+    out = asyncio.run(
+        run_amortization_fill_apply(
+            g,
+            report_date_iso=fecha.isoformat(),
+            historical_file_path="HIST/cartera.xlsx",
+        )
+    )
+    assert out["summary"]["applied"] == 2
+    assert out["formula_fill_last_row"] == 9
+    wb_out = openpyxl.load_workbook(io.BytesIO(g.uploaded["TABLAS/amort_265.xlsx"]), data_only=False)
+    ws_out = wb_out["EQUINORTE"]
+    assert str(ws_out.cell(9, 15).value).upper() == "=+C9/30"
+    assert str(ws_out.cell(9, 16).value).upper() == "=+O9*10"
+
+
+def test_apply_skips_op_formula_fill_without_applied_events(monkeypatch):
+    fecha = date(2026, 4, 22)
+    hist = _hist_bytes("7785e37e", "CREDITO # 258", "TABLAS/amort.xlsx", fecha)
+    amort = _amort_table_with_op_formulas(fecha, due_row=8, formula_through_row=7, max_row=9)
+    wb = openpyxl.load_workbook(io.BytesIO(amort), data_only=False)
+    ws = wb["EQUINORTE"]
+    ws.cell(8, 5, fecha)
+    ws.cell(8, 6, 0.0)
+    ws.cell(8, 7, 49_118_143.0)
+    ws.cell(8, 8, 881_857.0)
+    ws.cell(8, 9, 50_000_000.0)
+    buf = io.BytesIO()
+    wb.save(buf)
+    g = MockGraphApply(
+        _base_files(
+            hist=hist,
+            amort=buf.getvalue(),
+            asiento_pdf=_asiento_pdf_placeholder(),
+            ibr=_ibr_bytes(),
+            fecha=fecha,
+        )
+    )
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_dry_run.extract_text_from_pdf",
+        lambda _b: _accounting_text(),
+    )
+    out = asyncio.run(
+        run_amortization_fill_apply(
+            g,
+            report_date_iso=fecha.isoformat(),
+            historical_file_path="HIST/cartera.xlsx",
+        )
+    )
+    assert out["summary"]["applied"] == 0
+    assert out["summary"]["adopted"] == 1
+    wb_out = openpyxl.load_workbook(io.BytesIO(g.uploaded["TABLAS/amort.xlsx"]), data_only=False)
+    ws_out = wb_out["EQUINORTE"]
+    assert not _is_formula_value(ws_out.cell(8, 15).value)
+    assert out.get("formula_fill_rows_count", 0) == 0

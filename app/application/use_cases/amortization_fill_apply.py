@@ -27,9 +27,12 @@ from app.application.services.amortization_workbook import (
     AmortizationSheetNotFoundError,
     PaymentApplicationWriteOptions,
     append_automation_log,
+    application_formula_fill_observability,
     compare_existing_application,
     detect_amortization_sheet,
+    ensure_application_related_formulas,
     load_automation_log_index,
+    protect_automation_log_sheet,
     write_ibr,
     write_payment_application,
 )
@@ -289,6 +292,7 @@ async def _apply_one_table(
         log_index = load_automation_log_index(wb)
         ibr_written_for_cut: set[str] = set()
         applied_for_verify: list[dict[str, Any]] = []
+        max_applied_application_row = 0
 
         for item in planned_items:
             base = {k: v for k, v in item.items() if not str(k).startswith("apply_")}
@@ -417,6 +421,11 @@ async def _apply_one_table(
             results.append(result_row)
             if apply_status in (APPLY_STATUS_APPLIED, APPLY_STATUS_ADOPTED):
                 applied_for_verify.append(result_row)
+            if apply_status == APPLY_STATUS_APPLIED:
+                max_applied_application_row = max(
+                    max_applied_application_row,
+                    int(application_row),
+                )
 
         if not applied_for_verify:
             return {
@@ -426,6 +435,20 @@ async def _apply_one_table(
                 "upload_status": UPLOAD_STATUS_SKIPPED,
                 "verification_status": VERIFICATION_SKIPPED,
             }
+
+        formula_fill_result = None
+        if max_applied_application_row > 0:
+            formula_fill_result = ensure_application_related_formulas(
+                ws,
+                max_application_row=max_applied_application_row,
+                header_row=header_row,
+            )
+        log_protected, log_protection_warning = protect_automation_log_sheet(wb)
+        table_observability: dict[str, Any] = {
+            **application_formula_fill_observability(formula_fill_result),
+            "automation_log_protected": log_protected,
+            "automation_log_protection_warning": log_protection_warning,
+        }
 
         out_buf = io.BytesIO()
         wb.save(out_buf)
@@ -495,11 +518,48 @@ async def _apply_one_table(
             "tabla_path": tabla_path,
             "upload_status": upload_status,
             "verification_status": verification_status,
+            **table_observability,
         }
     finally:
         closer = getattr(wb, "close", None)
         if callable(closer):
             closer()
+
+
+def _aggregate_apply_workbook_observability(
+    tables_summary: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not tables_summary:
+        return {
+            "formula_fill_columns": "",
+            "formula_fill_rows_count": 0,
+            "formula_fill_last_row": 0,
+            "automation_log_protected": False,
+            "automation_log_protection_warning": None,
+        }
+    rows_filled = sum(int(t.get("formula_fill_rows_count") or 0) for t in tables_summary)
+    last_row = max(int(t.get("formula_fill_last_row") or 0) for t in tables_summary)
+    columns = next(
+        (str(t.get("formula_fill_columns") or "") for t in tables_summary if t.get("formula_fill_columns")),
+        "O:P",
+    )
+    protected_flags = [
+        bool(t.get("automation_log_protected"))
+        for t in tables_summary
+        if "automation_log_protected" in t
+    ]
+    warnings = [
+        str(t.get("automation_log_protection_warning"))
+        for t in tables_summary
+        if t.get("automation_log_protection_warning")
+    ]
+    return {
+        "formula_fill_columns": columns,
+        "formula_fill_rows_count": rows_filled,
+        "formula_fill_last_row": last_row,
+        "automation_log_protected": all(protected_flags) if protected_flags else False,
+        "automation_log_protection_warning": warnings[0] if warnings else None,
+    }
 
 
 def _is_coarse_apply_already_done(snap: ProcessControlSnapshot) -> bool:
@@ -857,6 +917,17 @@ async def run_amortization_fill_apply(
                         table_result["items"],
                         upload_status=upload_status,
                         verification_status=verification_status,
+                        table_meta={
+                            k: table_result[k]
+                            for k in (
+                                "formula_fill_columns",
+                                "formula_fill_rows_count",
+                                "formula_fill_last_row",
+                                "automation_log_protected",
+                                "automation_log_protection_warning",
+                            )
+                            if k in table_result
+                        },
                     )
                 )
                 if verification_status in (
@@ -1005,6 +1076,7 @@ async def run_amortization_fill_apply(
             "tables_uploaded_count": tables_uploaded_count,
             "tables_skipped_count": tables_skipped_count,
             "idempotent_skips_count": idempotent_skips_count,
+            **_aggregate_apply_workbook_observability(tables_summary),
             **pdf_move_summary,
         }
 

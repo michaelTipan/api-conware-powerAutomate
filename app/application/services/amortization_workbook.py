@@ -5,6 +5,7 @@ Utilidades sobre tablas de amortización Excel para la futura API de llenado aut
 from __future__ import annotations
 
 import calendar
+import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -13,10 +14,11 @@ from datetime import date, datetime
 from typing import Any
 
 import openpyxl
+from openpyxl.styles import Protection
 from openpyxl.workbook.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 
 from app.application.services.accounting_pdf_parser import (
     ACCOUNT_SALDOS_MENORES,
@@ -381,6 +383,21 @@ def detect_amortization_sheet(
     )
 
 
+APPLICATION_RELATED_FORMULA_COLUMNS: tuple[int, int] = (
+    column_index_from_string("O"),
+    column_index_from_string("P"),
+)
+
+_PROT_LOCKED = Protection(locked=True)
+
+_AUTOMATION_LOG_PROTECTED_ROWS = 500
+
+
+def _automation_log_protection_password() -> str | None:
+    raw = os.getenv("AMORTIZATION_LOG_SHEET_PROTECTION_PASSWORD", "").strip()
+    return raw or None
+
+
 def ensure_automation_log(workbook: Workbook) -> Worksheet:
     if AUTOMATION_LOG_SHEET in workbook.sheetnames:
         return workbook[AUTOMATION_LOG_SHEET]
@@ -388,6 +405,26 @@ def ensure_automation_log(workbook: Workbook) -> Worksheet:
     for col, name in enumerate(AUTOMATION_LOG_HEADERS, start=1):
         ws.cell(1, col, value=name)
     return ws
+
+
+def protect_automation_log_sheet(workbook: Workbook) -> tuple[bool, str | None]:
+    """
+    Bloquea edición de ``_AUTOMATION_LOG`` en Excel. No impide escritura vía openpyxl en Apply.
+    """
+    try:
+        if AUTOMATION_LOG_SHEET not in workbook.sheetnames:
+            return False, None
+        ws = workbook[AUTOMATION_LOG_SHEET]
+        ncols = len(AUTOMATION_LOG_HEADERS)
+        for r in range(1, _AUTOMATION_LOG_PROTECTED_ROWS + 1):
+            for c in range(1, ncols + 1):
+                ws.cell(r, c).protection = _PROT_LOCKED
+        ws.protection.sheet = True
+        pwd = _automation_log_protection_password()
+        ws.protection.password = pwd if pwd else ""
+        return True, None
+    except Exception as exc:
+        return False, str(exc)[:200]
 
 
 def _is_formula_cell_value(value: Any) -> bool:
@@ -1119,6 +1156,77 @@ def _find_formula_template(
         if _is_formula_value(val):
             return _shift_formula_rows(str(val), target_row - r)
     return None
+
+
+@dataclass(frozen=True)
+class ApplicationFormulaFillResult:
+    columns: str
+    last_row: int
+    rows_filled: int
+    cells_filled: int
+    skipped_existing: int
+
+
+def ensure_application_related_formulas(
+    ws: Worksheet,
+    *,
+    max_application_row: int,
+    header_row: int,
+    columns: tuple[int, int] | None = None,
+) -> ApplicationFormulaFillResult:
+    """
+    Extiende fórmulas en columnas O:P hasta ``max_application_row`` (p. ej. dia / Causac Inter Mes).
+    No sobrescribe celdas que ya tienen fórmula.
+    """
+    cols = columns or APPLICATION_RELATED_FORMULA_COLUMNS
+    col_label = f"{get_column_letter(cols[0])}:{get_column_letter(cols[1])}"
+    if max_application_row <= header_row:
+        return ApplicationFormulaFillResult(
+            columns=col_label,
+            last_row=0,
+            rows_filled=0,
+            cells_filled=0,
+            skipped_existing=0,
+        )
+
+    cells_filled = 0
+    skipped_existing = 0
+    rows_with_new: set[int] = set()
+
+    for col in cols:
+        for target in range(header_row + 1, max_application_row + 1):
+            if _is_formula_value(ws.cell(target, col).value):
+                skipped_existing += 1
+                continue
+            formula = _find_formula_template(ws, col, target, header_row)
+            if formula:
+                ws.cell(target, col, value=formula)
+                cells_filled += 1
+                rows_with_new.add(target)
+
+    return ApplicationFormulaFillResult(
+        columns=col_label,
+        last_row=max_application_row,
+        rows_filled=len(rows_with_new),
+        cells_filled=cells_filled,
+        skipped_existing=skipped_existing,
+    )
+
+
+def application_formula_fill_observability(
+    result: ApplicationFormulaFillResult | None,
+) -> dict[str, Any]:
+    if result is None:
+        return {
+            "formula_fill_columns": "",
+            "formula_fill_rows_count": 0,
+            "formula_fill_last_row": 0,
+        }
+    return {
+        "formula_fill_columns": result.columns,
+        "formula_fill_rows_count": result.rows_filled,
+        "formula_fill_last_row": result.last_row,
+    }
 
 
 def _default_saldo_capital_formula(headers: dict[str, int], row: int) -> str | None:

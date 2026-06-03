@@ -105,6 +105,7 @@ Remitente/destinatarios: **CORREOS.xlsx**, no variables de mail sueltas.
 |----------|-------|
 | `GRAPH_LINK_EXTRACTO_PATH_ANCHOR` | Opcional |
 | `GENERATE_EXTRACT_SELECTION_V2` | Opcional; default `true` |
+| `AMORTIZATION_LOG_SHEET_PROTECTION_PASSWORD` | Opcional; contraseña de hoja para `_AUTOMATION_LOG` en tablas de amortización (Apply). Sin valor = protección sin contraseña. |
 
 ## H. Operación / logs
 

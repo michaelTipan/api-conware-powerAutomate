@@ -341,6 +341,7 @@ def build_table_apply_summary(
     *,
     upload_status: str,
     verification_status: str,
+    table_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = {
         "tabla_amortizacion_path": tabla_path,
@@ -352,6 +353,8 @@ def build_table_apply_summary(
         "upload_status": upload_status,
         "verification_status": verification_status,
     }
+    if table_meta:
+        summary.update(table_meta)
     for it in items:
         st = it.get("apply_status")
         if st == "APPLIED":

@@ -348,6 +348,35 @@ _AMORT_HEADER_ROW = [
 ]
 
 
+def _amort_table_with_op_formulas(
+    fecha_limite: date,
+    due_row: int,
+    *,
+    formula_through_row: int = 7,
+    max_row: int | None = None,
+    sheet_title: str = "EQUINORTE",
+) -> bytes:
+    """Tabla con fórmulas O:P en filas de plantilla (p. ej. =+C{r}/30 y =+O{r}*8)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_title
+    ws.append(_AMORT_HEADER_ROW)
+    last_row = max_row if max_row is not None else max(due_row, formula_through_row)
+    while (ws.max_row or 1) < last_row:
+        ws.append([None] * len(_AMORT_HEADER_ROW))
+    ws.cell(due_row, 1, fecha_limite.day)
+    ws.cell(due_row, 2, fecha_limite.month)
+    ws.cell(due_row, 3, fecha_limite.year)
+    for r in range(4, formula_through_row + 1):
+        ws.cell(r, 3, 30.0)
+        ws.cell(r, 15, f"=+C{r}/30")
+        mult = 8 if r < 7 else 10
+        ws.cell(r, 16, f"=+O{r}*{mult}")
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def _amort_table_date_at_row(fecha_limite: date, data_row: int, *, sheet_title: str = "EQUINORTE") -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active

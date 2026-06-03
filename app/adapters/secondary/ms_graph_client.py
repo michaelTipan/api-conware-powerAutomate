@@ -184,3 +184,32 @@ class MsGraphClient:
                 return response.json(), code
             except Exception:
                 return {}, code
+
+    async def patch_json(self, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
+        token = await self._get_access_token()
+        url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.patch(url, headers=headers, json=body)
+            logger.info("Graph PATCH %s -> HTTP %s", endpoint.split("?", 1)[0], response.status_code)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError:
+                err_txt = (response.text or "").strip()[:4000]
+                logger.warning(
+                    "Graph PATCH error %s: %s",
+                    response.status_code,
+                    err_txt or "(sin cuerpo)",
+                )
+                raise
+            text = (response.text or "").strip()
+            if not text:
+                return {}
+            try:
+                return response.json()
+            except Exception:
+                return {}

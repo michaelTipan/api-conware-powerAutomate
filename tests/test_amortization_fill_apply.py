@@ -46,18 +46,54 @@ class MockGraphApply(MockGraphDryRun):
         super().__init__(files)
         self.uploaded: dict[str, bytes] = {}
         self.fail_upload_423 = fail_upload_423
+        self.patch_calls: list[tuple[str, dict]] = []
+        self.post_json_calls: list[tuple[str, dict]] = []
+
+    def _item_path(self, endpoint: str) -> str | None:
+        if "/root:/" not in endpoint or ":/content" in endpoint or "children" in endpoint:
+            return None
+        return unquote(endpoint.split("/root:/", 1)[1].rstrip(":"))
 
     async def get(self, endpoint: str, params=None):
-        if "/root:/" in endpoint and ":/content" not in endpoint and "children" not in endpoint:
-            path = unquote(endpoint.split("/root:/", 1)[1].rstrip(":"))
+        path = self._item_path(endpoint)
+        if path is not None:
+            if path not in self.files:
+                request = httpx.Request("GET", "https://graph.test/item")
+                response = httpx.Response(404, request=request)
+                raise httpx.HTTPStatusError("404", request=request, response=response)
             blob = self.files.get(path, b"")
             digest = hashlib.sha256(blob).hexdigest()[:16]
             return {
                 "eTag": f'"{digest}"',
                 "size": len(blob),
                 "lastModifiedDateTime": "2026-04-23T12:00:00Z",
+                "name": path.rsplit("/", 1)[-1],
             }
         return await super().get(endpoint, params)
+
+    async def post_json(self, endpoint: str, body: dict):
+        self.post_json_calls.append((endpoint, body))
+        if ":/children" in endpoint:
+            parent = unquote(endpoint.split("/root:/", 1)[1].rsplit(":/children", 1)[0])
+            name = str(body.get("name") or "").strip()
+            if name:
+                folder_key = f"{parent}/{name}"
+                self.files.setdefault(folder_key, b"")
+        return {}, 201
+
+    async def patch_json(self, endpoint: str, body: dict):
+        self.patch_calls.append((endpoint, body))
+        source = self._item_path(endpoint)
+        if not source or source not in self.files:
+            request = httpx.Request("PATCH", "https://graph.test/move")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("404", request=request, response=response)
+        parent_path = str(body.get("parentReference", {}).get("path") or "")
+        parent = parent_path.replace("/drive/root:/", "").strip("/")
+        name = str(body.get("name") or "").strip()
+        dest = f"{parent}/{name}"
+        self.files[dest] = self.files.pop(source)
+        return {"id": dest}
 
     async def get_bytes(self, endpoint: str, params=None):
         key = self._key(endpoint)
@@ -147,13 +183,18 @@ def test_apply_single_table_writes_and_logs(monkeypatch):
     log_ws = wb[AUTOMATION_LOG_SHEET]
     assert log_ws.max_row >= 2
     assert load_automation_log_idempotency_keys(wb)
+    assert out["accounting_pdfs_moved_count"] == 1
+    move = out["accounting_pdfs_moves"][0]
+    assert move["status"] == "moved"
+    assert "PROCESADOS" in move["destination_path"]
+    assert "ASIENTOS CONTABLES CRED 258" in move["processed_folder_path"]
 
 
 def test_apply_multiple_asientos_different_application_rows(monkeypatch):
     fecha = date(2026, 4, 22)
     hist = _hist_bytes("7785e37e", "CREDITO # 265", "TABLAS/amort_265.xlsx", fecha)
-    asiento_a = "clientes/E/a1.pdf"
-    asiento_b = "clientes/E/a2.pdf"
+    asiento_a = "clientes/E/CREDITO # 265/ASIENTOS CONTABLES CRED 265/a1.pdf"
+    asiento_b = "clientes/E/CREDITO # 265/ASIENTOS CONTABLES CRED 265/a2.pdf"
     manifest = {
         "report_date_iso": fecha.isoformat(),
         "historico_excel_path": "HIST/cartera.xlsx",
@@ -193,6 +234,11 @@ def test_apply_multiple_asientos_different_application_rows(monkeypatch):
     assert rows == [8, 9]
     assert all(it["due_date_row"] == 8 for it in out["items"])
     assert all(it["ibr_row"] == 8 for it in out["items"])
+    assert out["accounting_pdfs_moved_count"] == 2
+    dests = [m["destination_path"] for m in out["accounting_pdfs_moves"]]
+    assert all("PROCESADOS" in d for d in dests)
+    assert any("_evento-1" in d for d in dests)
+    assert any("_evento-2" in d for d in dests)
 
 
 def test_apply_displaced_application_row(monkeypatch):
@@ -238,6 +284,17 @@ def test_apply_displaced_application_row(monkeypatch):
 
 
 def test_apply_idempotent_on_second_run(monkeypatch):
+    async def _noop_move(*_a, **_k):
+        from app.application.services.accounting_pdf_processed_move import (
+            empty_accounting_pdf_move_summary,
+        )
+
+        return empty_accounting_pdf_move_summary()
+
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_apply.process_used_accounting_pdfs_after_apply",
+        _noop_move,
+    )
     fecha = date(2026, 4, 22)
     hist = _hist_bytes("7785e37e", "CREDITO # 258", "TABLAS/amort.xlsx", fecha)
     g = MockGraphApply(
@@ -335,8 +392,19 @@ def test_apply_blocks_disallowed_warning_preflight(monkeypatch):
 
 
 def test_apply_pdf_changed_same_path_not_idempotent(monkeypatch):
+    async def _noop_move(*_a, **_k):
+        from app.application.services.accounting_pdf_processed_move import (
+            empty_accounting_pdf_move_summary,
+        )
+
+        return empty_accounting_pdf_move_summary()
+
+    monkeypatch.setattr(
+        "app.application.use_cases.amortization_fill_apply.process_used_accounting_pdfs_after_apply",
+        _noop_move,
+    )
     fecha = date(2026, 4, 22)
-    asiento = "clientes/EQUINORTE/asiento.pdf"
+    asiento = "clientes/EQUINORTE/CREDITO # 258/ASIENTOS CONTABLES CRED 258/asiento.pdf"
     hist = _hist_bytes("7785e37e", "CREDITO # 258", "TABLAS/amort.xlsx", fecha)
     files = _base_files(
         hist=hist,

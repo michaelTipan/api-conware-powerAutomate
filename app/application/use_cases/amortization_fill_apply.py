@@ -43,6 +43,10 @@ from app.application.use_cases.payment_validation_process_control import (
     update_process_control_row2,
     utc_now_iso,
 )
+from app.application.services.accounting_pdf_processed_move import (
+    empty_accounting_pdf_move_summary,
+    process_used_accounting_pdfs_after_apply,
+)
 from app.application.use_cases.validate_payment_report import (
     _graph_download_by_path,
     _graph_upload_by_path,
@@ -603,6 +607,7 @@ async def run_amortization_fill_apply(
                 "summary": _apply_summarize([]),
                 "manifest_path": manifest_rel,
                 "preflight": None,
+                **empty_accounting_pdf_move_summary(),
             }
     except Exception:
         pass
@@ -686,8 +691,10 @@ async def run_amortization_fill_apply(
                 "tables_uploaded": [],
                 "tables_summary": [],
                 "summary": _apply_summarize([]),
+                **empty_accounting_pdf_move_summary(),
             }
         by_table = _writable_planned_items(dry_run)
+        verified_tabla_paths: set[str] = set()
         apply_items: list[dict[str, Any]] = []
         tables_uploaded: list[str] = []
         tables_summary: list[dict[str, Any]] = []
@@ -705,6 +712,11 @@ async def run_amortization_fill_apply(
                 )
                 if table_result.get("uploaded"):
                     tables_uploaded.append(tabla_path)
+                if (
+                    str(table_result.get("verification_status") or "")
+                    == VERIFICATION_OK
+                ):
+                    verified_tabla_paths.add(tabla_path)
                 tables_summary.append(
                     build_table_apply_summary(
                         tabla_path,
@@ -787,6 +799,15 @@ async def run_amortization_fill_apply(
                 )
 
         summary = _apply_summarize(apply_items)
+        pdf_move_summary = await process_used_accounting_pdfs_after_apply(
+            graph,
+            site_id,
+            drive_id,
+            items=apply_items,
+            bank_code=resolved_bank_code,
+            verified_tabla_paths=verified_tabla_paths,
+            dry_run=dry_run,
+        )
         status = "ok"
         if apply_errors and not tables_uploaded:
             status = "failed"
@@ -850,6 +871,7 @@ async def run_amortization_fill_apply(
             "tables_uploaded_count": tables_uploaded_count,
             "tables_skipped_count": tables_skipped_count,
             "idempotent_skips_count": idempotent_skips_count,
+            **pdf_move_summary,
         }
 
         if status in ("ok", "partial"):

@@ -23,6 +23,13 @@ El archivo `control_merge_pdfs.xlsx` **no** forma parte del flujo. El endpoint a
 | 5 Dry-run | POST | `/graph/sharepoint/payment-validation/amortization/dry-run/queue` | `GET .../payment-validation/jobs/{job_id}` |
 | 6 Apply | POST | `/graph/sharepoint/payment-validation/amortization/apply/queue` | `GET .../payment-validation/jobs/{job_id}` |
 
+Tras **Apply** exitoso (tabla verificada y eventos `APPLIED`):
+
+- Las tablas de amortización quedan actualizadas en SharePoint.
+- Cada PDF de asiento usado se mueve a `PROCESADOS/` **dentro** de la carpeta del crédito (`ASIENTOS CONTABLES CRED {n}/PROCESADOS/`), con nombre trazable (`asiento_{fecha}_{bank_code}_credito-{n}_pago-{id_pago}[_evento-{i}].pdf`).
+- Los asientos no usados en ese apply permanecen en la carpeta original del crédito.
+- El resultado del job incluye `accounting_pdfs_moves` y contadores (`accounting_pdfs_moved_count`, etc.).
+
 Setup opcional (una vez o reparación): `POST .../setup/payment-followup-workbooks`, `POST .../setup/ibr-workbook`.
 
 ## Body típico

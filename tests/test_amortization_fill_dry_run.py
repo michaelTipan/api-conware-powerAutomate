@@ -179,7 +179,9 @@ def _base_files(
                 "id_pago": "7785e37e",
                 "cliente": "EQUINORTE",
                 "credito": "CREDITO # 258",
-                "asiento_pdf_path": "clientes/EQUINORTE/asiento.pdf",
+                "asiento_pdf_path": (
+                    "clientes/EQUINORTE/CREDITO # 258/ASIENTOS CONTABLES CRED 258/asiento.pdf"
+                ),
                 "extracto_pdf_path": "clientes/EQUINORTE/extracto.pdf",
                 "output_relative_path": "OUT/consolidado.pdf",
             }
@@ -192,7 +194,7 @@ def _base_files(
         manifest_key: json.dumps(manifest).encode("utf-8"),
         "HIST/cartera.xlsx": hist,
         "TABLAS/amort.xlsx": amort,
-        "clientes/EQUINORTE/asiento.pdf": asiento_pdf,
+        "clientes/EQUINORTE/CREDITO # 258/ASIENTOS CONTABLES CRED 258/asiento.pdf": asiento_pdf,
     }
     if ibr is not None:
         files["CTL/IBR_DIARIO.xlsx"] = ibr

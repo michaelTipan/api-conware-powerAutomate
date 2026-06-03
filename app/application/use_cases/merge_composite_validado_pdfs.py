@@ -758,6 +758,37 @@ def _merge_logs_folder_relative() -> str:
     return resolve_logs_folder_path()
 
 
+def _output_is_already_consolidated(output: MergeCompositePdfOutput) -> bool:
+    return str(output.sources_summary).startswith("already_consolidated")
+
+
+def _merge_pdf_observability(
+    outputs: tuple[MergeCompositePdfOutput, ...] | list[MergeCompositePdfOutput],
+    *,
+    final_status: str,
+) -> tuple[str, bool, bool, bool]:
+    """
+    Observabilidad agregada del merge (sin alterar la consolidación).
+
+    - Todo reutilizado → file_action=reused, pdf_created=False, pdf_reused=True
+    - Mezcla o solo creación → created/partial según final_status y qué se escribió
+    """
+    if not outputs:
+        return "created" if final_status == "CONSOLIDADO" else "partial", False, False, False
+
+    reused = [_output_is_already_consolidated(o) for o in outputs]
+    any_reused = any(reused)
+    any_created = any(not r for r in reused)
+
+    if all(reused):
+        return "reused", False, True, True
+    if any_created and any_reused:
+        action = "partial" if final_status == "MERGE_PARCIAL" else "created"
+        return action, True, True, True
+    action = "partial" if final_status == "MERGE_PARCIAL" else "created"
+    return action, True, False, False
+
+
 def _legacy_paths_from_credit_items(credit_items: list[dict[str, Any]]) -> tuple[list[str], str]:
     asiento_paths: list[str] = []
     extract_paths: list[str] = []
@@ -1273,6 +1304,10 @@ async def merge_composite_validado_pdfs(
             },
         )
 
+        file_action, pdf_created, pdf_reused, already_consolidated_flag = _merge_pdf_observability(
+            outputs, final_status=final_status
+        )
+
         return MergeCompositeValidadoPdfsResult(
             report_date_iso=iso,
             historico_excel_path=historico_rel,
@@ -1297,13 +1332,11 @@ async def merge_composite_validado_pdfs(
             historical_file_source="body" if manual_hist else "control",
             email_pdf_source="body" if manual_email else "control",
             already_merged=False,
-            file_action="partial" if final_status == "MERGE_PARCIAL" else "created",
+            file_action=file_action,
             merge_idempotency_key=process_key,
-            pdf_created=oc > 0,
-            pdf_reused=False,
-            already_consolidated=any(
-                str(o.sources_summary).startswith("already_consolidated") for o in outputs
-            ),
+            pdf_created=pdf_created,
+            pdf_reused=pdf_reused,
+            already_consolidated=already_consolidated_flag,
             force_rebuild_used=force_rebuild,
         )
 

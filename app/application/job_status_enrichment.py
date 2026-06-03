@@ -797,8 +797,8 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
             return (
                 "La unión de PDFs terminó correctamente: cada pago validado quedó en un solo PDF "
                 "(correo del día + asientos + extractos). Los asientos contables permanecen en sus carpetas.",
-                "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS. Siguiente paso: ejecutar la "
-                "actualización de tablas de amortización cuando esa API exista (los asientos deben seguir disponibles).",
+                "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS. Siguiente paso: ejecute "
+                "dry-run de amortización para revisar el impacto y luego apply para aplicar los cambios.",
                 "success",
             )
         return (

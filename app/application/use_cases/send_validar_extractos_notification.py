@@ -182,7 +182,7 @@ class ValidarExtractosNotifyResult:
     report_date: str
     historico_excel_path: str
     historical_file_path: str
-    historical_file_source: Literal["explicit"]
+    historical_file_source: Literal["explicit", "control"]
     rows_included: int
     subject: str
     attachments_count: int
@@ -196,6 +196,12 @@ class ValidarExtractosNotifyResult:
     merge_control_status: str | None = None
     merge_control_warning: str | None = None
     merge_control_error_code: str | None = None
+    bank_code: str = ""
+    bank_name: str = ""
+    bank_code_source: str = ""
+    process_key: str = ""
+    process_control_file_path: str = ""
+    process_control_estado: str = ""
 
 
 def _endpoint_and_params_from_next_link(next_link: str) -> tuple[str, dict[str, str] | None]:
@@ -1096,6 +1102,12 @@ async def send_validar_extractos_notification_email(
                 merge_control_status="PENDIENTE_ASIENTOS",
                 merge_control_warning="already_notified",
                 merge_control_error_code="already_notified",
+                bank_code=bank_code,
+                bank_name=resolve_bank_display_name(bank_code),
+                bank_code_source=bank_code_source,
+                process_key=process_key,
+                process_control_file_path=process_control_file_path,
+                process_control_estado=(snap.estado_proceso or "").strip(),
             )
 
         if (snap.estado_proceso or "").strip() != "FINALIZADO" or not snap.is_active:
@@ -1351,6 +1363,14 @@ async def send_validar_extractos_notification_email(
         merge_control_warning = "missing_email_pdf_path_for_merge_control"
         merge_control_error_code = "missing_email_pdf_path_for_merge_control"
 
+    process_control_estado = "PENDIENTE_ASIENTOS" if merge_control_updated else ""
+    if not process_control_estado and bank_code:
+        try:
+            snap_end = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bank_code)
+            process_control_estado = (snap_end.estado_proceso or "").strip()
+        except Exception:
+            process_control_estado = ""
+
     return ValidarExtractosNotifyResult(
         report_date=fecha_str,
         historico_excel_path=historico_rel,
@@ -1369,4 +1389,10 @@ async def send_validar_extractos_notification_email(
         merge_control_status="PENDIENTE_ASIENTOS" if merge_control_updated else None,
         merge_control_warning=merge_control_warning,
         merge_control_error_code=merge_control_error_code,
+        bank_code=bank_code,
+        bank_name=bank_name,
+        bank_code_source=bank_code_source,
+        process_key=process_key,
+        process_control_file_path=process_control_file_path,
+        process_control_estado=process_control_estado,
     )

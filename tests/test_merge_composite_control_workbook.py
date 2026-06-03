@@ -782,6 +782,10 @@ def test_merge_parcial_retry_does_not_duplicate_existing_output(monkeypatch):
     assert any(
         str(o.sources_summary).startswith("already_consolidated") for o in r.outputs
     )
+    assert r.file_action == "reused"
+    assert r.pdf_created is False
+    assert r.pdf_reused is True
+    assert r.already_consolidated is True
 
 
 def test_merge_finds_single_asiento_pdf_in_credit_folder():

@@ -17,6 +17,7 @@ ENRICHABLE_JOB_TYPES = frozenset(
         "notify_validar_extractos",
         "merge_composite_validado_pdfs",
         "amortization_dry_run",
+        "amortization_apply",
     }
 )
 
@@ -940,6 +941,39 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
             "actualización real cuando esté disponible.",
             "success",
         )
+    if job_type == "amortization_apply":
+        if str(result.get("status") or "") == "blocked":
+            custom_um = str(result.get("user_message") or "").strip()
+            custom_na = str(result.get("next_action") or "").strip()
+            if custom_um:
+                return (
+                    custom_um,
+                    custom_na
+                    or "Revise result.blocking_abono_groups antes de reintentar Apply.",
+                    "warning",
+                )
+            return (
+                "La amortización no puede aplicarse: hay grupos ABONO bloqueados.",
+                "Revise result.blocking_abono_groups y corrija asientos o manifest antes de reintentar Apply.",
+                "warning",
+            )
+        if result.get("already_applied"):
+            custom_um = str(result.get("user_message") or "").strip()
+            custom_na = str(result.get("next_action") or "").strip()
+            if custom_um:
+                return (custom_um, custom_na, "success")
+        if str(result.get("status") or "") == "preflight_failed":
+            return (
+                "El análisis previo a Apply detectó errores; no se modificó ninguna tabla.",
+                "Revise result.preflight (items, summary.errors) y corrija antes de reintentar Apply.",
+                "warning",
+            )
+        if str(result.get("status") or "") in ("ok", "partial"):
+            return (
+                "La amortización se aplicó en las tablas indicadas.",
+                "Revise result.tables_summary y los movimientos de asientos a PROCESADOS si aplica.",
+                "success" if result.get("status") == "ok" else "warning",
+            )
 
     return "", "", ""
 

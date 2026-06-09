@@ -2,6 +2,13 @@
 Dry-run ABONO: preflight documental, cuadre financiero por ID Pago y bloqueo de schedule.
 
 Campo canónico para cuadre: ``PaymentApplicationEvent.valor_pagado_cliente`` (mismo que PAGO).
+
+Cardinalidad PDF → evento:
+- ``parse_accounting_text`` produce un único ``PaymentApplicationEvent`` por PDF de asiento.
+- ``valor_pagado_cliente`` es el total aplicable del comprobante (no se suman componentes).
+- El cuadre del grupo suma ese valor **una vez por ruta normalizada de asiento**; rutas
+  repetidas en el mismo grupo no incrementan el total (evita doble conteo si el manifest
+  lista el mismo path más de una vez antes de la detección de duplicados).
 """
 
 from __future__ import annotations
@@ -546,12 +553,25 @@ async def reconcile_abono_group(
     credit_amounts: dict[str, Decimal] = {}
     pdf_amounts: dict[str, Decimal] = {}
     total = Decimal("0")
+    group_seen_pdf_paths: set[str] = set()
 
     for item in group.credit_items:
         cred = _norm_credito_token(item.credito)
         credit_total = Decimal("0")
         for asiento_path in item.asiento_pdf_paths:
             norm = normalize_sharepoint_path(asiento_path)
+            if norm in group_seen_pdf_paths:
+                blocking.append(
+                    _blocking(
+                        ABONO_ASIENTO_DUPLICADO,
+                        f"Asiento repetido en el grupo: {norm}",
+                        id_pago=group.id_pago,
+                        credito=cred,
+                        creditos_seleccionados=group.creditos_seleccionados,
+                        paths=[norm],
+                    )
+                )
+                continue
             if duplicate_paths and norm in duplicate_paths:
                 blocking.append(
                     _blocking(
@@ -578,6 +598,7 @@ async def reconcile_abono_group(
             assert event is not None
             amount = _canonical_amount_from_event(event)
             assert amount is not None
+            group_seen_pdf_paths.add(norm)
             credit_total += amount
             pdf_amounts[norm or asiento_path] = amount
             total += amount
@@ -591,6 +612,18 @@ async def reconcile_abono_group(
             monto_banco=None,
             total_asientos=total,
             diferencia=Decimal("0"),
+            tolerancia=ABONO_RECONCILIATION_TOLERANCE,
+            credit_amounts=credit_amounts,
+            accounting_pdf_amounts=pdf_amounts,
+            blocking_errors=blocking,
+        )
+
+    if blocking:
+        return AbonoReconciliationResult(
+            reconciliation_status="FAILED",
+            monto_banco=monto_banco,
+            total_asientos=total,
+            diferencia=total - monto_banco,
             tolerancia=ABONO_RECONCILIATION_TOLERANCE,
             credit_amounts=credit_amounts,
             accounting_pdf_amounts=pdf_amounts,
@@ -861,8 +894,13 @@ def build_abono_observability_items(
 ) -> list[dict[str, Any]]:
     """Eventos de observabilidad; ninguno queda listo para Apply."""
     items: list[dict[str, Any]] = []
-    blocked = bool(group.blocking_errors) or reconciliation.reconciliation_status != "PASSED"
     schedule_blocked = schedule.status == "NOT_CONFIGURED"
+    doc_blocking_errors = [
+        e
+        for e in (group.blocking_errors or []) + (reconciliation.blocking_errors or [])
+        if str(e.get("error_code") or "") != ABONO_SCHEDULE_RULE_NOT_CONFIGURED
+    ]
+    doc_blocked = reconciliation.reconciliation_status != "PASSED" or bool(doc_blocking_errors)
 
     for idx, ci in enumerate(group.credit_items, start=1):
         cred = _norm_credito_token(ci.credito)
@@ -881,13 +919,11 @@ def build_abono_observability_items(
                 }
             error_code = None
             application_status = "BLOCKED"
-            if blocked:
+            if doc_blocked:
                 application_status = "ERROR"
                 error_code = (
-                    group.blocking_errors[0].get("error_code")
-                    if group.blocking_errors
-                    else reconciliation.blocking_errors[0].get("error_code")
-                    if reconciliation.blocking_errors
+                    doc_blocking_errors[0].get("error_code")
+                    if doc_blocking_errors
                     else ABONO_MANIFEST_INVALID
                 )
             elif schedule_blocked:

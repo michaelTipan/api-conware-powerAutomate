@@ -36,6 +36,7 @@ from app.application.services.amortization_workbook import (
     write_ibr,
     write_payment_application,
 )
+from app.application.services.abono_apply_gate import evaluate_abono_apply_block
 from app.application.use_cases.amortization_fill_dry_run import (
     _drive_context,
     _resolve_amortization_inputs,
@@ -788,10 +789,12 @@ async def run_amortization_fill_apply(
     apply_idempotency_key = (resolved_process_key or "").strip()
 
     process_control_updated = False
+    pre_apply_estado = "CONSOLIDADO"
     try:
         snap = await read_process_control_snapshot(
             graph, site_id, drive_id, bank_code=resolved_bank_code
         )
+        pre_apply_estado = (snap.estado_proceso or "CONSOLIDADO").strip() or "CONSOLIDADO"
         if not apply_idempotency_key:
             apply_idempotency_key = (snap.process_key or "").strip()
         if _is_coarse_apply_already_done(snap) and (
@@ -832,6 +835,66 @@ async def run_amortization_fill_apply(
             job_id=job_id,
             update_process_control=False,
         )
+
+        block = evaluate_abono_apply_block(dry_run)
+        if block is not None:
+            try:
+                await update_process_control_row2(
+                    graph,
+                    site_id,
+                    drive_id,
+                    bank_code=resolved_bank_code,
+                    updates={
+                        "EstadoProceso": pre_apply_estado,
+                        "LastStepStatus": "BLOCKED",
+                        "LastStepErrorCode": block["error_code"],
+                        "LastErrorUserMessage": str(block.get("user_message") or "")[:500],
+                        "LastErrorNextAction": str(block.get("next_action") or ""),
+                        "LastUpdatedAtProceso": utc_now_iso(),
+                    },
+                )
+                process_control_updated = True
+            except Exception:
+                pass
+            base = _apply_observability_base(
+                resolved_bank_code=resolved_bank_code,
+                resolved_bank_name=resolved_bank_name,
+                bank_code_param=bank_code,
+                resolved_process_key=apply_idempotency_key,
+                resolved_control_path=resolved_control_path,
+                ready_banks_detected=ready_banks_detected,
+                merge_manifest_source=merge_manifest_source,
+                historical_file_source=historical_file_source,
+                manifest_rel=manifest_rel,
+                hist_path=hist_path,
+                process_control_updated=process_control_updated,
+                process_control_estado=pre_apply_estado,
+            )
+            return {
+                **base,
+                "status": "blocked",
+                "mode": "apply",
+                "error_code": block["error_code"],
+                "user_message": block["user_message"],
+                "next_action": block["next_action"],
+                "can_apply": False,
+                "abono_groups_total": block["abono_groups_total"],
+                "abono_groups_blocked": block["abono_groups_blocked"],
+                "requires_business_rule": block["requires_business_rule"],
+                "blocking_abono_groups": block["blocking_abono_groups"],
+                "preflight": dry_run,
+                "already_applied": False,
+                "apply_idempotency_key": apply_idempotency_key,
+                "apply_wrote_changes": False,
+                "tables_uploaded_count": 0,
+                "tables_skipped_count": 0,
+                "idempotent_skips_count": 0,
+                "items": [],
+                "tables_uploaded": [],
+                "tables_summary": [],
+                "summary": _apply_summarize([]),
+                **empty_accounting_pdf_move_summary(),
+            }
 
         try:
             validate_amortization_preflight(dry_run)
@@ -887,6 +950,7 @@ async def run_amortization_fill_apply(
                 "summary": _apply_summarize([]),
                 **empty_accounting_pdf_move_summary(),
             }
+
         by_table = _writable_planned_items(dry_run)
         verified_tabla_paths: set[str] = set()
         apply_items: list[dict[str, Any]] = []

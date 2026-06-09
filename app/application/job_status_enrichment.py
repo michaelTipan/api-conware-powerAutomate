@@ -192,6 +192,42 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
         "Cierre Excel en escritorio y en el navegador. Verifique espacio y permisos. Reintente Finalize; "
         "si persiste, contacte soporte con la hora del error.",
     ),
+    "invalid_validar_abono": (
+        "Hay un valor no permitido en Validar Abono (solo se acepta SI o NO).",
+        "Abra Distribucion_Abonos y use la lista desplegable. Guarde y vuelva a finalizar.",
+    ),
+    "abono_without_selected_credit": (
+        "Un abono no tiene ningún crédito seleccionado.",
+        "Abra Distribucion_Abonos y marque SI en al menos un crédito para ese abono.",
+    ),
+    "abono_duplicate_selected_credit": (
+        "Un abono tiene el mismo crédito seleccionado más de una vez.",
+        "En Distribucion_Abonos deje solo una fila en SI por crédito para ese ID Pago.",
+    ),
+    "abono_group_inconsistent": (
+        "Las filas seleccionadas de un abono no son consistentes (cliente, monto, fecha o tipo).",
+        "Revise Distribucion_Abonos: todas las filas SI del mismo ID Pago deben coincidir en cliente, monto y fecha.",
+    ),
+    "abono_credit_without_unit_path": (
+        "Un crédito de abono seleccionado no tiene ruta de unidad de crédito.",
+        "Ejecute Generate de nuevo para regenerar rutas técnicas y vuelva a finalizar.",
+    ),
+    "abono_credit_without_amortization_path": (
+        "Un crédito de abono seleccionado no tiene ruta de tabla de amortización.",
+        "Ejecute Generate de nuevo y verifique la tabla en SharePoint antes de finalizar.",
+    ),
+    "abono_missing_bank_amount": (
+        "Un abono seleccionado no tiene monto bancario.",
+        "Revise Distribucion_Abonos o ejecute Generate de nuevo.",
+    ),
+    "abono_missing_bank_date": (
+        "Un abono seleccionado no tiene fecha bancaria.",
+        "Revise Distribucion_Abonos o ejecute Generate de nuevo.",
+    ),
+    "abono_invalid_application_type": (
+        "Una fila de Distribucion_Abonos no está marcada correctamente como ABONO.",
+        "Ejecute Generate de nuevo; no edite a mano las columnas técnicas TipoAplicacion o RequiereExtracto.",
+    ),
     "missing_control_sheet": (
         "El archivo de revisión no tiene la hoja Control.",
         "No use un Excel manual distinto. Ejecute Generate y trabaje solo sobre el archivo que genera el sistema.",
@@ -732,6 +768,15 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
             "success",
         )
     if job_type == "finalize":
+        custom_um = str(result.get("user_message") or "").strip()
+        custom_na = str(result.get("next_action") or "").strip()
+        if custom_um:
+            return (
+                custom_um,
+                custom_na
+                or "Abra el soporte de asientos y cargue los PDF en cada carpeta ASIENTOS CONTABLES.",
+                "success",
+            )
         return (
             "La revisión quedó cerrada correctamente. Se guardó el histórico del día y el archivo de soporte "
             "para que la secretaría suba los asientos contables.",

@@ -229,6 +229,8 @@ class DistribucionAbonosCols:
     CREDITO_NORMALIZADO = "CreditoNormalizado"
     TIPO_APLICACION = "TipoAplicacion"
     REQUIERE_EXTRACTO = "RequiereExtracto"
+    # Solo en cartera_validada (Finalize); no en validacion_pagos de Generate
+    RUTA_ASIENTOS_CONTABLES = "RutaAsientosContables"
 
     HEADERS = [
         ID_PAGO,
@@ -249,6 +251,43 @@ class DistribucionAbonosCols:
     ]
 
 
+SUPPORT_NOT_APPLICABLE = "NO APLICA"
+
+
+class AsientosPendientesCols:
+    """Hoja única de soporte secretaría (pagos y abonos)."""
+
+    TIPO_APLICACION = "Tipo Aplicación"
+    ID_PAGO = "ID Pago"
+    BANCO = "Banco"
+    CLIENTE = "Cliente"
+    CREDITO = "Crédito"
+    MONTO_BANCO = "Monto banco"
+    FECHA_BANCO = "Fecha banco"
+    FECHA_LIMITE = "Fecha límite"
+    TOTAL_VALIDADO = "Total validado"
+    LINK_CARPETA_ASIENTOS = "Link carpeta asientos contables"
+    LINK_EXTRACTO = "Link extracto"
+    LINK_TABLA = "Link tabla amortización"
+    OBSERVACION = "Observación"
+
+    HEADERS = [
+        TIPO_APLICACION,
+        ID_PAGO,
+        BANCO,
+        CLIENTE,
+        CREDITO,
+        MONTO_BANCO,
+        FECHA_BANCO,
+        FECHA_LIMITE,
+        TOTAL_VALIDADO,
+        LINK_CARPETA_ASIENTOS,
+        LINK_EXTRACTO,
+        LINK_TABLA,
+        OBSERVACION,
+    ]
+
+
 DISTRIBUCION_ABONOS_TECHNICAL_HIDDEN_COLUMNS = frozenset(
     {
         DistribucionAbonosCols.RUTA_UNIDAD_CREDITO,
@@ -256,6 +295,7 @@ DISTRIBUCION_ABONOS_TECHNICAL_HIDDEN_COLUMNS = frozenset(
         DistribucionAbonosCols.CREDITO_NORMALIZADO,
         DistribucionAbonosCols.TIPO_APLICACION,
         DistribucionAbonosCols.REQUIERE_EXTRACTO,
+        DistribucionAbonosCols.RUTA_ASIENTOS_CONTABLES,
     }
 )
 
@@ -336,6 +376,28 @@ def normalize_validar_pago_value(raw: Any) -> str:
 
 def is_validar_pago_si(row: dict[str, Any]) -> bool:
     return normalize_validar_pago_value(row.get(DistribucionCols.VALIDAR_PAGO)) == ValidarPago.SI
+
+
+def normalize_validar_abono_value(raw: Any) -> str:
+    """Devuelve ``SI``, ``NO`` o cadena vacía si no se reconoce."""
+    return _normalize_validar_pago_raw(raw)
+
+
+def is_validar_abono_si(row: dict[str, Any]) -> bool:
+    return (
+        normalize_validar_abono_value(row.get(DistribucionAbonosCols.VALIDAR_ABONO))
+        == ValidarAbono.SI
+    )
+
+
+def require_validar_abono_value(raw: Any) -> str:
+    """Normaliza Validar Abono; vacío → NO; valor no reconocido → error."""
+    if raw is None or str(raw).strip() == "":
+        return ValidarAbono.NO
+    norm = normalize_validar_abono_value(raw)
+    if not norm:
+        raise ValueError("invalid_validar_abono")
+    return norm
 
 
 def apply_legacy_estado_migration(row: dict[str, Any]) -> None:

@@ -10,13 +10,18 @@ import openpyxl
 import pytest
 
 from app.application.services.review_schema import (
+    AsientosPendientesCols,
     CasosPagoCols,
     ControlCols,
     DISTRIB_LEGACY_HEADER_ALIASES,
+    DistribucionAbonosCols,
     DistribucionCols,
     EstadoLinea,
     EstadoPago,
     ReviewSheets,
+    SUPPORT_NOT_APPLICABLE,
+    TipoAplicacion,
+    ValidarAbono,
     ValidarPago,
 )
 from app.application.use_cases.payment_validation_finalize import (
@@ -238,11 +243,50 @@ def make_distrib_row(
     return row, tabla_hyperlink_target
 
 
+def make_abono_row(
+    id_pago="AB1",
+    cliente="CLI",
+    credito="CRED",
+    monto_banco=100000,
+    fecha_banco=None,
+    validar_abono=ValidarAbono.SI,
+    observacion="",
+    link_tabla="https://mock.invalid/tabla",
+    link_carpeta="https://mock.invalid/carpeta",
+    ruta_unidad_credito="clientes/CLI/CRED",
+    ruta_tabla_amortizacion="clientes/CLI/CRED/tabla.xlsx",
+    credito_normalizado=None,
+    tabla_hyperlink_target: str | None = None,
+):
+    fecha_banco = fecha_banco or date(2026, 5, 10)
+    cred_norm = credito_normalizado or str(credito)
+    vals = {
+        DistribucionAbonosCols.ID_PAGO: id_pago,
+        DistribucionAbonosCols.CLIENTE: cliente,
+        DistribucionAbonosCols.CREDITO: credito,
+        DistribucionAbonosCols.MONTO_BANCO: monto_banco,
+        DistribucionAbonosCols.FECHA_BANCO: fecha_banco,
+        DistribucionAbonosCols.VALIDAR_ABONO: validar_abono,
+        DistribucionAbonosCols.OBSERVACION: observacion,
+        DistribucionAbonosCols.LINK_TABLA: link_tabla,
+        DistribucionAbonosCols.LINK_CARPETA_CREDITO: link_carpeta,
+        DistribucionAbonosCols.ORIGEN_CREDITO: "TABLA_AMORTIZACION",
+        DistribucionAbonosCols.RUTA_UNIDAD_CREDITO: ruta_unidad_credito,
+        DistribucionAbonosCols.RUTA_TABLA_AMORTIZACION: ruta_tabla_amortizacion,
+        DistribucionAbonosCols.CREDITO_NORMALIZADO: cred_norm,
+        DistribucionAbonosCols.TIPO_APLICACION: TipoAplicacion.ABONO.value,
+        DistribucionAbonosCols.REQUIERE_EXTRACTO: "NO",
+    }
+    row = [vals[c] for c in DistribucionAbonosCols.HEADERS]
+    return row, tabla_hyperlink_target
+
+
 def create_review_workbook(
     procesar="SI",
     estado="EN_REVISION",
     casos_data=None,
     distrib_specs=None,
+    abono_specs=None,
     include_control=True,
     include_distrib=True,
 ):
@@ -324,6 +368,26 @@ def create_review_workbook(
                 ctab.hyperlink = tabla_hl
                 if not ctab.value:
                     ctab.value = "Tabla"
+
+    if abono_specs is not None:
+        ws_abono = wb.create_sheet(ReviewSheets.DISTRIBUCION_ABONOS)
+        ws_abono.append(DistribucionAbonosCols.HEADERS)
+        for spec in abono_specs:
+            tabla_hl = None
+            if isinstance(spec, tuple) and len(spec) == 2:
+                row_vals, tabla_hl = spec
+            else:
+                row_vals = spec
+            r = ws_abono.max_row + 1
+            for c, v in enumerate(row_vals, start=1):
+                ws_abono.cell(r, c, v)
+            lt_col = DistribucionAbonosCols.HEADERS.index(DistribucionAbonosCols.LINK_TABLA) + 1
+            if tabla_hl:
+                ctab = ws_abono.cell(r, lt_col)
+                ctab.hyperlink = tabla_hl
+                if not ctab.value:
+                    ctab.value = "Tabla"
+
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -1018,10 +1082,23 @@ def test_secretary_workbook_has_expected_columns():
         ws = wb[SECRETARY_SHEET]
         headers = [ws.cell(SECRETARY_HEADER_ROW, c).value for c in range(1, len(SECRETARY_HEADERS) + 1)]
         assert headers == SECRETARY_HEADERS
+        assert len(headers) == 13
         assert "Estado asiento contable" not in headers
-        assert "Observación" not in headers
         tot = 70 + 20 + 10
-        assert ws.cell(SECRETARY_FIRST_DATA_ROW, SECRETARY_HEADERS.index("Total validado") + 1).value == tot
+        assert (
+            ws.cell(
+                SECRETARY_FIRST_DATA_ROW,
+                SECRETARY_HEADERS.index("Total validado") + 1,
+            ).value
+            == tot
+        )
+        assert (
+            ws.cell(
+                SECRETARY_FIRST_DATA_ROW,
+                SECRETARY_HEADERS.index("Tipo Aplicación") + 1,
+            ).value
+            == "PAGO"
+        )
 
     _run(run_test())
 
@@ -1229,7 +1306,7 @@ def test_secretary_workbook_has_freeze_panes_after_credito():
         sec_key = next(k for k in client.uploaded_files if "soporte_asientos_contables_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[sec_key]))
         ws = wb[SECRETARY_SHEET]
-        assert ws.freeze_panes == f"C{SECRETARY_FIRST_DATA_ROW}"
+        assert ws.freeze_panes == f"E{SECRETARY_FIRST_DATA_ROW}"
 
     _run(run_test())
 

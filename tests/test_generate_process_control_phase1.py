@@ -75,7 +75,7 @@ def _set_env():
 def _minimal_bank_xlsx() -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(["Fecha", "Crédito", "Concepto", "Transacción"])
+    ws.append(["Fecha", "Crédito", "Concepto", "Tipo Aplicación", "Transacción"])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

@@ -165,6 +165,26 @@ def create_excel(headers, data, sheet_name="Sheet"):
     return out.getvalue()
 
 
+STANDARD_BANK_HEADERS = ["Fecha", "Crédito", "Concepto", "Tipo Aplicación", "Transacción"]
+
+
+def with_tipo_aplicacion_rows(rows, default_tipo="PAGO"):
+    out = []
+    for row in rows:
+        if len(row) == 4:
+            out.append([row[0], row[1], row[2], default_tipo, row[3]])
+        else:
+            out.append(list(row))
+    return out
+
+
+def create_bank_excel(data_rows, headers=None, default_tipo="PAGO"):
+    return create_excel(
+        headers or STANDARD_BANK_HEADERS,
+        with_tipo_aplicacion_rows(data_rows, default_tipo=default_tipo),
+    )
+
+
 def create_amortization_excel(rows):
     return create_excel(
         ["Fecha límite", "Fecha pago", "Total pagado", "Cuota", "Intereses de mora"],
@@ -372,10 +392,7 @@ def run_generate(bank_rows, process_date, include_web_urls=False):
         client = MockGraphClient()
         client.children = []
         setup_client_structure(client, include_web_urls=include_web_urls)
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
-            bank_rows,
-        )
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(bank_rows)
         extractor = make_pdf_extractor_mock(client)
         fake_fecha = _fake_fecha_limite_from_marker_bytes()
         with mock.patch(
@@ -422,7 +439,7 @@ def test_generate_ignores_temp_files():
         client = MockGraphClient()
         client.children = [{"name": "~$archivo.xlsx"}]
         setup_client_structure(client)
-        client.downloaded_files["banco.xlsx"] = create_excel(["Fecha", "Crédito", "Concepto", "Transacción"], [])
+        client.downloaded_files["banco.xlsx"] = create_bank_excel( [])
 
         result = await generate_payment_validation(client, date(2026, 5, 10))
         assert result["process_id"] is not None
@@ -600,7 +617,7 @@ def test_generate_workbook_headers_compatible_with_finalize():
         client = MockGraphClient()
         client.children = []
         setup_client_structure(client)
-        client.downloaded_files["banco.xlsx"] = create_excel(["Fecha", "Crédito", "Concepto", "Transacción"], [])
+        client.downloaded_files["banco.xlsx"] = create_bank_excel( [])
 
         await generate_payment_validation(client, date(2026, 5, 10))
         workbook = load_generated_workbook(client)
@@ -713,11 +730,11 @@ def test_generate_proposes_all_pending_installments_geoexcon():
         client.children = []
         setup_client_structure(client, include_web_urls=True)
         # El pago es el 30/12/2025
-        headers = ["Fecha", "Crédito", "Concepto", "Transacción"]
+        headers = STANDARD_BANK_HEADERS
         data = [
             [date(2025, 12, 30), 500000, "GEOEXCON", ""],
         ]
-        client.downloaded_files["banco.xlsx"] = create_excel(headers, data)
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(data)
         
         client.downloaded_files["clientes/GEOEXCON/254/Tabla amortizacion GEOEXCON 254.xlsx"] = create_amortization_excel([
             [date(2025, 12, 23), None, None, 12000000, None],
@@ -781,11 +798,11 @@ def test_generate_proposes_all_future_installments_equinorte():
             [date(2026, 1, 22), None, None, 1000, None],
         ])
         
-        headers = ["Fecha", "Crédito", "Concepto", "Transacción"]
+        headers = STANDARD_BANK_HEADERS
         data = [
             [date(2025, 12, 30), 500000, "EQUINORTE", ""],
         ]
-        client.downloaded_files["banco.xlsx"] = create_excel(headers, data)
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(data)
         
         client.downloaded_files["clientes/EQUINORTE/900/Tabla amortizacion EQUINORTE 900.xlsx"] = create_amortization_excel([
             [date(2026, 1, 22), None, None, 1000, None],
@@ -873,8 +890,7 @@ def test_generate_no_pending_installment_error_for_realistic_hbi_table():
         client.downloaded_files["clientes/HBI/321/Extracto 2025-12-23 CREDITO # 321.pdf"] = create_pdf_bytes(
             "5.000", date(2025, 12, 23)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 23), 5000, "HBI", ""]],
         )
 
@@ -945,8 +961,7 @@ def _make_single_client_setup(client, credit_id: str, tabla_cuota: float, pdf_to
     client.downloaded_files[f"clientes/TESTCLIENT/{credit_id}/{pdf_name}"] = create_pdf_bytes(
         pdf_total_str, due_date
     )
-    client.downloaded_files["banco.xlsx"] = create_excel(
-        ["Fecha", "Crédito", "Concepto", "Transacción"],
+    client.downloaded_files["banco.xlsx"] = create_bank_excel(
         [[banco_date, 500000, "TESTCLIENT", ""]],
     )
 
@@ -1076,8 +1091,7 @@ def test_generate_extract_not_found_when_pdf_missing():
         client.folder_children["clientes/NOPDF/200"] = [make_item("Tabla amortizacion NOPDF 200.xlsx")]
         client.downloaded_files["clientes/NOPDF/200/Tabla amortizacion NOPDF 200.xlsx"] = create_excel(
             ["Fecha límite", "Cuota", "Fecha de pago"], [[date(2025, 12, 23), 10000, None]])
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 30), 100000, "NOPDF", ""]])
         # Este test no necesita mock de PDF porque no hay PDF — testea extract_not_found
         await generate_payment_validation(client, date(2026, 1, 1))
@@ -1139,8 +1153,7 @@ def test_phase1_extractos_subfolder_priority_over_parent_pdf():
         client.downloaded_files["clientes/MIXCLI/100/EXTRACTOS/Extracto interno CREDITO # 100.pdf"] = create_pdf_bytes(
             "8.888.888", date(2026, 5, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 23), 100000, "MIXCLI", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1184,8 +1197,7 @@ def test_phase1_empty_extractos_fallback_to_credit_folder():
         client.downloaded_files["clientes/FALLB/200/Extracto root CREDITO # 200.pdf"] = create_pdf_bytes(
             "3.333.333", date(2025, 6, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 6, 1), 500000, "FALLB", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1222,8 +1234,7 @@ def test_generate_flat_acimor_style_writes_ruta_for_root_extract():
         client.downloaded_files["clientes/ACIMRU/Extracto 2026-04-01 CREDITO # 801.pdf"] = create_pdf_bytes(
             "4.000", date(2026, 4, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "ACIMRU", "pago"]],
         )
         with _run_with_pdf_mock(client):
@@ -1254,8 +1265,7 @@ def test_phase1_strict_name_rejects_pdf_without_extracto_in_name():
         client.downloaded_files["clientes/STRICT/300/Tabla amortizacion STRICT 300.xlsx"] = create_amortization_excel(
             [[date(2025, 12, 23), None, None, 5000, None]]
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 23), 100000, "STRICT", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1293,8 +1303,7 @@ def test_phase1_selects_extract_with_max_fecha_limite():
         client.downloaded_files["clientes/MAXDT/400/Extracto nuevo CREDITO # 400.pdf"] = create_pdf_bytes(
             "9.999", date(2026, 8, 15)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 15), 100000, "MAXDT", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1330,8 +1339,7 @@ def test_phase1_no_selection_when_fecha_limite_unreadable():
         client.downloaded_files["clientes/NODTE/500/Extracto b CREDITO # 500.pdf"] = create_pdf_bytes(
             "9.000", date(2026, 1, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 15), 100000, "NODTE", ""]],
         )
         extractor = make_pdf_extractor_mock(client)
@@ -1379,8 +1387,7 @@ def test_phase1_tie_max_fecha_limite_does_not_pick_silently():
         client.downloaded_files["clientes/TIECL/600/Extracto dos CREDITO # 600.pdf"] = create_pdf_bytes(
             "2.222", same
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 15), 100000, "TIECL", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1414,8 +1421,7 @@ def test_phase1_possibly_finalized_observation_on_folder_name():
         client.downloaded_files["clientes/PFCLI/700-TERMINADO/Extracto 2025-12-23 CREDITO # 700.pdf"] = create_pdf_bytes(
             "7.000", date(2025, 12, 23)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 1), 500000, "PFCLI", "concepto-trx"]],
         )
         with _run_with_pdf_mock(client):
@@ -1450,8 +1456,7 @@ def test_phase11_flat_client_without_credit_subfolders_acimor_style():
         client.downloaded_files["clientes/ACIMOR/Extracto 2026-04-01 CREDITO # 801.pdf"] = create_pdf_bytes(
             "4.000", date(2026, 4, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "ACIMOR", "pago acimor"]],
         )
         with _run_with_pdf_mock(client):
@@ -1492,8 +1497,7 @@ def test_phase11_mixed_candidates_one_illegible_fecha_still_selects_max():
         client.downloaded_files["clientes/MIXRO/410/Extracto con fecha CREDITO # 410.pdf"] = create_pdf_bytes(
             "123", date(2026, 4, 23)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 15), 100000, "MIXRO", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1532,8 +1536,7 @@ def test_phase11_fecha_limite_unreadable_in_errores_includes_payment_context():
         client.downloaded_files["clientes/NODTE2/501/Extracto x CREDITO # 501.pdf"] = create_pdf_bytes(
             "12.345", date(2025, 12, 1), skip_fecha_fake=True
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 15), 100000, "NODTE2", "ref-banco-123"]],
         )
         with _run_with_pdf_mock(client):
@@ -1605,8 +1608,7 @@ def test_errores_extract_not_found_friendly_message_and_code_column():
         client.downloaded_files["clientes/NOPDF/200/Tabla amortizacion NOPDF 200.xlsx"] = create_excel(
             ["Fecha límite", "Cuota", "Fecha de pago"], [[date(2025, 12, 23), 10000, None]]
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 30), 100000, "NOPDF", ""]],
         )
         await generate_payment_validation(client, date(2026, 1, 1))
@@ -1646,8 +1648,7 @@ def test_errores_flat_client_extract_not_found_carpeta_hyperlink():
         client.downloaded_files["clientes/MINCIVIL/Tabla amortizacion MINCIVIL MINCIVIL.xlsx"] = (
             create_amortization_excel([[date(2026, 4, 1), None, None, 1000, None]])
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "MINCIVIL", "pago"]],
         )
         with _run_with_pdf_mock(client):
@@ -1693,8 +1694,7 @@ def test_errores_flat_client_illegible_extract_both_hyperlinks():
         client.downloaded_files["clientes/MINCIVIL2/Tabla amortizacion MINCIVIL2 MINCIVIL2.xlsx"] = (
             create_amortization_excel([[date(2026, 4, 1), None, None, 1000, None]])
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "MINCIVIL2", "pago"]],
         )
         with _run_with_pdf_mock(client):
@@ -1739,8 +1739,7 @@ def test_errores_sin_url_no_muestra_ver_carpeta_enganoso():
         client.downloaded_files["clientes/NOURL/Tabla amortizacion NOURL NOURL.xlsx"] = (
             create_amortization_excel([[date(2026, 4, 1), None, None, 1000, None]])
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "NOURL", "pago"]],
         )
         with _run_with_pdf_mock(client):
@@ -1773,8 +1772,7 @@ def test_errores_extract_tie_max_fecha_friendly_message():
         same = date(2026, 3, 15)
         client.downloaded_files["clientes/TIECLX/601/Extracto uno CREDITO # 601.pdf"] = create_pdf_bytes("1", same)
         client.downloaded_files["clientes/TIECLX/601/Extracto dos CREDITO # 601.pdf"] = create_pdf_bytes("2", same)
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 15), 100000, "TIECLX", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1807,8 +1805,7 @@ def test_phase12_v2_fecha_limite_column_comes_from_pdf_not_amortization_table():
         client.downloaded_files["clientes/PDFLIM/888/Extracto 2026-08-10 CREDITO # 888.pdf"] = create_pdf_bytes(
             "50.000", date(2026, 8, 10)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 8, 10), 100000, "PDFLIM", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1844,8 +1841,7 @@ def test_phase12_valid_extract_ambiguous_excel_tables_still_distrib_and_warns():
         client.downloaded_files["clientes/AMBIV/777/Extracto 2026-02-01 CREDITO # 777.pdf"] = create_pdf_bytes(
             "10.000", date(2026, 2, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 2, 1), 100000, "AMBIV", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1877,8 +1873,7 @@ def test_phase12_valid_extract_without_excel_table_still_distrib_and_warns():
         client.downloaded_files["clientes/NOTAB/666/Extracto 2026-03-15 CREDITO # 666.pdf"] = create_pdf_bytes(
             "3.000", date(2026, 3, 15)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 3, 15), 50000, "NOTAB", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1911,8 +1906,7 @@ def test_phase12_acimor_pdf_informativo_no_interfiere_con_tabla_xlsx():
         client.downloaded_files["clientes/ACIMOR2/Extracto 2026-04-01 CREDITO # 901.pdf"] = create_pdf_bytes(
             "4.000", date(2026, 4, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "ACIMOR2", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1946,8 +1940,7 @@ def test_phase12_flat_client_ambiguous_tables_valid_extract_distrib():
         client.downloaded_files["clientes/FLAMB/Extracto 2026-05-10 CREDITO # 55.pdf"] = create_pdf_bytes(
             "800", date(2026, 5, 10)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 5, 10), 50000, "FLAMB", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -1979,8 +1972,7 @@ def test_phase12_flat_infer_credito_from_pdf_obligacion_gb():
         client.downloaded_files["clientes/ROOT82/Tabla amortizacion ROOT82 ROOT82.xlsx"] = create_amortization_excel(
             [[date(2026, 4, 1), None, None, 100, None]],
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 5000, "ROOT82", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -2017,8 +2009,7 @@ def test_phase12_auxiliary_compare_fecha_limite_vs_last_fecha_pago_observations(
         pdf_fecha = date(2025, 12, 20)
         client.downloaded_files[f"{base}/Extracto cmp.pdf"] = create_pdf_bytes("5.000", pdf_fecha)
 
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[pdf_fecha, 50000, "CMPRV", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -2055,8 +2046,7 @@ def test_phase12_auxiliary_compare_extract_fecha_before_last_pay_warns():
         )
         pdf_fecha = date(2025, 11, 1)
         client.downloaded_files[f"{base}/Extracto cmpbf.pdf"] = create_pdf_bytes("2.000", pdf_fecha)
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[pdf_fecha, 50000, "CMPBF", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -2092,8 +2082,7 @@ def test_phase12_auxiliary_compare_when_extract_after_last_pay_no_compare_warnin
         )
         pdf_fecha = date(2027, 1, 1)
         client.downloaded_files[f"{base}/Extracto cmp2.pdf"] = create_pdf_bytes("1.000", pdf_fecha)
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[pdf_fecha, 50000, "CMPAF", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -2337,9 +2326,13 @@ def test_generate_visual_control_resumen_listas_adelantados():
     ws_r = wb[ReviewSheets.RESUMEN]
     labels = [ws_r.cell(i, 1).value for i in range(1, 25) if ws_r.cell(i, 1).value]
     for name in (
+        "Transacciones banco",
+        "Pagos detectados",
+        "Abonos detectados",
         "Pagos banco",
         "Casos pago",
-        "Líneas distribución",
+        "Filas Distribucion",
+        "Filas Distribucion_Abonos",
         "Errores",
         "Atrasado (mora)",
         "Adelantado",
@@ -2935,8 +2928,7 @@ def test_generate_result_includes_validation_file_url_when_graph_returns_weburl(
         client = MockGraphClientPutReturnsWebUrl(expected_url)
         client.children = []
         setup_client_structure(client)
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [],
         )
         extractor = make_pdf_extractor_mock(client)
@@ -2964,8 +2956,7 @@ def test_generate_result_sets_validation_file_url_null_when_graph_does_not_retur
         client = MockGraphClientPutCustomReturn(put_return)
         client.children = []
         setup_client_structure(client)
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [],
         )
         extractor = make_pdf_extractor_mock(client)
@@ -3008,8 +2999,7 @@ def test_credit_unit_inversiones_empty_credit_root_extract():
         client.downloaded_files["clientes/INVPRO/Extracto 2026-04-01 CREDITO # 801.pdf"] = create_pdf_bytes(
             "4.000", date(2026, 4, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "INVPRO", "pago"]],
         )
         with _run_with_pdf_mock(client):
@@ -3054,8 +3044,7 @@ def test_credit_unit_agrecar_root_and_credit_folders():
         client.downloaded_files["clientes/AGRECAR/Extracto root AGRECAR.pdf"] = create_pdf_bytes(
             "2.000", date(2026, 3, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 3, 1), 500000, "AGRECAR", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -3088,8 +3077,7 @@ def test_credit_unit_ericcol_non_standard_folder_infers_credit():
         client.downloaded_files[f"{base}/Extracto 2026-04-01 CREDITO # 555.pdf"] = create_pdf_bytes(
             "3.000", date(2026, 4, 1)
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "AGRECAR", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -3127,8 +3115,7 @@ def test_infra_extractos_folder_not_credit_unit():
         client.downloaded_files["clientes/ONLYX/CREDITO # 1/Extracto 2026-01-01 CREDITO # 1.pdf"] = (
             create_pdf_bytes("1.000", date(2026, 1, 1))
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 1, 1), 100000, "ONLYX", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -3157,8 +3144,7 @@ def test_credit_folder_vigente_no_terminal_observation():
         client.downloaded_files["clientes/VIGCLI/CREDITO # 318 VIGENTE/Extracto 2026-04-01 CREDITO # 318.pdf"] = (
             create_pdf_bytes("1.000", date(2026, 4, 1))
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "VIGCLI", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -3188,8 +3174,7 @@ def test_credit_folder_pagado_terminal_observation():
         client.downloaded_files["clientes/PAGCLI/CREDITO # 318 PAGADO/Extracto 2026-04-01 CREDITO # 318.pdf"] = (
             create_pdf_bytes("1.000", date(2026, 4, 1))
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "PAGCLI", ""]],
         )
         with _run_with_pdf_mock(client):
@@ -3285,8 +3270,7 @@ def test_distrib_observation_warning_fill_only_on_observation_cell():
         client.downloaded_files[f"{base}/Tabla B amortizacion WARNCLI 501.xlsx"] = create_amortization_excel(
             [[date(2026, 4, 1), None, None, 100, None]]
         )
-        client.downloaded_files["banco.xlsx"] = create_excel(
-            ["Fecha", "Crédito", "Concepto", "Transacción"],
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2026, 4, 1), 100000, "WARNCLI", ""]],
         )
         with _run_with_pdf_mock(client):

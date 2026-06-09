@@ -58,6 +58,22 @@ _GENERATE_MESSAGES: dict[str, tuple[str, str]] = {
         "Revise el formato del reporte del banco. Debe coincidir con la plantilla habitual. "
         "Corrija el Excel, vuelva a subirlo y ejecute de nuevo la generación.",
     ),
+    "tipo_aplicacion_column_missing": (
+        "El archivo bancario no contiene la columna obligatoria Tipo Aplicación.",
+        "Use la plantilla oficial, restaure la columna Tipo Aplicación y vuelva a ejecutar Generate.",
+    ),
+    "tipo_aplicacion_column_duplicate": (
+        "El archivo bancario tiene más de una columna Tipo Aplicación; el sistema no puede determinar cuál usar.",
+        "Deje una sola columna Tipo Aplicación en la plantilla oficial y vuelva a ejecutar Generate.",
+    ),
+    "tipo_aplicacion_required": (
+        "Hay una transacción bancaria sin Tipo Aplicación (PAGO o ABONO).",
+        "Complete Tipo Aplicación en todas las filas del reporte del banco y vuelva a ejecutar Generate.",
+    ),
+    "tipo_aplicacion_invalid": (
+        "Hay una transacción bancaria con un Tipo Aplicación no válido (solo se acepta PAGO o ABONO).",
+        "Corrija el valor en el Excel del banco (PAGO o ABONO) y vuelva a ejecutar Generate.",
+    ),
     "customer_not_found": (
         "En el reporte del banco hay un pago cuyo Concepto no coincide con ninguna carpeta de cliente en SharePoint.",
         "En 01 COMWARE AUTOMATIZACION - INFORMACION CREDITOS CLIENTES, cree o corrija la carpeta del cliente "
@@ -700,6 +716,15 @@ def _build_standard_error_payload(
 
 def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[str, str, str]:
     if job_type == "generate":
+        custom_um = str(result.get("user_message") or "").strip()
+        custom_na = str(result.get("next_action") or "").strip()
+        if custom_um:
+            return (
+                custom_um,
+                custom_na
+                or "Abra el Excel en 01 REVISION, complete las hojas de distribución y en Control ponga Procesar = SI.",
+                "success",
+            )
         return (
             "Se creó el archivo de revisión de pagos del día. Ya puede abrirlo en la carpeta 01 REVISION de SharePoint.",
             "Abra ese Excel, complete la hoja Distribución (Estado Pago y Validar Pago en cada fila) y en la hoja Control "

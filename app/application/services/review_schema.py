@@ -8,7 +8,29 @@ Si necesitas cambiar un nombre de columna, cámbialo AQUÍ, no en cada archivo.
 from __future__ import annotations
 
 import re
+from enum import Enum
 from typing import Any
+
+class TipoAplicacion(str, Enum):
+    PAGO = "PAGO"
+    ABONO = "ABONO"
+
+
+def normalize_tipo_aplicacion(value: Any) -> TipoAplicacion:
+    """Normaliza Tipo Aplicación del Excel bancario; solo acepta PAGO o ABONO."""
+    text = str(value or "").strip().upper()
+    if not text:
+        raise ValueError("tipo_aplicacion_required")
+    if text == TipoAplicacion.PAGO.value:
+        return TipoAplicacion.PAGO
+    if text == TipoAplicacion.ABONO.value:
+        return TipoAplicacion.ABONO
+    raise ValueError("tipo_aplicacion_invalid")
+
+
+def requiere_extracto(tipo: TipoAplicacion) -> bool:
+    return tipo == TipoAplicacion.PAGO
+
 
 # Nombres de hojas
 class ReviewSheets:
@@ -16,6 +38,8 @@ class ReviewSheets:
     RESUMEN = "Resumen"
     CASOS_PAGO = "Casos_Pago"
     DISTRIBUCION = "Distribucion"
+    DISTRIBUCION_ABONOS = "Distribucion_Abonos"
+    DISTRIBUCION_PAGOS_FUTURE = "Distribucion_Pagos"
     LISTAS = "_Listas"
     ERRORES = "Errores"
 
@@ -67,6 +91,11 @@ class CasosPagoCols:
 
 
 class ValidarPago:
+    SI = "SI"
+    NO = "NO"
+
+
+class ValidarAbono:
     SI = "SI"
     NO = "NO"
 
@@ -180,6 +209,53 @@ DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS = frozenset(
     {
         DistribucionCols.RUTA_TABLA_AMORTIZACION,
         DistribucionCols.CREDITO_NORMALIZADO,
+    }
+)
+
+
+class DistribucionAbonosCols:
+    ID_PAGO = "ID Pago"
+    CLIENTE = "Cliente"
+    CREDITO = "Crédito"
+    MONTO_BANCO = "Monto banco"
+    FECHA_BANCO = "Fecha banco"
+    VALIDAR_ABONO = "Validar Abono"
+    OBSERVACION = "Observación"
+    LINK_TABLA = "Link tabla amortización"
+    LINK_CARPETA_CREDITO = "Link carpeta crédito"
+    ORIGEN_CREDITO = "Origen crédito"
+    RUTA_UNIDAD_CREDITO = "RutaUnidadCredito"
+    RUTA_TABLA_AMORTIZACION = "RutaTablaAmortizacion"
+    CREDITO_NORMALIZADO = "CreditoNormalizado"
+    TIPO_APLICACION = "TipoAplicacion"
+    REQUIERE_EXTRACTO = "RequiereExtracto"
+
+    HEADERS = [
+        ID_PAGO,
+        CLIENTE,
+        CREDITO,
+        MONTO_BANCO,
+        FECHA_BANCO,
+        VALIDAR_ABONO,
+        OBSERVACION,
+        LINK_TABLA,
+        LINK_CARPETA_CREDITO,
+        ORIGEN_CREDITO,
+        RUTA_UNIDAD_CREDITO,
+        RUTA_TABLA_AMORTIZACION,
+        CREDITO_NORMALIZADO,
+        TIPO_APLICACION,
+        REQUIERE_EXTRACTO,
+    ]
+
+
+DISTRIBUCION_ABONOS_TECHNICAL_HIDDEN_COLUMNS = frozenset(
+    {
+        DistribucionAbonosCols.RUTA_UNIDAD_CREDITO,
+        DistribucionAbonosCols.RUTA_TABLA_AMORTIZACION,
+        DistribucionAbonosCols.CREDITO_NORMALIZADO,
+        DistribucionAbonosCols.TIPO_APLICACION,
+        DistribucionAbonosCols.REQUIERE_EXTRACTO,
     }
 )
 

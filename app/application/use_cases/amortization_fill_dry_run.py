@@ -36,7 +36,13 @@ from app.application.services.amortization_workbook import (
     find_row_by_due_date_detailed,
 )
 from app.application.services.ibr_workbook import find_ibr_for_date
-from app.application.services.review_schema import DistribucionCols, normalize_credito_digits
+from app.application.services.abono_dry_run import (
+    ABONO_SCHEDULE_RULE_NOT_CONFIGURED,
+    infer_manifest_tipo_aplicacion,
+    load_abono_historical_index,
+    process_abono_manifest_outputs,
+)
+from app.application.services.review_schema import DistribucionCols, TipoAplicacion, normalize_credito_digits
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.application.use_cases.send_validar_extractos_notification import (
     _find_distribucion_header_row,
@@ -1183,6 +1189,7 @@ async def run_amortization_fill_dry_run(
             outputs = []
 
         hist_index: dict[tuple[str, str], dict[str, Any]] = {}
+        abono_hist_index: dict[tuple[str, str], dict[str, Any]] = {}
         hist_path = (
             resolved_hist
             or historical_file_path
@@ -1193,6 +1200,7 @@ async def run_amortization_fill_dry_run(
             try:
                 hist_bytes = await _graph_download_by_path(graph, site_id, drive_id, hist_path)
                 hist_index = _load_historical_index(hist_bytes)
+                abono_hist_index = load_abono_historical_index(hist_bytes)
             except Exception as exc:
                 logger.warning(
                     "amortization dry_run: histórico no legible %s: %s", hist_path, exc
@@ -1205,12 +1213,21 @@ async def run_amortization_fill_dry_run(
         except Exception as exc:
             logger.warning("amortization dry_run: IBR no disponible %s: %s", ibr_path, exc)
 
-        used_application_rows_by_table: dict[str, set[int]] = {}
-        planned_ibr_keys: set[str] = set()
-        items: list[dict[str, Any]] = []
+        payment_outputs: list[dict[str, Any]] = []
+        abono_outputs: list[dict[str, Any]] = []
         for out in outputs:
             if not isinstance(out, dict):
                 continue
+            tipo = infer_manifest_tipo_aplicacion(out)
+            if tipo == TipoAplicacion.ABONO.value:
+                abono_outputs.append(out)
+            else:
+                payment_outputs.append(out)
+
+        used_application_rows_by_table: dict[str, set[int]] = {}
+        planned_ibr_keys: set[str] = set()
+        items: list[dict[str, Any]] = []
+        for out in payment_outputs:
             items.extend(
                 await _plan_events_for_manifest_output(
                     graph,
@@ -1225,6 +1242,42 @@ async def run_amortization_fill_dry_run(
                 )
             )
 
+        async def _download_asiento(path: str) -> bytes:
+            return await _graph_download_by_path(graph, site_id, drive_id, path)
+
+        abono_items, abono_group_results, abono_counters = await process_abono_manifest_outputs(
+            abono_outputs,
+            bank_code=resolved_bank_code,
+            process_key=resolved_process_key,
+            download_fn=_download_asiento,
+            abono_hist_index=abono_hist_index,
+        )
+        items.extend(abono_items)
+
+        summary = _summarize(items)
+        payment_applicable = all(
+            it.get("application_status") in ("WOULD_APPLY", "WOULD_ADOPT_EXISTING")
+            for it in items
+            if str(it.get("tipo_aplicacion") or TipoAplicacion.PAGO.value) != TipoAplicacion.ABONO.value
+        ) and any(
+            str(it.get("tipo_aplicacion") or TipoAplicacion.PAGO.value) != TipoAplicacion.ABONO.value
+            for it in items
+        ) if items else True
+        if not any(
+            str(it.get("tipo_aplicacion") or TipoAplicacion.PAGO.value) != TipoAplicacion.ABONO.value
+            for it in items
+        ):
+            payment_applicable = True
+
+        abono_ready = all(gr.get("group_ready_for_apply") for gr in abono_group_results) if abono_group_results else True
+        has_abono_schedule_pending = any(
+            gr.get("requires_business_rule") for gr in abono_group_results
+        )
+        has_abono_errors = any(
+            gr.get("reconciliation_status") != "PASSED" for gr in abono_group_results
+        )
+        can_apply = payment_applicable and abono_ready and not has_abono_errors
+
         result_payload: dict[str, Any] = {
             "status": "ok",
             "mode": "dry_run",
@@ -1236,7 +1289,21 @@ async def run_amortization_fill_dry_run(
             "ibr_workbook_path": ibr_path,
             "manifest_outputs_count": len(outputs),
             "items": items,
-            "summary": _summarize(items),
+            "summary": summary,
+            "payment_groups_total": len(payment_outputs),
+            "abono_groups_total": abono_counters.get("abono_groups_total", 0),
+            "abono_groups_reconciled": abono_counters.get("abono_groups_reconciled", 0),
+            "abono_groups_not_reconciled": abono_counters.get("abono_groups_not_reconciled", 0),
+            "abono_groups_missing_accounting_pdf": abono_counters.get(
+                "abono_groups_missing_accounting_pdf", 0
+            ),
+            "abono_groups_schedule_rule_missing": abono_counters.get(
+                "abono_groups_schedule_rule_missing", 0
+            ),
+            "abono_credit_items_total": abono_counters.get("abono_credit_items_total", 0),
+            "abono_group_results": abono_group_results,
+            "can_apply": can_apply,
+            "requires_business_rule": has_abono_schedule_pending,
             "bank_code": resolved_bank_code,
             "bank_name": resolved_bank_name,
             "bank_code_source": "body" if (bank_code or "").strip() else "auto_detected",
@@ -1253,6 +1320,13 @@ async def run_amortization_fill_dry_run(
 
         if update_process_control:
             try:
+                last_status = "COMPLETED"
+                last_error = ""
+                if has_abono_schedule_pending and not has_abono_errors:
+                    last_status = "COMPLETED_WITH_WARNINGS"
+                    last_error = ABONO_SCHEDULE_RULE_NOT_CONFIGURED
+                elif summary.get("errors", 0) > 0 or has_abono_errors:
+                    last_status = "COMPLETED_WITH_WARNINGS"
                 await update_process_control_row2(
                     graph,
                     site_id,
@@ -1260,14 +1334,22 @@ async def run_amortization_fill_dry_run(
                     bank_code=resolved_bank_code,
                     updates={
                         "LastCompletedStep": "DRY_RUN",
-                        "LastStepStatus": "COMPLETED",
-                        "LastStepErrorCode": "",
+                        "LastStepStatus": last_status,
+                        "LastStepErrorCode": last_error,
                         "LastUpdatedAtProceso": utc_now_iso(),
                     },
                 )
                 result_payload["process_control_updated"] = True
             except Exception:
                 pass
+
+        if has_abono_schedule_pending and not has_abono_errors:
+            result_payload["user_message"] = (
+                "Los asientos del abono cuadran con el movimiento bancario, pero el abono todavía no puede aplicarse."
+            )
+            result_payload["next_action"] = (
+                "Defina la regla contable para seleccionar la fila contractual y el IBR del abono."
+            )
 
         return result_payload
     except Exception:

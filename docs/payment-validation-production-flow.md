@@ -23,6 +23,21 @@ El archivo `control_merge_pdfs.xlsx` **no** forma parte del flujo. El endpoint a
 | 5 Dry-run | POST | `/graph/sharepoint/payment-validation/amortization/dry-run/queue` | `GET .../payment-validation/jobs/{job_id}` |
 | 6 Apply | POST | `/graph/sharepoint/payment-validation/amortization/apply/queue` | `GET .../payment-validation/jobs/{job_id}` |
 
+### Dry-run y ABONO (Fase 4)
+
+El dry-run lee el manifest extendido de Merge y distingue **PAGO** y **ABONO**:
+
+- **PAGO:** comportamiento histórico (extracto, fecha límite, `due_date_row`, IBR, planning de filas).
+- **ABONO:** preflight documental y **cuadre financiero por `ID Pago`**:
+  - exige un asiento contable por cada crédito seleccionado;
+  - **no** exige extracto (`extracto_pdf_paths` puede estar vacío);
+  - suma el campo canónico `valor_pagado_cliente` de cada asiento y lo compara con `monto_banco` (tolerancia `0.02`);
+  - bloquea el grupo completo si falta un asiento, hay PDF duplicado o el cuadre no pasa.
+
+Manifest legacy (sin `tipo_aplicacion`) se interpreta como **PAGO**.
+
+Si el cuadre ABONO es correcto pero aún no está definida la regla contractual de fila/IBR, el dry-run termina con `requires_business_rule=true`, `can_apply=false` y código `ABONO_SCHEDULE_RULE_NOT_CONFIGURED`. **Eso no significa que los PDFs estén incorrectos**; significa que Apply no debe ejecutarse hasta que contabilidad defina la regla de fila e IBR para abonos.
+
 Tras **Apply** exitoso (tabla verificada y eventos `APPLIED`):
 
 - Las tablas de amortización quedan actualizadas en SharePoint.

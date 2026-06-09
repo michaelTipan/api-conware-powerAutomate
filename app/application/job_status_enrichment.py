@@ -896,15 +896,41 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
             "success",
         )
     if job_type == "amortization_dry_run":
+        custom_um = str(result.get("user_message") or "").strip()
+        custom_na = str(result.get("next_action") or "").strip()
+        if custom_um:
+            sev = "warning" if result.get("requires_business_rule") else "success"
+            if not result.get("can_apply", True):
+                sev = "warning"
+            return (
+                custom_um,
+                custom_na
+                or "Revise result.abono_group_results y result.items antes de ejecutar Apply.",
+                sev,
+            )
         summary = result.get("summary") or {}
         total_events = summary.get("total_events") or summary.get("total") or 0
         errors = summary.get("errors") or 0
+        abono_not_reconciled = int(result.get("abono_groups_not_reconciled") or 0)
         if errors and total_events:
             return (
                 f"El análisis preliminar terminó con {total_events} evento(s) revisados; "
                 f"{errors} con error (revise items y error_code).",
                 "Corrija asientos, tablas o manifest según cada ítem en result.items. "
                 "No se modificó ninguna tabla de amortización.",
+                "warning",
+            )
+        if abono_not_reconciled > 0:
+            return (
+                f"El dry-run detectó {abono_not_reconciled} grupo(s) ABONO con errores documentales o de cuadre.",
+                "Revise result.abono_group_results (blocking_errors, montos y paths). "
+                "Cargue asientos faltantes en la carpeta del crédito; no se requiere extracto para ABONO.",
+                "warning",
+            )
+        if result.get("requires_business_rule"):
+            return (
+                "Los asientos del abono cuadran con el movimiento bancario, pero el abono todavía no puede aplicarse.",
+                "Defina la regla contable para seleccionar la fila contractual y el IBR del abono.",
                 "warning",
             )
         return (

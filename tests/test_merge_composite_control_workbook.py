@@ -229,7 +229,7 @@ class _MergeGraph:
         return {}, 202
 
 
-def test_merge_fails_when_historical_missing_ruta_asientos_contables_column(monkeypatch):
+def test_merge_skips_payment_when_historical_missing_ruta_asientos_contables_column(monkeypatch):
     hist = "HIST/no_asientos_col.xlsx"
     email = "EMAIL/mail.pdf"
     g = _MergeGraph()
@@ -259,13 +259,19 @@ def test_merge_fails_when_historical_missing_ruta_asientos_contables_column(monk
                 return_value=ctx,
             ),
         ):
-            with pytest.raises(ValueError, match="RutaAsientosContables"):
-                    await merge_composite_validado_pdfs(
-                        g,
-                        bank_code="banco_bogota",
-                        historical_file_path=hist,
-                        email_pdf_path=email,
-                    )
+            result = await merge_composite_validado_pdfs(
+                g,
+                bank_code="banco_bogota",
+                historical_file_path=hist,
+                email_pdf_path=email,
+            )
+        assert result.outputs_count == 0
+        assert result.skipped_count >= 1
+        assert any(
+            token in s
+            for s in result.skipped
+            for token in ("missing_ruta_asientos_contables", "extract_routes_missing")
+        )
 
     asyncio.run(run())
 

@@ -18,7 +18,6 @@ import logging
 import os
 import re
 import unicodedata
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from io import BytesIO
@@ -42,16 +41,19 @@ from app.application.sharepoint_resolution import (
     resolve_sharepoint_from_env,
     resolve_sharepoint_path,
 )
+from app.application.services.historical_application_rows import (
+    detect_application_type_group_conflict,
+    group_rows_by_id_pago,
+    read_validated_abono_rows,
+    read_validated_payment_rows,
+)
+from app.application.services.review_schema import TipoAplicacion
 from app.application.use_cases.send_validar_extractos_notification import (
     _collect_pdf_paths_from_ruta_cell,
     _excel_cell_display,
-    _find_distribucion_header_row,
-    _find_distribucion_sheet,
-    _get_col_distrib,
     _list_drive_folder_children,
     _parse_bank_report_table_and_min_date,
     _sanitize_pdf_filename_component,
-    distrib_row_included_for_validar_extractos,
 )
 from app.application.use_cases.validate_payment_report import _graph_download_by_path
 from app.domain.ports.graph import GraphApiPort
@@ -174,6 +176,9 @@ def _merge_skip_line(
     asiento_folder_path: str = "",
     extracto_path: str = "",
     names_seen: str = "",
+    tipo_aplicacion: str = "",
+    requiere_extracto: str = "",
+    creditos_seleccionados: str = "",
 ) -> str:
     def nz(x: str) -> str:
         return x if (x or "").strip() else "-"
@@ -182,7 +187,9 @@ def _merge_skip_line(
         f"id_pago={id_pago} | reason={reason} | cliente={nz(cliente)} | credito={nz(credito_label)} | "
         f"credit_number_expected={nz(credit_number_expected)} | "
         f"asiento_pdf_found={nz(asiento_pdf_found)} | asiento_folder_path={nz(asiento_folder_path)} | "
-        f"extracto_path={nz(extracto_path)} | names_seen={nz(names_seen)}"
+        f"extracto_path={nz(extracto_path)} | names_seen={nz(names_seen)} | "
+        f"tipo_aplicacion={nz(tipo_aplicacion)} | requiere_extracto={nz(requiere_extracto)} | "
+        f"creditos_seleccionados={nz(creditos_seleccionados)}"
     )
 
 
@@ -289,6 +296,10 @@ def _finalize_credit_item(
     extract_paths: list[str],
     *,
     warnings: list[str] | None = None,
+    tipo_aplicacion: str = TipoAplicacion.PAGO.value,
+    ruta_tabla_amortizacion: str = "",
+    ruta_unidad_credito: str = "",
+    ruta_asientos_contables: str = "",
 ) -> dict[str, Any]:
     asientos = unique_paths_preserve_order(asiento_paths)
     extractos = unique_paths_preserve_order(extract_paths)
@@ -297,6 +308,10 @@ def _finalize_credit_item(
         w.append("MULTIPLE_EXTRACTS_FOR_CREDIT")
     return {
         "credito": credit_digits,
+        "tipo_aplicacion": tipo_aplicacion,
+        "ruta_tabla_amortizacion": ruta_tabla_amortizacion,
+        "ruta_unidad_credito": ruta_unidad_credito,
+        "ruta_asientos_contables": ruta_asientos_contables,
         "asiento_pdf_paths": asientos,
         "extracto_pdf_paths": extractos,
         "extracto_pdf_path": extractos[0] if extractos else "",
@@ -469,6 +484,170 @@ async def _prevalidate_id_pago_group(
     return credit_items, skip_lines
 
 
+async def _prevalidate_abono_id_pago_group(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    id_pago: str,
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Valida grupo ABONO: asientos por crédito; extracto no requerido."""
+    credit_accum: dict[str, dict[str, Any]] = {}
+    skip_lines: list[str] = []
+    creditos_sel = ", ".join(
+        sorted(
+            {
+                str(r.get("credito_digits") or r.get("credito_label") or "").strip()
+                for r in rows
+                if str(r.get("credito_digits") or r.get("credito_label") or "").strip()
+            }
+        )
+    )
+
+    for row in rows:
+        cliente = str(row.get("cliente") or "").strip()
+        credito_label = str(row.get("credito_label") or "").strip()
+        row_cred = str(row.get("credito_digits") or "").strip()
+
+        asientos_dir_ep = _ruta_asientos_from_cell(row.get("ruta_asientos_cell"))
+        if not asientos_dir_ep:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "missing_ruta_asientos_contables",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    credit_number_expected=row_cred or "-",
+                    tipo_aplicacion=TipoAplicacion.ABONO.value,
+                    requiere_extracto="NO",
+                    creditos_seleccionados=creditos_sel,
+                )
+            )
+            continue
+
+        if not row_cred:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "credit_number_not_resolved",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    tipo_aplicacion=TipoAplicacion.ABONO.value,
+                    requiere_extracto="NO",
+                    creditos_seleccionados=creditos_sel,
+                )
+            )
+            continue
+
+        try:
+            asiento_children = await _list_drive_folder_children(
+                graph, site_id, drive_id, asientos_dir_ep
+            )
+        except Exception as exc:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "asiento_folder_list_failed",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    credit_number_expected=row_cred,
+                    asiento_folder_path=asientos_dir_ep,
+                    names_seen=str(exc)[:800],
+                    tipo_aplicacion=TipoAplicacion.ABONO.value,
+                    requiere_extracto="NO",
+                    creditos_seleccionados=creditos_sel,
+                )
+            )
+            continue
+
+        names = _pdf_names_in_children(asiento_children)
+        valid_names, rejected_names = _classify_asiento_pdf_names(names, row_cred)
+        for rej in rejected_names:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "asiento_contable_credit_mismatch",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    credit_number_expected=row_cred,
+                    asiento_pdf_found=rej,
+                    asiento_folder_path=asientos_dir_ep,
+                    names_seen=", ".join(names) if names else "-",
+                    tipo_aplicacion=TipoAplicacion.ABONO.value,
+                    requiere_extracto="NO",
+                    creditos_seleccionados=creditos_sel,
+                )
+            )
+        if not valid_names:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "abono_accounting_pdf_missing",
+                    cliente=cliente,
+                    credito_label=credito_label,
+                    credit_number_expected=row_cred,
+                    asiento_folder_path=asientos_dir_ep,
+                    names_seen=", ".join(names) if names else "-",
+                    tipo_aplicacion=TipoAplicacion.ABONO.value,
+                    requiere_extracto="NO",
+                    creditos_seleccionados=creditos_sel,
+                )
+            )
+            continue
+
+        bucket = credit_accum.setdefault(
+            row_cred,
+            {
+                "asiento_pdf_paths": [],
+                "extracto_pdf_paths": [],
+                "warnings": [],
+                "ruta_asientos_contables": asientos_dir_ep,
+            },
+        )
+        for asiento_name in valid_names:
+            asiento_rel = f"{asientos_dir_ep}/{asiento_name}".replace("//", "/")
+            bucket["asiento_pdf_paths"].append(asiento_rel)
+
+    credit_items: list[dict[str, Any]] = []
+    for credit_digits in sorted(credit_accum.keys(), key=lambda x: (len(x), x)):
+        raw = credit_accum[credit_digits]
+        item = _finalize_credit_item(
+            credit_digits,
+            raw["asiento_pdf_paths"],
+            [],
+            warnings=raw.get("warnings"),
+            tipo_aplicacion=TipoAplicacion.ABONO.value,
+            ruta_asientos_contables=str(raw.get("ruta_asientos_contables") or ""),
+        )
+        if not item["asiento_pdf_paths"]:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "abono_accounting_pdf_missing",
+                    credit_number_expected=credit_digits,
+                    tipo_aplicacion=TipoAplicacion.ABONO.value,
+                    requiere_extracto="NO",
+                    creditos_seleccionados=creditos_sel,
+                )
+            )
+            continue
+        credit_items.append(item)
+
+    if not credit_items:
+        if not skip_lines:
+            skip_lines.append(
+                _merge_skip_line(
+                    id_pago,
+                    "abono_accounting_pdf_missing",
+                    tipo_aplicacion=TipoAplicacion.ABONO.value,
+                    requiere_extracto="NO",
+                    creditos_seleccionados=creditos_sel,
+                )
+            )
+        return [], skip_lines
+    return credit_items, skip_lines
+
+
 async def _build_consolidated_pdf_parts(
     graph: GraphApiPort,
     site_id: str,
@@ -477,6 +656,8 @@ async def _build_consolidated_pdf_parts(
     email_bytes: bytes,
     email_rel: str,
     credit_items: list[dict[str, Any]],
+    *,
+    include_extracts: bool = True,
 ) -> tuple[list[bytes], list[str], list[str]]:
     """
     Orden: email, luego por crédito (estable): todos los asientos, luego extracto(s) deduplicados.
@@ -509,23 +690,24 @@ async def _build_consolidated_pdf_parts(
             parts.append(asiento_bytes)
             labels.append(f"asiento:{asiento_rel}")
 
-        for ep in item.get("extracto_pdf_paths") or []:
-            try:
-                extract_bytes = await _graph_download_by_path(graph, site_id, drive_id, str(ep))
-            except Exception as exc:
-                build_skips.append(
-                    _merge_skip_line(
-                        id_pago,
-                        "extracto_download_failed",
-                        credito_label=credito,
-                        credit_number_expected=credito,
-                        extracto_path=str(ep),
-                        names_seen=str(exc)[:800],
+        if include_extracts:
+            for ep in item.get("extracto_pdf_paths") or []:
+                try:
+                    extract_bytes = await _graph_download_by_path(graph, site_id, drive_id, str(ep))
+                except Exception as exc:
+                    build_skips.append(
+                        _merge_skip_line(
+                            id_pago,
+                            "extracto_download_failed",
+                            credito_label=credito,
+                            credit_number_expected=credito,
+                            extracto_path=str(ep),
+                            names_seen=str(exc)[:800],
+                        )
                     )
-                )
-                return parts, labels, build_skips
-            parts.append(extract_bytes)
-            labels.append(f"extracto:{ep}")
+                    return parts, labels, build_skips
+                parts.append(extract_bytes)
+                labels.append(f"extracto:{ep}")
 
     return parts, labels, build_skips
 
@@ -690,6 +872,7 @@ def _merge_composite_output_basename(
     credit_part: str,
     *,
     bank_code: str,
+    tipo_aplicacion: str = TipoAplicacion.PAGO.value,
 ) -> str:
     day = report_d.day
     mes = _mes_reporte_upper(report_d)
@@ -699,7 +882,12 @@ def _merge_composite_output_basename(
     cred = _merge_composite_credit_for_filename_display(credit_part)
     if not cli:
         cli = "CLIENTE"
-    base = f"{day} {mes} {bank_token} PAGO {cli} {cred}.pdf"
+    token = (
+        TipoAplicacion.ABONO.value
+        if str(tipo_aplicacion or "").strip().upper() == TipoAplicacion.ABONO.value
+        else TipoAplicacion.PAGO.value
+    )
+    base = f"{day} {mes} {bank_token} {token} {cli} {cred}.pdf"
     return _sanitize_pdf_filename_component(base) or base
 
 
@@ -727,6 +915,11 @@ class MergeCompositePdfOutput:
     asiento_pdf_paths: tuple[str, ...] = ()
     extracto_pdf_path: str = ""
     credit_items: tuple[dict[str, Any], ...] = ()
+    tipo_aplicacion: str = TipoAplicacion.PAGO.value
+    requiere_extracto: bool = True
+    monto_banco: float | None = None
+    fecha_banco: str = ""
+    creditos_seleccionados: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -761,6 +954,11 @@ class MergeCompositeValidadoPdfsResult:
     pdf_reused: bool = False
     already_consolidated: bool = False
     force_rebuild_used: bool = False
+    payment_outputs_count: int = 0
+    abono_outputs_count: int = 0
+    payment_skipped_count: int = 0
+    abono_skipped_count: int = 0
+    extracts_not_required_count: int = 0
 
 
 def _merge_logs_folder_relative() -> str:
@@ -820,6 +1018,11 @@ def _merge_output_record(
     credito: str,
     email_pdf_path: str,
     credit_items: list[dict[str, Any]],
+    tipo_aplicacion: str = TipoAplicacion.PAGO.value,
+    requiere_extracto: bool = True,
+    monto_banco: float | None = None,
+    fecha_banco: str = "",
+    creditos_seleccionados: tuple[str, ...] = (),
 ) -> MergeCompositePdfOutput:
     asiento_paths, extracto_path = _legacy_paths_from_credit_items(credit_items)
     legacy_asiento = asiento_paths[0] if asiento_paths else ""
@@ -836,7 +1039,33 @@ def _merge_output_record(
         asiento_pdf_paths=tuple(asiento_paths),
         extracto_pdf_path=extracto_path,
         credit_items=frozen_items,
+        tipo_aplicacion=tipo_aplicacion,
+        requiere_extracto=requiere_extracto,
+        monto_banco=monto_banco,
+        fecha_banco=fecha_banco,
+        creditos_seleccionados=creditos_seleccionados,
     )
+
+
+def _group_meta_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    tipo_aplicacion: str,
+) -> tuple[str, float | None, str, tuple[str, ...]]:
+    ref = rows[0] if rows else {}
+    cliente = str(ref.get("cliente") or "").strip()
+    monto = ref.get("monto_banco")
+    monto_val = float(monto) if isinstance(monto, (int, float)) else None
+    fecha = ref.get("fecha_banco")
+    fecha_str = fecha.isoformat() if hasattr(fecha, "isoformat") else str(fecha or "")
+    creditos: list[str] = []
+    seen: set[str] = set()
+    for row in sorted(rows, key=lambda x: str(x.get("credito_digits") or x.get("credito_label") or "")):
+        c = str(row.get("credito_digits") or row.get("credito_label") or "").strip()
+        if c and c not in seen:
+            seen.add(c)
+            creditos.append(c)
+    return cliente, monto_val, fecha_str, tuple(creditos)
 
 
 async def _upload_merge_manifest(
@@ -1016,128 +1245,60 @@ async def merge_composite_validado_pdfs(
 
         wb = load_workbook(filename=BytesIO(hist_bytes), data_only=True)
         try:
-            ws = _find_distribucion_sheet(wb)
-            h_row, header_map = _find_distribucion_header_row(ws)
-            col_estado = _get_col_distrib(
-                header_map,
-                "Estado Pago",
-                "Estado pago",
-                "Estado",
-                "Estado línea",
-                "Estado linea",
-                "ESTADO LINEA",
-            )
-            col_ruta = _get_col_distrib(header_map, "Ruta", "RUTA", "Rutas", "RUTAS")
-            col_ruta_asientos = _get_col_distrib(
-                header_map,
-                "RutaAsientosContables",
-                "RUTA_ASIENTOS_CONTABLES",
-                "Ruta asientos contables",
-            )
-            col_id = _get_col_distrib(
-                header_map,
-                "ID Pago",
-                "ID pago",
-                "ID PAGO",
-                "Id pago",
-                "ID_PAGO",
-                "Id Pago",
-            )
-            col_cliente = _get_col_distrib(
-                header_map,
-                "Cliente",
-                "CLIENTE",
-                "Nombre Cliente",
-                "Nombre cliente",
-                "NOMBRE CLIENTE",
-                "Razón social",
-                "Razon social",
-                "RAZON SOCIAL",
-                "Empresa",
-                "EMPRESA",
-            )
-            col_credito = _get_col_distrib(
-                header_map,
-                "Crédito",
-                "Credito",
-                "CREDITO",
-                "CRÉDITO",
-                "No Crédito",
-                "No Credito",
-                "NO CREDITO",
-                "Número Crédito",
-                "Numero Credito",
-            )
-            extra_client = os.getenv("GRAPH_MERGE_COMPOSITE_CLIENTE_COLUMN", "").strip()
-            if extra_client and col_cliente is None:
-                col_cliente = _get_col_distrib(header_map, extra_client, extra_client.upper())
-            extra_cred = os.getenv("GRAPH_MERGE_COMPOSITE_CREDITO_COLUMN", "").strip()
-            if extra_cred and col_credito is None:
-                col_credito = _get_col_distrib(header_map, extra_cred, extra_cred.upper())
-            col_vp = _get_col_distrib(header_map, "Validar Pago", "Validar pago", "VALIDAR PAGO")
-            if col_estado is None and col_vp is None:
-                raise ValueError(
-                    'En Distribución se requieren columnas de estado ("Estado Pago" o histórico "Estado" / '
-                    '"Estado línea"), "Ruta" y "ID Pago" para unir PDFs.'
-                )
-            if col_ruta is None or col_id is None or col_ruta_asientos is None:
-                raise ValueError(
-                    'En Distribución se requieren columnas "Ruta", "RutaAsientosContables" e "ID Pago" '
-                    "para unir PDFs."
-                )
-
-            groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-            last = ws.max_row or h_row
-            for r in range(h_row + 1, last + 1):
-                if not distrib_row_included_for_validar_extractos(ws, r, header_map, estado):
-                    continue
-                id_raw = ws.cell(row=r, column=col_id).value
-                id_str = _excel_cell_display(id_raw).strip()
-                if not id_str:
-                    id_str = f"__sin_id_fila_{r}__"
-                cred_raw = ws.cell(row=r, column=col_credito).value if col_credito else None
-                cred_digits = _normalize_credito_excel_value(cred_raw) if cred_raw is not None else ""
-                if not cred_digits and cred_raw is not None:
-                    cred_digits = re.sub(r"\D", "", str(cred_raw).strip())
-                cliente = ""
-                if col_cliente:
-                    cliente = _excel_cell_display(ws.cell(row=r, column=col_cliente).value).strip()
-                groups[id_str].append(
-                    {
-                        "cliente": cliente,
-                        "credito_raw": cred_raw,
-                        "credito_label": _excel_cell_display(cred_raw).strip()
-                        if cred_raw is not None
-                        else "",
-                        "credito_digits": cred_digits,
-                        "ruta_cell": ws.cell(row=r, column=col_ruta).value if col_ruta else None,
-                        "ruta_asientos_cell": (
-                            ws.cell(row=r, column=col_ruta_asientos).value
-                            if col_ruta_asientos
-                            else None
-                        ),
-                    }
-                )
+            payment_rows = read_validated_payment_rows(wb, legacy_estado_token=estado)
+            abono_rows = read_validated_abono_rows(wb)
+            payment_groups = group_rows_by_id_pago(payment_rows)
+            abono_groups = group_rows_by_id_pago(abono_rows)
+            detect_application_type_group_conflict(payment_groups, abono_groups)
         finally:
             closer = getattr(wb, "close", None)
             if callable(closer):
                 closer()
+
+        if not payment_groups and not abono_groups:
+            raise ValueError(
+                f"No hay filas PAGO ni ABONO validadas para merge en el histórico {historico_rel!r}."
+            )
 
         out_folder = resolve_merge_output_folder_path()
 
         outputs: list[MergeCompositePdfOutput] = []
         skipped: list[str] = []
         out_name_tallies: dict[str, int] = {}
+        payment_outputs_count = 0
+        abono_outputs_count = 0
+        payment_skipped_count = 0
+        abono_skipped_count = 0
+        extracts_not_required_count = len(abono_groups)
 
-        for id_pago, group_rows in sorted(groups.items(), key=lambda x: x[0]):
-            credit_items, pre_skips = await _prevalidate_id_pago_group(
-                graph, site_id, drive_id, id_pago, group_rows
-            )
+        work_queue: list[tuple[str, str, list[dict[str, Any]]]] = []
+        for id_pago, group_rows in sorted(payment_groups.items(), key=lambda x: x[0]):
+            work_queue.append((id_pago, TipoAplicacion.PAGO.value, group_rows))
+        for id_pago, group_rows in sorted(abono_groups.items(), key=lambda x: x[0]):
+            work_queue.append((id_pago, TipoAplicacion.ABONO.value, group_rows))
+
+        for id_pago, tipo_aplicacion, group_rows in work_queue:
+            is_abono = tipo_aplicacion == TipoAplicacion.ABONO.value
+            if is_abono:
+                credit_items, pre_skips = await _prevalidate_abono_id_pago_group(
+                    graph, site_id, drive_id, id_pago, group_rows
+                )
+            else:
+                credit_items, pre_skips = await _prevalidate_id_pago_group(
+                    graph, site_id, drive_id, id_pago, group_rows
+                )
             if pre_skips:
                 skipped.extend(pre_skips)
             if not credit_items:
+                if is_abono:
+                    abono_skipped_count += 1
+                else:
+                    payment_skipped_count += 1
                 continue
 
+            client_meta, monto_meta, fecha_meta, creditos_meta = _group_meta_from_rows(
+                group_rows, tipo_aplicacion=tipo_aplicacion
+            )
             all_extract_paths = [
                 ep for item in credit_items for ep in (item.get("extracto_pdf_paths") or [])
             ]
@@ -1146,25 +1307,38 @@ async def merge_composite_validado_pdfs(
                 credit_tokens = [str(item.get("credito") or "") for item in credit_items]
             credit_for_filename = ", ".join(credit_tokens)
 
-            client_from_cells = next((str(r.get("cliente") or "").strip() for r in group_rows if r.get("cliente")), "")
+            client_from_cells = client_meta
             first_extract = all_extract_paths[0] if all_extract_paths else ""
             client_display = client_from_cells or _client_folder_before_credit(first_extract)
             if not client_display:
                 client_display = "CLIENTE"
 
             out_base = _merge_composite_output_basename(
-                report_d, client_display, credit_for_filename, bank_code=bank_code
+                report_d,
+                client_display,
+                credit_for_filename,
+                bank_code=bank_code,
+                tipo_aplicacion=tipo_aplicacion,
             )
             base_rel = f"{out_folder}/{out_base}".replace("//", "/")
             already_exists = await _drive_item_exists(graph, site_id, drive_id, base_rel)
+
+            output_meta = dict(
+                tipo_aplicacion=tipo_aplicacion,
+                requiere_extracto=not is_abono,
+                monto_banco=monto_meta,
+                fecha_banco=fecha_meta,
+                creditos_seleccionados=creditos_meta,
+            )
 
             if already_exists and not force_rebuild:
                 labels_preview: list[str] = [f"email:{email_rel}"]
                 for item in sorted(credit_items, key=lambda x: str(x.get("credito") or "")):
                     for a in item.get("asiento_pdf_paths") or []:
                         labels_preview.append(f"asiento:{a}")
-                    for ep in item.get("extracto_pdf_paths") or []:
-                        labels_preview.append(f"extracto:{ep}")
+                    if not is_abono:
+                        for ep in item.get("extracto_pdf_paths") or []:
+                            labels_preview.append(f"extracto:{ep}")
                 outputs.append(
                     _merge_output_record(
                         id_pago=id_pago,
@@ -1175,8 +1349,13 @@ async def merge_composite_validado_pdfs(
                         credito=credit_for_filename,
                         email_pdf_path=email_rel,
                         credit_items=credit_items,
+                        **output_meta,
                     )
                 )
+                if is_abono:
+                    abono_outputs_count += 1
+                else:
+                    payment_outputs_count += 1
                 logger.info(
                     "merge_composite_validado: id_pago=%s ya consolidado en %s",
                     id_pago,
@@ -1185,15 +1364,30 @@ async def merge_composite_validado_pdfs(
                 continue
 
             parts, labels, build_skips = await _build_consolidated_pdf_parts(
-                graph, site_id, drive_id, id_pago, email_bytes, email_rel, credit_items
+                graph,
+                site_id,
+                drive_id,
+                id_pago,
+                email_bytes,
+                email_rel,
+                credit_items,
+                include_extracts=not is_abono,
             )
             if build_skips:
                 skipped.extend(build_skips)
+                if is_abono:
+                    abono_skipped_count += 1
+                else:
+                    payment_skipped_count += 1
                 continue
 
             merged = _merge_pdf_bytes(parts)
             out_base = _merge_composite_output_basename(
-                report_d, client_display, credit_for_filename, bank_code=bank_code
+                report_d,
+                client_display,
+                credit_for_filename,
+                bank_code=bank_code,
+                tipo_aplicacion=tipo_aplicacion,
             )
             out_name = _allocate_duplicate_pdf_name(out_base, out_name_tallies)
             out_rel = f"{out_folder}/{out_name}".replace("//", "/")
@@ -1213,8 +1407,15 @@ async def merge_composite_validado_pdfs(
                         "consolidated_upload_failed",
                         extracto_path=first_extract or "-",
                         names_seen=str(exc)[:800],
+                        tipo_aplicacion=tipo_aplicacion,
+                        requiere_extracto="NO" if is_abono else "SI",
+                        creditos_seleccionados=", ".join(creditos_meta),
                     )
                 )
+                if is_abono:
+                    abono_skipped_count += 1
+                else:
+                    payment_skipped_count += 1
                 continue
 
             outputs.append(
@@ -1227,8 +1428,13 @@ async def merge_composite_validado_pdfs(
                     credito=credit_for_filename,
                     email_pdf_path=email_rel,
                     credit_items=credit_items,
+                    **output_meta,
                 )
             )
+            if is_abono:
+                abono_outputs_count += 1
+            else:
+                payment_outputs_count += 1
 
             logger.info(
                 "merge_composite_validado: subido %s (%s bytes) id_pago=%s force_rebuild=%s",
@@ -1236,12 +1442,6 @@ async def merge_composite_validado_pdfs(
                 len(merged),
                 id_pago,
                 force_rebuild,
-            )
-
-        if not outputs and not skipped:
-            raise ValueError(
-                f"No hay filas cuyo Estado línea contenga el token {estado!r} "
-                f"(GRAPH_VALIDAR_EXTRACTO_ESTADO_CONTAINS) en Distribución del histórico {historico_rel!r}."
             )
 
         oc = len(outputs)
@@ -1260,11 +1460,21 @@ async def merge_composite_validado_pdfs(
                 "historico_excel_path": historico_rel,
                 "email_pdf_used": email_rel,
                 "merge_control_status": final_status,
+                "payment_outputs_count": payment_outputs_count,
+                "abono_outputs_count": abono_outputs_count,
+                "payment_skipped_count": payment_skipped_count,
+                "abono_skipped_count": abono_skipped_count,
+                "extracts_not_required_count": extracts_not_required_count,
                 "outputs": [
                     {
                         "id_pago": o.id_pago,
                         "cliente": o.cliente,
                         "credito": o.credito,
+                        "tipo_aplicacion": o.tipo_aplicacion,
+                        "requiere_extracto": o.requiere_extracto,
+                        "monto_banco": o.monto_banco,
+                        "fecha_banco": o.fecha_banco,
+                        "creditos_seleccionados": list(o.creditos_seleccionados),
                         "email_pdf_path": o.email_pdf_path,
                         "asiento_pdf_path": o.asiento_pdf_path,
                         "asiento_pdf_paths": list(o.asiento_pdf_paths),
@@ -1351,6 +1561,11 @@ async def merge_composite_validado_pdfs(
             pdf_reused=pdf_reused,
             already_consolidated=already_consolidated_flag,
             force_rebuild_used=force_rebuild,
+            payment_outputs_count=payment_outputs_count,
+            abono_outputs_count=abono_outputs_count,
+            payment_skipped_count=payment_skipped_count,
+            abono_skipped_count=abono_skipped_count,
+            extracts_not_required_count=extracts_not_required_count,
         )
 
     except Exception:

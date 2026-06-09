@@ -203,6 +203,49 @@ class ValidarExtractosNotifyResult:
     process_key: str = ""
     process_control_file_path: str = ""
     process_control_estado: str = ""
+    payment_groups_included: int = 0
+    abono_groups_included: int = 0
+    abono_credit_rows_included: int = 0
+    extracts_attached_count: int = 0
+    extracts_not_required_count: int = 0
+    movement_groups_included: int = 0
+
+
+def _format_abono_amount(value: float | None) -> str:
+    if value is None:
+        return ""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(n - round(n)) < 1e-9:
+        return f"{int(round(n)):,}".replace(",", ".")
+    return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _abono_table_from_groups(groups: list[Any]) -> tuple[list[str], list[list[str]]]:
+    headers = [
+        "ID Pago",
+        "Cliente",
+        "Tipo Aplicación",
+        "Monto banco",
+        "Fecha banco",
+        "Créditos seleccionados",
+    ]
+    rows: list[list[str]] = []
+    for g in groups:
+        fecha = g.fecha_banco.strftime("%d/%m/%Y") if getattr(g, "fecha_banco", None) else ""
+        rows.append(
+            [
+                str(getattr(g, "id_pago", "") or ""),
+                str(getattr(g, "cliente", "") or ""),
+                "ABONO",
+                _format_abono_amount(getattr(g, "monto_banco", None)),
+                fecha,
+                ", ".join(getattr(g, "creditos_seleccionados", ()) or ()),
+            ]
+        )
+    return headers, rows
 
 
 def _endpoint_and_params_from_next_link(next_link: str) -> tuple[str, dict[str, str] | None]:
@@ -857,6 +900,8 @@ def _cover_pdf_bytes_reportlab(
     body_intro: str,
     bank_headers: list[str],
     bank_rows: list[list[str]],
+    abono_headers: list[str] | None = None,
+    abono_rows: list[list[str]] | None = None,
 ) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -897,36 +942,44 @@ def _cover_pdf_bytes_reportlab(
     if resto:
         story.append(Spacer(1, 0.15 * cm))
         story.append(Paragraph(_rp_pdf(resto), normal))
-    story.append(Spacer(1, 0.35 * cm))
-    story.append(Paragraph("<b>Reporte de pagos (Banco Bogotá):</b>", normal))
-    story.append(Spacer(1, 0.15 * cm))
-
-    ncols = max(len(bank_headers), 1)
-    content_w_pt = float(A4[0]) - float(left_m) - float(right_m)
-    col_w = content_w_pt / float(ncols)
-    col_widths = [col_w] * ncols
-
-    hdr = [Paragraph(f"<b>{_rp_pdf(h)}</b>", normal) for h in bank_headers]
-    data: list[list[Any]] = [hdr]
-    for row in bank_rows:
-        padded = list(row) + [""] * (ncols - len(row))
-        padded = padded[:ncols]
-        data.append([Paragraph(_rp_pdf(cell), normal) for cell in padded])
-    tbl = Table(data, colWidths=col_widths, repeatRows=1)
-    tbl.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ADD8E6")),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ]
+    def _append_table(title: str, headers: list[str], rows: list[list[str]]) -> None:
+        if not rows:
+            return
+        story.append(Spacer(1, 0.35 * cm))
+        story.append(Paragraph(f"<b>{_rp_pdf(title)}</b>", normal))
+        story.append(Spacer(1, 0.15 * cm))
+        ncols = max(len(headers), 1)
+        content_w_pt = float(A4[0]) - float(left_m) - float(right_m)
+        col_w = content_w_pt / float(ncols)
+        col_widths = [col_w] * ncols
+        hdr = [Paragraph(f"<b>{_rp_pdf(h)}</b>", normal) for h in headers]
+        data: list[list[Any]] = [hdr]
+        for row in rows:
+            padded = list(row) + [""] * (ncols - len(row))
+            padded = padded[:ncols]
+            data.append([Paragraph(_rp_pdf(cell), normal) for cell in padded])
+        tbl = Table(data, colWidths=col_widths, repeatRows=1)
+        tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ADD8E6")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
         )
+        story.append(tbl)
+
+    _append_table("Reporte de pagos (Banco Bogotá):", bank_headers, bank_rows)
+    _append_table(
+        "Abonos (sin extracto):",
+        abono_headers or [],
+        abono_rows or [],
     )
-    story.append(tbl)
     doc.build(story)
     return buf.getvalue()
 
@@ -975,25 +1028,38 @@ async def _pdf_attachments_from_drive_paths(
     return attachments, failures
 
 
+def _build_html_table(headers: list[str], rows: list[list[str]]) -> str:
+    thead = "<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr>"
+    tbody = ""
+    ncols = len(headers)
+    for row in rows:
+        cells = list(row) + [""] * (ncols - len(row))
+        cells = cells[:ncols]
+        tbody += "<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in cells) + "</tr>"
+    return (
+        f'<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">'
+        f"{thead}<tbody>{tbody}</tbody></table>"
+    )
+
+
 def _build_html(
     *,
     intro: str,
     bank_headers: list[str],
     bank_rows: list[list[str]],
+    abono_headers: list[str] | None = None,
+    abono_rows: list[list[str]] | None = None,
 ) -> str:
-    thead = "<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in bank_headers) + "</tr>"
-    tbody = ""
-    ncols = len(bank_headers)
-    for row in bank_rows:
-        cells = list(row) + [""] * (ncols - len(row))
-        cells = cells[:ncols]
-        tbody += "<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in cells) + "</tr>"
-    table = (
-        "<p><strong>Reporte de pagos (Banco Bogotá):</strong></p>"
-        f'<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">'
-        f"{thead}<tbody>{tbody}</tbody></table>"
-    )
-    return f"<html><body>{intro}{table}</body></html>"
+    parts = [intro]
+    if bank_rows:
+        parts.append("<p><strong>Reporte de pagos (Banco Bogotá):</strong></p>")
+        parts.append(_build_html_table(bank_headers, bank_rows))
+    if abono_rows:
+        parts.append(
+            "<p><strong>Abonos (sin extracto):</strong> movimientos reportados con créditos seleccionados.</p>"
+        )
+        parts.append(_build_html_table(abono_headers or [], abono_rows))
+    return f"<html><body>{''.join(parts)}</body></html>"
 
 
 async def send_validar_extractos_notification_email(
@@ -1173,49 +1239,46 @@ async def send_validar_extractos_notification_email(
         tech = f"HTTP {exc.response.status_code} url={exc.request.url!s} detail={detail!r}"
         raise ValueError(f"historical_file_not_found|{tech}") from exc
 
+    from app.application.services.historical_application_rows import (
+        group_abono_rows_for_email,
+        read_validated_abono_rows,
+        read_validated_payment_rows,
+    )
+
     pdf_paths_ordered: list[str] = []
+    abono_groups: list[Any] = []
+    abono_credit_rows_included = 0
 
     wb = load_workbook(filename=BytesIO(hist_bytes), data_only=True)
     try:
-        ws = _find_distribucion_sheet(wb)
-        h_row, header_map = _find_distribucion_header_row(ws)
-        col_estado = _get_col_distrib(
-            header_map,
-            "Estado Pago",
-            "Estado pago",
-            "Estado",
-            "Estado línea",
-            "Estado linea",
-            "ESTADO LINEA",
-        )
-        col_ruta = _get_col_distrib(header_map, "Ruta", "RUTA", "Rutas", "RUTAS")
-
-        col_vp = _get_col_distrib(header_map, "Validar Pago", "Validar pago", "VALIDAR PAGO")
-        if col_estado is None and col_vp is None:
-            raise ValueError("missing_distribucion_status_column")
-        if col_ruta is None:
-            raise ValueError("missing_distribucion_route_column")
+        payment_rows = read_validated_payment_rows(wb, legacy_estado_token=estado_filtro)
+        abono_rows = read_validated_abono_rows(wb)
+        abono_credit_rows_included = len(abono_rows)
+        if abono_rows:
+            abono_groups = group_abono_rows_for_email(abono_rows)
 
         seen_pdf_paths: set[str] = set()
-
-        last = ws.max_row or h_row
-        for r in range(h_row + 1, last + 1):
-            if not distrib_row_included_for_validar_extractos(ws, r, header_map, estado_filtro):
-                continue
-
-            cell_ruta = ws.cell(row=r, column=col_ruta)
+        for row in payment_rows:
             for p in await _collect_pdf_paths_from_ruta_cell(
-                graph, site_id, drive_id, cell_ruta.value
+                graph, site_id, drive_id, row.get("ruta_cell")
             ):
                 np = p.strip().strip("/")
                 if np and np not in seen_pdf_paths:
                     seen_pdf_paths.add(np)
                     pdf_paths_ordered.append(np)
-
     finally:
         closer = getattr(wb, "close", None)
         if callable(closer):
             closer()
+
+    abono_headers, abono_table_rows = (
+        _abono_table_from_groups(abono_groups) if abono_groups else ([], [])
+    )
+    payment_groups_included = len(bank_rows)
+    abono_groups_included = len(abono_groups)
+    movement_groups_included = payment_groups_included + abono_groups_included
+    extracts_attached_count = len(pdf_paths_ordered)
+    extracts_not_required_count = abono_groups_included
 
     attach_on = os.getenv("GRAPH_VALIDAR_NOTIFY_ATTACH_PDFS", "true").strip().lower() in (
         "1",
@@ -1239,7 +1302,13 @@ async def send_validar_extractos_notification_email(
             logger.warning("validar extractos notify: %s", msg)
 
     intro_html = f"<p>{html.escape(body_intro)}</p>"
-    html_body = _build_html(intro=intro_html, bank_headers=bank_headers, bank_rows=bank_rows)
+    html_body = _build_html(
+        intro=intro_html,
+        bank_headers=bank_headers,
+        bank_rows=bank_rows,
+        abono_headers=abono_headers,
+        abono_rows=abono_table_rows,
+    )
 
     email_pdf_path: str | None = None
     email_pdf_error: str | None = None
@@ -1291,6 +1360,8 @@ async def send_validar_extractos_notification_email(
                 body_intro=body_intro,
                 bank_headers=bank_headers,
                 bank_rows=bank_rows,
+                abono_headers=abono_headers,
+                abono_rows=abono_table_rows,
             )
             pdf_bytes = cover_pdf
 
@@ -1396,4 +1467,10 @@ async def send_validar_extractos_notification_email(
         process_key=process_key,
         process_control_file_path=process_control_file_path,
         process_control_estado=process_control_estado,
+        payment_groups_included=payment_groups_included,
+        abono_groups_included=abono_groups_included,
+        abono_credit_rows_included=abono_credit_rows_included,
+        extracts_attached_count=extracts_attached_count,
+        extracts_not_required_count=extracts_not_required_count,
+        movement_groups_included=movement_groups_included,
     )

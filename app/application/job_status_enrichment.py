@@ -830,6 +830,15 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 wtxt,
                 "warning",
             )
+        abono_groups = int(result.get("abono_groups_included") or 0)
+        if abono_groups > 0:
+            return (
+                "El correo de movimientos bancarios se envió correctamente. Los pagos incluyeron sus extractos "
+                "y los abonos se reportaron sin extracto, según corresponde.",
+                "Revise la bandeja de los destinatarios (y correo no deseado). Siguiente paso operativo: la secretaría "
+                "carga los asientos en las carpetas del soporte; cuando termine, ejecute la unión de PDFs.",
+                "success",
+            )
         return (
             "El correo de abonos del banco se envió correctamente con la tabla del día y los extractos configurados.",
             "Revise la bandeja de los destinatarios (y correo no deseado). Siguiente paso operativo: la secretaría "
@@ -863,6 +872,15 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                     "En result.skipped vea qué pagos faltan (asiento o extracto). Suba lo pendiente y reintente solo "
                     "para esos pagos si el flujo lo permite.",
                     "warning",
+                )
+            abono_out = int(result.get("abono_outputs_count") or 0)
+            if abono_out > 0:
+                return (
+                    "La consolidación generó los soportes de pagos y abonos. Los abonos se consolidaron con sus "
+                    "asientos contables, sin exigir extractos.",
+                    "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS. Siguiente paso: ejecute "
+                    "dry-run de amortización para revisar el impacto y luego apply para aplicar los cambios.",
+                    "success",
                 )
             return (
                 "La unión de PDFs terminó correctamente: cada pago validado quedó en un solo PDF "

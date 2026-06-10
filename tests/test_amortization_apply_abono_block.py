@@ -9,11 +9,9 @@ from datetime import date
 import openpyxl
 import pytest
 
-from app.application.job_status_enrichment import enrich_job_for_http_response
 from app.application.services.abono_dry_run import (
     ABONO_ASIENTO_DUPLICADO,
     ABONO_ASIENTOS_NO_CUADRAN,
-    ABONO_SCHEDULE_RULE_NOT_CONFIGURED,
     build_abono_group_from_manifest_output,
     reconcile_abono_group,
 )
@@ -74,62 +72,6 @@ def _automation_log_rows(g: MockGraphApply, tabla: str) -> int:
     return max(0, wb[AUTOMATION_LOG_SHEET].max_row - 1)
 
 
-def test_apply_abono_reconciled_schedule_not_configured_blocks(monkeypatch):
-    fecha = date(2026, 5, 22)
-    out = _abono_manifest_output()
-    files = _abono_dry_run_files(abono_output=out, fecha=fecha)
-    asiento = out["credit_items"][0]["asiento_pdf_paths"][0]
-    g = MockGraphApply(files)
-    _patch_pdf_extract(monkeypatch)
-    move_calls: list[int] = []
-
-    async def _track_move(*_a, **_k):
-        move_calls.append(1)
-        from app.application.services.accounting_pdf_processed_move import (
-            process_used_accounting_pdfs_after_apply,
-        )
-
-        return await process_used_accounting_pdfs_after_apply(*_a, **_k)
-
-    monkeypatch.setattr(
-        "app.application.use_cases.amortization_fill_apply.process_used_accounting_pdfs_after_apply",
-        _track_move,
-    )
-
-    result = asyncio.run(
-        run_amortization_fill_apply(
-            g,
-            report_date_iso=fecha.isoformat(),
-            historical_file_path="HIST/cartera.xlsx",
-        )
-    )
-
-    assert result["status"] == "blocked"
-    assert result["mode"] == "apply"
-    assert result["apply_wrote_changes"] is False
-    assert result["can_apply"] is False
-    assert result["abono_groups_total"] == 1
-    assert result["abono_groups_blocked"] == 1
-    assert result["requires_business_rule"] is True
-    assert result["error_code"] == ABONO_SCHEDULE_RULE_NOT_CONFIGURED
-    assert len(result["blocking_abono_groups"]) == 1
-    gr = result["blocking_abono_groups"][0]
-    assert gr["reconciliation_status"] == "PASSED"
-    assert gr["schedule_resolution_status"] == "NOT_CONFIGURED"
-    assert result["user_message"]
-    assert "regla de fila contractual" in result["user_message"]
-    assert "extracto" not in result["user_message"].lower()
-    _assert_no_side_effects(g, asiento_paths=(asiento,))
-    assert move_calls == []
-    assert _automation_log_rows(g, "TABLAS/amort_258.xlsx") == 0
-
-    enriched = enrich_job_for_http_response(
-        {"type": "amortization_apply", "status": "completed", "result": result}
-    )
-    assert "regla de fila contractual" in enriched["user_message"]
-    assert "extracto" not in enriched["user_message"].lower()
-
-
 def test_apply_abono_not_reconciled_blocks_before_write(monkeypatch):
     fecha = date(2026, 5, 22)
     out = _abono_manifest_output(monto_banco=10_000_000.0)
@@ -179,7 +121,7 @@ def test_apply_abono_missing_asiento_blocks(monkeypatch):
     _assert_no_side_effects(g)
 
 
-def test_apply_mixed_pago_ready_abono_blocked_no_pago_writes(monkeypatch):
+def test_apply_mixed_pago_ready_abono_not_reconciled_blocks_all(monkeypatch):
     fecha = date(2026, 5, 22)
     pago = {
         "id_pago": "P1",
@@ -191,7 +133,7 @@ def test_apply_mixed_pago_ready_abono_blocked_no_pago_writes(monkeypatch):
         "extracto_pdf_path": "clientes/EQUINORTE/extracto.pdf",
         "output_relative_path": "OUT/pago.pdf",
     }
-    abono = _abono_manifest_output(id_pago="AB9")
+    abono = _abono_manifest_output(id_pago="AB9", monto_banco=10_000_000.0)
     files = _abono_dry_run_files(abono_output=abono, pago_manifest_output=pago, fecha=fecha)
     files["TABLAS/amort_258.xlsx"] = _amort_table_date_at_row(fecha, 8)
     pago_tabla_hash = hashlib.sha256(files["TABLAS/amort_258.xlsx"]).hexdigest()
@@ -209,6 +151,7 @@ def test_apply_mixed_pago_ready_abono_blocked_no_pago_writes(monkeypatch):
     assert result["status"] == "blocked"
     assert result["apply_wrote_changes"] is False
     assert result["abono_groups_blocked"] >= 1
+    assert "no cuadran" in result.get("user_message", "").lower()
     _assert_no_side_effects(g)
     assert hashlib.sha256(g.files["TABLAS/amort_258.xlsx"]).hexdigest() == pago_tabla_hash
 

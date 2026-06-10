@@ -198,7 +198,7 @@ def test_reconcile_abono_fails_outside_tolerance(monkeypatch):
     assert any(e["error_code"] == ABONO_ASIENTOS_NO_CUADRAN for e in result.blocking_errors)
 
 
-def test_dry_run_abono_reconciled_schedule_rule_blocks_apply(monkeypatch):
+def test_dry_run_abono_reconciled_not_required_ready_to_apply(monkeypatch):
     out = _abono_manifest_output()
     files = _abono_dry_run_files(abono_output=out)
     g = MockGraphDryRun(files)
@@ -211,18 +211,23 @@ def test_dry_run_abono_reconciled_schedule_rule_blocks_apply(monkeypatch):
     )
     assert result["abono_groups_total"] == 1
     assert result["abono_groups_reconciled"] == 1
-    assert result["abono_groups_schedule_rule_missing"] == 1
-    assert result["can_apply"] is False
-    assert result["requires_business_rule"] is True
+    assert result["abono_groups_ready"] == 1
+    assert result["abono_groups_schedule_rule_missing"] == 0
+    assert result["can_apply"] is True
+    assert result["requires_business_rule"] is False
     gr = result["abono_group_results"][0]
     assert gr["reconciliation_status"] == "PASSED"
-    assert gr["schedule_resolution_status"] == "NOT_CONFIGURED"
-    assert gr["group_ready_for_apply"] is False
+    assert gr["schedule_resolution_status"] == "NOT_REQUIRED"
+    assert gr["group_ready_for_apply"] is True
     abono_items = [i for i in result["items"] if i.get("tipo_aplicacion") == "ABONO"]
     assert abono_items
-    assert all(i.get("group_ready_for_apply") is False for i in abono_items)
-    assert all(i.get("due_date_row") is None for i in abono_items)
-    assert all(i.get("fecha_limite_pago") is None for i in abono_items)
+    assert abono_items[0]["application_status"] == "WOULD_APPLY"
+    assert abono_items[0]["application_row"] is not None
+    assert abono_items[0]["due_date_row"] is None
+    assert abono_items[0]["fecha_limite_pago"] is None
+    assert abono_items[0]["updates_ibr"] is False
+    assert abono_items[0]["ibr_skipped_reason"] == "NOT_REQUIRED_FOR_ABONO"
+    assert abono_items[0]["ibr"]["status"] == "NOT_REQUIRED"
     assert not any(i.get("error_code") == "FECHA_LIMITE_NOT_FOUND" for i in abono_items)
 
 

@@ -1245,12 +1245,21 @@ async def run_amortization_fill_dry_run(
         async def _download_asiento(path: str) -> bytes:
             return await _graph_download_by_path(graph, site_id, drive_id, path)
 
+        async def _download_table(path: str) -> bytes:
+            return await _graph_download_by_path(graph, site_id, drive_id, path)
+
+        async def _asiento_metadata(path: str) -> dict[str, Any]:
+            return await _graph_get_item_metadata_by_path(graph, site_id, drive_id, path)
+
         abono_items, abono_group_results, abono_counters = await process_abono_manifest_outputs(
             abono_outputs,
             bank_code=resolved_bank_code,
             process_key=resolved_process_key,
             download_fn=_download_asiento,
             abono_hist_index=abono_hist_index,
+            table_download_fn=_download_table,
+            asiento_metadata_fn=_asiento_metadata,
+            used_application_rows_by_table=used_application_rows_by_table,
         )
         items.extend(abono_items)
 
@@ -1270,13 +1279,29 @@ async def run_amortization_fill_dry_run(
             payment_applicable = True
 
         abono_ready = all(gr.get("group_ready_for_apply") for gr in abono_group_results) if abono_group_results else True
+        abono_items_only = [
+            it
+            for it in items
+            if str(it.get("tipo_aplicacion") or "") == TipoAplicacion.ABONO.value
+        ]
+        abono_applicable = (
+            all(
+                it.get("application_status") in ("WOULD_APPLY", "WOULD_ADOPT_EXISTING")
+                and not it.get("error_code")
+                for it in abono_items_only
+            )
+            if abono_items_only
+            else True
+        )
         has_abono_schedule_pending = any(
             gr.get("requires_business_rule") for gr in abono_group_results
         )
         has_abono_errors = any(
             gr.get("reconciliation_status") != "PASSED" for gr in abono_group_results
         )
-        can_apply = payment_applicable and abono_ready and not has_abono_errors
+        can_apply = (
+            payment_applicable and abono_applicable and abono_ready and not has_abono_errors
+        )
 
         result_payload: dict[str, Any] = {
             "status": "ok",
@@ -1301,6 +1326,7 @@ async def run_amortization_fill_dry_run(
                 "abono_groups_schedule_rule_missing", 0
             ),
             "abono_credit_items_total": abono_counters.get("abono_credit_items_total", 0),
+            "abono_groups_ready": abono_counters.get("abono_groups_ready", 0),
             "abono_group_results": abono_group_results,
             "can_apply": can_apply,
             "requires_business_rule": has_abono_schedule_pending,
@@ -1322,10 +1348,7 @@ async def run_amortization_fill_dry_run(
             try:
                 last_status = "COMPLETED"
                 last_error = ""
-                if has_abono_schedule_pending and not has_abono_errors:
-                    last_status = "COMPLETED_WITH_WARNINGS"
-                    last_error = ABONO_SCHEDULE_RULE_NOT_CONFIGURED
-                elif summary.get("errors", 0) > 0 or has_abono_errors:
+                if summary.get("errors", 0) > 0 or has_abono_errors:
                     last_status = "COMPLETED_WITH_WARNINGS"
                 await update_process_control_row2(
                     graph,
@@ -1343,13 +1366,16 @@ async def run_amortization_fill_dry_run(
             except Exception:
                 pass
 
-        if has_abono_schedule_pending and not has_abono_errors:
-            result_payload["user_message"] = (
-                "Los asientos del abono cuadran con el movimiento bancario, pero el abono todavía no puede aplicarse."
-            )
-            result_payload["next_action"] = (
-                "Defina la regla contable para seleccionar la fila contractual y el IBR del abono."
-            )
+        if can_apply and abono_group_results and not has_abono_errors:
+            ready_count = int(abono_counters.get("abono_groups_ready") or 0)
+            if ready_count > 0:
+                result_payload["user_message"] = (
+                    "El dry-run de abonos cuadró correctamente. Cada abono usará la siguiente fila "
+                    "libre de Aplicación de Pagos; el IBR no se modificará."
+                )
+                result_payload["next_action"] = (
+                    "Revise result.items (application_row, valores del asiento) y ejecute Apply si todo es correcto."
+                )
 
         return result_payload
     except Exception:

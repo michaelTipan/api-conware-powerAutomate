@@ -928,11 +928,12 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 "Cargue asientos faltantes en la carpeta del crédito; no se requiere extracto para ABONO.",
                 "warning",
             )
-        if result.get("requires_business_rule"):
+        if result.get("can_apply") and int(result.get("abono_groups_ready") or 0) > 0:
             return (
-                "Los asientos del abono cuadran con el movimiento bancario, pero el abono todavía no puede aplicarse.",
-                "Defina la regla contable para seleccionar la fila contractual y el IBR del abono.",
-                "warning",
+                "El dry-run de abonos cuadró correctamente. Cada abono usará la siguiente fila "
+                "libre de Aplicación de Pagos; el IBR no se modificará.",
+                "Revise result.items (application_row, valores del asiento) y ejecute Apply si todo es correcto.",
+                "success",
             )
         return (
             "El análisis preliminar de amortización terminó correctamente. No se modificó ninguna tabla.",
@@ -969,6 +970,14 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 "warning",
             )
         if str(result.get("status") or "") in ("ok", "partial"):
+            custom_um = str(result.get("user_message") or "").strip()
+            if custom_um:
+                return (
+                    custom_um,
+                    str(result.get("next_action") or "").strip()
+                    or "Revise result.tables_summary y los movimientos de asientos a PROCESADOS si aplica.",
+                    "success" if result.get("status") == "ok" else "warning",
+                )
             return (
                 "La amortización se aplicó en las tablas indicadas.",
                 "Revise result.tables_summary y los movimientos de asientos a PROCESADOS si aplica.",

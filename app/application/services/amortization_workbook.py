@@ -945,6 +945,46 @@ def find_application_row(
     ).row
 
 
+def find_next_available_application_row(
+    ws: Worksheet,
+    headers: dict[str, int],
+    event: PaymentApplicationEvent,
+    *,
+    reserved_rows: frozenset[int] | set[int] | None = None,
+    header_row: int = 1,
+    payment_date: date | None = None,
+    detected_codes: frozenset[str] | set[str] | tuple[str, ...] | None = None,
+    warnings: frozenset[str] | set[str] | tuple[str, ...] | None = None,
+) -> FindApplicationRowResult:
+    """
+    Primera fila disponible en Aplicación de Pagos sin fecha límite contractual (ABONO).
+
+    Respeta ``reserved_rows`` para planificación determinista multi-evento en la misma tabla.
+    """
+    return find_application_row_detailed(
+        ws,
+        headers,
+        event,
+        due_date_row=None,
+        exclude_rows=frozenset(reserved_rows or ()),
+        header_row=header_row,
+        payment_date=payment_date,
+        detected_codes=detected_codes,
+        warnings=warnings,
+    )
+
+
+def resolve_planned_application_row(
+    app_result: FindApplicationRowResult,
+) -> tuple[int | None, str | None]:
+    """Resuelve fila destino: fila existente, adoptada o nueva sugerida al final del bloque."""
+    if app_result.row is not None:
+        return app_result.row, app_result.compare_status
+    if app_result.requires_new_row and app_result.suggested_row is not None:
+        return app_result.suggested_row, APLICADO
+    return None, None
+
+
 def build_application_row_search_debug(
     ws: Worksheet,
     headers: dict[str, int],

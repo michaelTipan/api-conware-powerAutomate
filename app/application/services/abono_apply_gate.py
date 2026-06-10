@@ -14,6 +14,8 @@ from typing import Any
 from app.application.services.abono_dry_run import ABONO_SCHEDULE_RULE_NOT_CONFIGURED
 
 SCHEDULE_RESOLVED = "RESOLVED"
+SCHEDULE_NOT_REQUIRED = "NOT_REQUIRED"
+_ALLOWED_SCHEDULE_STATUSES = frozenset({SCHEDULE_RESOLVED, SCHEDULE_NOT_REQUIRED, ""})
 
 
 def _blocking_group_entry(gr: dict[str, Any]) -> dict[str, Any]:
@@ -32,7 +34,7 @@ def _group_blocks_apply(gr: dict[str, Any]) -> bool:
     if gr.get("reconciliation_status") != "PASSED":
         return True
     schedule = str(gr.get("schedule_resolution_status") or "").strip()
-    if schedule and schedule != SCHEDULE_RESOLVED:
+    if schedule and schedule not in _ALLOWED_SCHEDULE_STATUSES:
         return True
     if gr.get("blocking_errors"):
         return True
@@ -95,6 +97,15 @@ def evaluate_abono_apply_block(dry_run: dict[str, Any]) -> dict[str, Any] | None
         )
         next_action = (
             "No vuelva a ejecutar Apply hasta que la regla contable del abono haya sido configurada."
+        )
+    elif any(
+        gr.get("reconciliation_status") != "PASSED" for gr in blocking_groups
+    ):
+        user_message = (
+            "Los asientos del abono no cuadran con el monto bancario; no se modificó ninguna tabla."
+        )
+        next_action = (
+            "Revise montos de asientos, monto_banco del manifest y result.blocking_abono_groups."
         )
     else:
         user_message = (

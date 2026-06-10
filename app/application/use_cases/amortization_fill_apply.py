@@ -37,6 +37,7 @@ from app.application.services.amortization_workbook import (
     write_payment_application,
 )
 from app.application.services.abono_apply_gate import evaluate_abono_apply_block
+from app.application.services.review_schema import TipoAplicacion
 from app.application.use_cases.amortization_fill_dry_run import (
     _drive_context,
     _resolve_amortization_inputs,
@@ -132,9 +133,27 @@ def validate_amortization_preflight(dry_run: dict[str, Any]) -> None:
         )
 
 
+def _is_abono_item(item: dict[str, Any]) -> bool:
+    return str(item.get("tipo_aplicacion") or "") == TipoAplicacion.ABONO.value
+
+
 def _payment_date_from_item(
     item: dict[str, Any], dry_run: dict[str, Any] | None = None
 ) -> date | None:
+    if _is_abono_item(item):
+        raw_fa = str(item.get("fecha_asiento") or "").strip()
+        if raw_fa:
+            try:
+                return date.fromisoformat(raw_fa)
+            except ValueError:
+                pass
+        raw_pd = str(item.get("payment_date_iso") or "").strip()
+        if raw_pd:
+            try:
+                return date.fromisoformat(raw_pd)
+            except ValueError:
+                pass
+        return None
     raw = str(item.get("payment_date_iso") or "").strip()
     if not raw and dry_run:
         raw = str(dry_run.get("report_date_iso") or "").strip()
@@ -323,7 +342,8 @@ async def _apply_one_table(
                 )
                 continue
 
-            if application_row is None or ibr_row is None:
+            is_abono = _is_abono_item(item)
+            if application_row is None or (not is_abono and ibr_row is None):
                 results.append(
                     {
                         **base,
@@ -382,40 +402,47 @@ async def _apply_one_table(
 
             ibr_block = item.get("ibr") or {}
             ibr_status = ibr_block.get("status")
-            fecha_limite = str(item.get("fecha_limite_pago") or "")
-            ibr_cut_key = f"{int(ibr_row)}|{fecha_limite}"
-            if ibr_status == "WOULD_WRITE_IBR" and ibr_cut_key not in ibr_written_for_cut:
-                ibr_value = ibr_block.get("value")
-                if ibr_value is not None:
-                    write_ibr(ws, int(ibr_row), headers, float(ibr_value))
-                    ibr_written_for_cut.add(ibr_cut_key)
-                    apply_ibr_written = True
+            if (
+                not is_abono
+                and ibr_status == "WOULD_WRITE_IBR"
+                and ibr_row is not None
+            ):
+                fecha_limite = str(item.get("fecha_limite_pago") or "")
+                ibr_cut_key = f"{int(ibr_row)}|{fecha_limite}"
+                if ibr_cut_key not in ibr_written_for_cut:
+                    ibr_value = ibr_block.get("value")
+                    if ibr_value is not None:
+                        write_ibr(ws, int(ibr_row), headers, float(ibr_value))
+                        ibr_written_for_cut.add(ibr_cut_key)
+                        apply_ibr_written = True
 
-            append_automation_log(
-                wb,
-                {
-                    "timestamp": _utc_now_iso(),
-                    "id_pago": item.get("id_pago"),
-                    "cliente": item.get("cliente"),
-                    "credito": item.get("credito"),
-                    "fila": application_row,
-                    "application_row": application_row,
-                    "ibr_row": ibr_row,
-                    "accion": accion_log,
-                    "estado": accion_log,
-                    "detalle": f"apply|{app_status}|ibr={ibr_status}",
-                    "idempotency_key": idem_key,
-                    "asiento_pdf_path": item.get("asiento_pdf_path"),
-                    "asiento_pdf_hash": item.get("asiento_pdf_hash"),
-                    "asiento_pdf_etag": item.get("asiento_pdf_etag"),
-                },
-            )
+            log_row: dict[str, Any] = {
+                "timestamp": _utc_now_iso(),
+                "id_pago": item.get("id_pago"),
+                "cliente": item.get("cliente"),
+                "credito": item.get("credito"),
+                "fila": application_row,
+                "application_row": application_row,
+                "ibr_row": ibr_row if not is_abono else None,
+                "accion": accion_log,
+                "estado": accion_log,
+                "detalle": f"apply|{app_status}|ibr={ibr_status}|tipo={item.get('tipo_aplicacion') or 'PAGO'}",
+                "idempotency_key": idem_key,
+                "asiento_pdf_path": item.get("asiento_pdf_path"),
+                "asiento_pdf_hash": item.get("asiento_pdf_hash"),
+                "asiento_pdf_etag": item.get("asiento_pdf_etag"),
+            }
+            if is_abono:
+                log_row["tipo_aplicacion"] = TipoAplicacion.ABONO.value
+            append_automation_log(wb, log_row)
 
             result_row = {
                 **base,
                 "apply_status": apply_status,
                 "apply_accion": accion_log,
                 "apply_ibr_written": apply_ibr_written,
+                "updates_ibr": False if is_abono else item.get("updates_ibr", True),
+                "ibr_skipped_reason": item.get("ibr_skipped_reason") if is_abono else None,
                 "sheet_name": sheet_name or base.get("sheet_name"),
                 "write_plan": write_plan if apply_status == APPLY_STATUS_APPLIED else {},
             }
@@ -1122,6 +1149,12 @@ async def run_amortization_fill_apply(
             process_control_estado=process_estado,
         )
 
+        abono_apply_items = [it for it in apply_items if _is_abono_item(it)]
+        abono_applied = [
+            it
+            for it in abono_apply_items
+            if it.get("apply_status") in (APPLY_STATUS_APPLIED, APPLY_STATUS_ADOPTED)
+        ]
         result_payload: dict[str, Any] = {
             **base,
             "status": status,
@@ -1140,9 +1173,28 @@ async def run_amortization_fill_apply(
             "tables_uploaded_count": tables_uploaded_count,
             "tables_skipped_count": tables_skipped_count,
             "idempotent_skips_count": idempotent_skips_count,
+            "abono_groups_applied": len(
+                {
+                    it.get("id_pago")
+                    for it in abono_applied
+                    if str(it.get("id_pago") or "").strip()
+                }
+            ),
+            "abono_credit_events_applied": len(abono_applied),
+            "abono_ibr_updates_skipped": sum(
+                1 for it in abono_apply_items if not it.get("apply_ibr_written")
+            ),
+            "abono_application_rows_written": sum(
+                1 for it in abono_applied if it.get("apply_status") == APPLY_STATUS_APPLIED
+            ),
             **_aggregate_apply_workbook_observability(tables_summary),
             **pdf_move_summary,
         }
+        if abono_applied and status == "ok":
+            result_payload["user_message"] = (
+                "Los abonos se registraron en nuevas filas de Aplicación de Pagos. "
+                "El IBR no fue modificado, según la regla definida para ABONO."
+            )
 
         if status in ("ok", "partial"):
             try:

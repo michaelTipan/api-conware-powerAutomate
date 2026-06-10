@@ -47,6 +47,16 @@ from app.application.services.historical_application_rows import (
     read_validated_abono_rows,
     read_validated_payment_rows,
 )
+from app.application.services.merge_group_validation import (
+    MANIFEST_STATUS_COMPLETE,
+    MANIFEST_STATUS_PARTIAL,
+    MERGE_GROUP_COMPLETE,
+    complete_output_manifest_dict,
+    group_can_reuse_existing_pdf,
+    incomplete_group_record,
+    validate_merge_group_completeness,
+)
+from app.application.services.merge_manifest_gate import assess_manifest_completeness
 from app.application.services.review_schema import TipoAplicacion
 from app.application.use_cases.send_validar_extractos_notification import (
     _collect_pdf_paths_from_ruta_cell,
@@ -959,6 +969,13 @@ class MergeCompositeValidadoPdfsResult:
     payment_skipped_count: int = 0
     abono_skipped_count: int = 0
     extracts_not_required_count: int = 0
+    manifest_status: str = ""
+    eligible_for_dry_run: bool = False
+    incomplete_groups_count: int = 0
+    payment_incomplete_groups_count: int = 0
+    abono_incomplete_groups_count: int = 0
+    complete_groups_count: int = 0
+    failed_groups_count: int = 0
 
 
 def _merge_logs_folder_relative() -> str:
@@ -1158,13 +1175,26 @@ async def merge_composite_validado_pdfs(
     if not process_key:
         process_key = build_payment_validation_process_key(bank_code, datetime.now(timezone.utc).date().isoformat())
 
-    # Idempotencia: si ya consolidado y hay manifest, reusar cuando force_rebuild=false.
+    # Idempotencia: si ya consolidado, manifest COMPLETE y force_rebuild=false.
+    prev_manifest: dict[str, Any] | None = None
+    prev_manifest_path = (snap.merge_manifest_path or "").strip().strip("/")
+    if prev_manifest_path:
+        try:
+            prev_raw = await _graph_download_by_path(
+                graph, site_id, drive_id, prev_manifest_path
+            )
+            prev_manifest = json.loads(prev_raw.decode("utf-8"))
+        except Exception:
+            prev_manifest = None
+
     if (
         not force_rebuild
         and (snap.process_key or "").strip() == process_key
         and (snap.estado_proceso or "").strip() == "CONSOLIDADO"
-        and (snap.merge_manifest_path or "").strip()
+        and prev_manifest_path
         and (snap.merge_idempotency_key or "").strip()
+        and prev_manifest is not None
+        and assess_manifest_completeness(prev_manifest).get("eligible_for_dry_run")
     ):
         return MergeCompositeValidadoPdfsResult(
             report_date_iso="",
@@ -1178,7 +1208,9 @@ async def merge_composite_validado_pdfs(
             merge_control_status="CONSOLIDADO",
             outputs_count=0,
             skipped_count=0,
-            merge_manifest_path=snap.merge_manifest_path,
+            merge_manifest_path=prev_manifest_path,
+            manifest_status=MANIFEST_STATUS_COMPLETE,
+            eligible_for_dry_run=True,
             bank_code=bank_code,
             bank_name=bank_name,
             bank_code_source=bank_code_source,
@@ -1263,13 +1295,18 @@ async def merge_composite_validado_pdfs(
         out_folder = resolve_merge_output_folder_path()
 
         outputs: list[MergeCompositePdfOutput] = []
+        incomplete_groups: list[dict[str, Any]] = []
         skipped: list[str] = []
         out_name_tallies: dict[str, int] = {}
         payment_outputs_count = 0
         abono_outputs_count = 0
         payment_skipped_count = 0
         abono_skipped_count = 0
+        payment_incomplete_groups_count = 0
+        abono_incomplete_groups_count = 0
+        failed_groups_count = 0
         extracts_not_required_count = len(abono_groups)
+        expected_by_id_pago: dict[str, tuple[str, ...]] = {}
 
         work_queue: list[tuple[str, str, list[dict[str, Any]]]] = []
         for id_pago, group_rows in sorted(payment_groups.items(), key=lambda x: x[0]):
@@ -1287,18 +1324,35 @@ async def merge_composite_validado_pdfs(
                 credit_items, pre_skips = await _prevalidate_id_pago_group(
                     graph, site_id, drive_id, id_pago, group_rows
                 )
-            if pre_skips:
-                skipped.extend(pre_skips)
-            if not credit_items:
+
+            validation = validate_merge_group_completeness(
+                id_pago=id_pago,
+                tipo_aplicacion=tipo_aplicacion,
+                group_rows=group_rows,
+                credit_items=credit_items,
+                pre_skips=pre_skips,
+            )
+            expected_creditos = validation.group.expected_creditos
+            expected_by_id_pago[id_pago] = expected_creditos
+
+            if not validation.is_complete:
+                if pre_skips:
+                    skipped.extend(pre_skips)
+                incomplete_groups.append(
+                    incomplete_group_record(validation, pre_skips=pre_skips)
+                )
                 if is_abono:
+                    abono_incomplete_groups_count += 1
                     abono_skipped_count += 1
                 else:
+                    payment_incomplete_groups_count += 1
                     payment_skipped_count += 1
                 continue
 
-            client_meta, monto_meta, fecha_meta, creditos_meta = _group_meta_from_rows(
+            client_meta, monto_meta, fecha_meta, _creditos_meta_unused = _group_meta_from_rows(
                 group_rows, tipo_aplicacion=tipo_aplicacion
             )
+            creditos_meta = expected_creditos
             all_extract_paths = [
                 ep for item in credit_items for ep in (item.get("extracto_pdf_paths") or [])
             ]
@@ -1331,7 +1385,20 @@ async def merge_composite_validado_pdfs(
                 creditos_seleccionados=creditos_meta,
             )
 
+            legacy_incomplete_output = False
+            can_reuse = False
             if already_exists and not force_rebuild:
+                if prev_manifest is None:
+                    can_reuse = True
+                else:
+                    can_reuse = group_can_reuse_existing_pdf(
+                        id_pago=id_pago,
+                        expected_creditos=expected_creditos,
+                        prev_manifest=prev_manifest,
+                    )
+                if not can_reuse:
+                    legacy_incomplete_output = True
+            if can_reuse:
                 labels_preview: list[str] = [f"email:{email_rel}"]
                 for item in sorted(credit_items, key=lambda x: str(x.get("credito") or "")):
                     for a in item.get("asiento_pdf_paths") or []:
@@ -1375,6 +1442,7 @@ async def merge_composite_validado_pdfs(
             )
             if build_skips:
                 skipped.extend(build_skips)
+                failed_groups_count += 1
                 if is_abono:
                     abono_skipped_count += 1
                 else:
@@ -1382,6 +1450,21 @@ async def merge_composite_validado_pdfs(
                 continue
 
             merged = _merge_pdf_bytes(parts)
+            if not merged:
+                failed_groups_count += 1
+                skipped.append(
+                    _merge_skip_line(
+                        id_pago,
+                        "consolidated_pdf_empty",
+                        tipo_aplicacion=tipo_aplicacion,
+                        creditos_seleccionados=", ".join(expected_creditos),
+                    )
+                )
+                if is_abono:
+                    abono_skipped_count += 1
+                else:
+                    payment_skipped_count += 1
+                continue
             out_base = _merge_composite_output_basename(
                 report_d,
                 client_display,
@@ -1409,21 +1492,25 @@ async def merge_composite_validado_pdfs(
                         names_seen=str(exc)[:800],
                         tipo_aplicacion=tipo_aplicacion,
                         requiere_extracto="NO" if is_abono else "SI",
-                        creditos_seleccionados=", ".join(creditos_meta),
+                        creditos_seleccionados=", ".join(expected_creditos),
                     )
                 )
+                failed_groups_count += 1
                 if is_abono:
                     abono_skipped_count += 1
                 else:
                     payment_skipped_count += 1
                 continue
 
+            sources_summary = " | ".join(labels)
+            if legacy_incomplete_output:
+                sources_summary = f"replaced_incomplete | {sources_summary}"
             outputs.append(
                 _merge_output_record(
                     id_pago=id_pago,
                     output_relative_path=out_rel,
                     bytes_written=len(merged),
-                    sources_summary=" | ".join(labels),
+                    sources_summary=sources_summary,
                     cliente=client_display,
                     credito=credit_for_filename,
                     email_pdf_path=email_rel,
@@ -1446,12 +1533,18 @@ async def merge_composite_validado_pdfs(
 
         oc = len(outputs)
         sc = len(skipped)
+        incomplete_groups_count = len(incomplete_groups)
+        complete_groups_count = oc
         merge_control_updated = True
 
-        if oc > 0 and sc == 0:
+        if incomplete_groups_count == 0 and oc > 0 and failed_groups_count == 0:
             final_status = "CONSOLIDADO"
+            manifest_status = MANIFEST_STATUS_COMPLETE
+            eligible_for_dry_run = True
         else:
             final_status = "MERGE_PARCIAL"
+            manifest_status = MANIFEST_STATUS_PARTIAL
+            eligible_for_dry_run = False
 
         manifest_path = ""
         try:
@@ -1460,32 +1553,28 @@ async def merge_composite_validado_pdfs(
                 "historico_excel_path": historico_rel,
                 "email_pdf_used": email_rel,
                 "merge_control_status": final_status,
+                "manifest_status": manifest_status,
+                "eligible_for_dry_run": eligible_for_dry_run,
+                "complete_groups_count": complete_groups_count,
+                "incomplete_groups_count": incomplete_groups_count,
+                "failed_groups_count": failed_groups_count,
                 "payment_outputs_count": payment_outputs_count,
                 "abono_outputs_count": abono_outputs_count,
+                "payment_incomplete_groups_count": payment_incomplete_groups_count,
+                "abono_incomplete_groups_count": abono_incomplete_groups_count,
                 "payment_skipped_count": payment_skipped_count,
                 "abono_skipped_count": abono_skipped_count,
                 "extracts_not_required_count": extracts_not_required_count,
                 "outputs": [
-                    {
-                        "id_pago": o.id_pago,
-                        "cliente": o.cliente,
-                        "credito": o.credito,
-                        "tipo_aplicacion": o.tipo_aplicacion,
-                        "requiere_extracto": o.requiere_extracto,
-                        "monto_banco": o.monto_banco,
-                        "fecha_banco": o.fecha_banco,
-                        "creditos_seleccionados": list(o.creditos_seleccionados),
-                        "email_pdf_path": o.email_pdf_path,
-                        "asiento_pdf_path": o.asiento_pdf_path,
-                        "asiento_pdf_paths": list(o.asiento_pdf_paths),
-                        "extracto_pdf_path": o.extracto_pdf_path,
-                        "credit_items": [dict(ci) for ci in o.credit_items],
-                        "output_relative_path": o.output_relative_path,
-                        "bytes_written": o.bytes_written,
-                        "sources_summary": o.sources_summary,
-                    }
+                    complete_output_manifest_dict(
+                        o,
+                        expected_creditos=expected_by_id_pago.get(
+                            o.id_pago, o.creditos_seleccionados
+                        ),
+                    )
                     for o in outputs
                 ],
+                "incomplete_groups": incomplete_groups,
                 "skipped": list(skipped),
             }
             manifest_path = await _upload_merge_manifest(
@@ -1566,6 +1655,13 @@ async def merge_composite_validado_pdfs(
             payment_skipped_count=payment_skipped_count,
             abono_skipped_count=abono_skipped_count,
             extracts_not_required_count=extracts_not_required_count,
+            manifest_status=manifest_status,
+            eligible_for_dry_run=eligible_for_dry_run,
+            incomplete_groups_count=incomplete_groups_count,
+            payment_incomplete_groups_count=payment_incomplete_groups_count,
+            abono_incomplete_groups_count=abono_incomplete_groups_count,
+            complete_groups_count=complete_groups_count,
+            failed_groups_count=failed_groups_count,
         )
 
     except Exception:

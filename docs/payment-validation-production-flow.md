@@ -23,6 +23,19 @@ El archivo `control_merge_pdfs.xlsx` **no** forma parte del flujo. El endpoint a
 | 5 Dry-run | POST | `/graph/sharepoint/payment-validation/amortization/dry-run/queue` | `GET .../payment-validation/jobs/{job_id}` |
 | 6 Apply | POST | `/graph/sharepoint/payment-validation/amortization/apply/queue` | `GET .../payment-validation/jobs/{job_id}` |
 
+### Merge incompleto (`MERGE_PARCIAL`)
+
+Si un `ID Pago` tiene créditos esperados en el histórico pero falta algún documento obligatorio:
+
+- **No** se genera ni publica un PDF consolidado final para ese grupo.
+- El grupo queda en `incomplete_groups` del manifest (`status=PENDING_INPUTS`, `output_relative_path=null`).
+- `manifest_status=PARTIAL`, `eligible_for_dry_run=false`, `EstadoProceso=MERGE_PARCIAL`.
+- Grupos **completos** de otros `ID Pago` sí pueden tener `outputs` con `status=COMPLETE`.
+- Dry-run y Apply están **bloqueados globalmente** (`MERGE_INCOMPLETE_NOT_APPLICABLE`) hasta que la secretaría cargue los faltantes y reejecute Merge.
+- Al reintentar Merge con todos los documentos: el PDF final se **reconstruye desde las fuentes originales** (no se anexan páginas a un PDF parcial legacy).
+
+**PAGO:** por crédito se exigen asiento y extracto. **ABONO:** solo asiento (sin extracto).
+
 ### Dry-run y ABONO (Fase 4 + Fase 5)
 
 El dry-run lee el manifest extendido de Merge y distingue **PAGO** y **ABONO**:

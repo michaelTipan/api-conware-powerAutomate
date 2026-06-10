@@ -864,14 +864,20 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 "Corrija y ejecute Unir PDFs de nuevo.",
                 "warning",
             )
+        incomplete_count = int(result.get("incomplete_groups_count") or 0)
+        if incomplete_count > 0:
+            return (
+                "La consolidación quedó incompleta porque faltan documentos obligatorios.",
+                "Revise result.incomplete_groups, cargue los asientos o extractos faltantes y vuelva a ejecutar Merge. "
+                "No use PDFs parciales para Dry-run ni Apply.",
+                "warning",
+            )
         if isinstance(outputs, list) and len(outputs) > 0:
             if isinstance(skipped, list) and len(skipped) > 0:
                 return (
-                    f"Unió correctamente {out_count or len(outputs)} pago(s) en PDF consolidados; "
-                    f"{skip_count or len(skipped)} pago(s) se omitieron por archivos faltantes.",
-                    "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS los PDF generados. "
-                    "En result.skipped vea qué pagos faltan (asiento o extracto). Suba lo pendiente y reintente solo "
-                    "para esos pagos si el flujo lo permite.",
+                    f"Unió correctamente {out_count or len(outputs)} grupo(s) completo(s); "
+                    f"hay {skip_count or len(skipped)} omisión(es) documentales.",
+                    "Revise result.incomplete_groups y result.skipped. Suba lo pendiente y reintente Merge.",
                     "warning",
                 )
             abono_out = int(result.get("abono_outputs_count") or 0)

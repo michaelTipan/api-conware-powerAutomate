@@ -5,6 +5,7 @@ Apply real: escribe tablas de amortización en SharePoint tras preflight (dry-ru
 from __future__ import annotations
 
 import io
+import json
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -37,6 +38,12 @@ from app.application.services.amortization_workbook import (
     write_payment_application,
 )
 from app.application.services.abono_apply_gate import evaluate_abono_apply_block
+from app.application.services.merge_manifest_gate import (
+    APPLY_EXPECTED_EVENTS_INCOMPLETE,
+    MERGE_INCOMPLETE_NOT_APPLICABLE,
+    assess_apply_event_completeness,
+    evaluate_merge_incomplete_block,
+)
 from app.application.services.review_schema import TipoAplicacion
 from app.application.use_cases.amortization_fill_dry_run import (
     _drive_context,
@@ -821,6 +828,7 @@ async def run_amortization_fill_apply(
 
     process_control_updated = False
     pre_apply_estado = "CONSOLIDADO"
+    snap: ProcessControlSnapshot | None = None
     try:
         snap = await read_process_control_snapshot(
             graph, site_id, drive_id, bank_code=resolved_bank_code
@@ -839,6 +847,48 @@ async def run_amortization_fill_apply(
             )
     except Exception as exc:
         logger.warning("apply: no se pudo revalidar control para idempotencia: %s", exc)
+
+    if manifest_rel:
+        try:
+            manifest_raw = await _graph_download_by_path(
+                graph, site_id, drive_id, manifest_rel
+            )
+            manifest_doc = json.loads(manifest_raw.decode("utf-8"))
+            merge_skipped = None
+            if snap is not None:
+                raw_skip = getattr(snap, "merge_skipped_count", None)
+                if raw_skip is not None:
+                    merge_skipped = int(raw_skip)
+            merge_block = evaluate_merge_incomplete_block(
+                manifest_doc,
+                estado_proceso=pre_apply_estado,
+                merge_skipped_count=merge_skipped,
+            )
+            if merge_block is not None:
+                return {
+                    "status": "blocked",
+                    "mode": "apply",
+                    "can_apply": False,
+                    "apply_wrote_changes": False,
+                    "already_applied": False,
+                    "error_code": merge_block.get("error_code", MERGE_INCOMPLETE_NOT_APPLICABLE),
+                    "merge_incomplete_block": merge_block,
+                    "user_message": merge_block.get("user_message"),
+                    "next_action": merge_block.get("next_action"),
+                    "bank_code": resolved_bank_code,
+                    "bank_name": resolved_bank_name,
+                    "process_key": apply_idempotency_key,
+                    "manifest_path": manifest_rel,
+                    "items": [],
+                    "tables_uploaded": [],
+                    "tables_summary": [],
+                    "summary": _apply_summarize([]),
+                    **empty_accounting_pdf_move_summary(),
+                }
+        except json.JSONDecodeError:
+            pass
+        except Exception as exc:
+            logger.warning("apply: no se pudo validar manifest antes de apply: %s", exc)
 
     try:
         await update_process_control_row2(
@@ -1114,6 +1164,21 @@ async def run_amortization_fill_apply(
         elif apply_errors:
             status = "partial"
 
+        event_completeness: dict[str, Any] = {}
+        if status == "ok" and manifest_rel and by_table:
+            try:
+                manifest_raw = await _graph_download_by_path(
+                    graph, site_id, drive_id, manifest_rel
+                )
+                manifest_for_check = json.loads(manifest_raw.decode("utf-8"))
+                event_completeness = assess_apply_event_completeness(
+                    manifest_for_check, apply_items
+                )
+                if not event_completeness.get("all_expected_events_completed"):
+                    status = "failed"
+            except Exception as exc:
+                logger.warning("apply: no se pudo validar completitud de eventos: %s", exc)
+
         if status == "ok":
             process_estado = "AMORTIZACION_APLICADA"
             last_step_status = "COMPLETED"
@@ -1130,8 +1195,16 @@ async def run_amortization_fill_apply(
         else:
             process_estado = "ERROR_APPLY"
             last_step_status = "FAILED"
-            last_error_user = "No se pudo aplicar amortización en ninguna tabla."
-            last_error_next = "Revise apply_errors y el preflight; corrija y reintente apply."
+            if event_completeness and not event_completeness.get("all_expected_events_completed"):
+                last_error_user = (
+                    "Apply no cerró el proceso: faltan créditos esperados del manifest."
+                )
+                last_error_next = (
+                    "Revise missing_credit_events en el resultado y corrija el manifest o Merge."
+                )
+            else:
+                last_error_user = "No se pudo aplicar amortización en ninguna tabla."
+                last_error_next = "Revise apply_errors y el preflight; corrija y reintente apply."
 
         tables_uploaded_count = len(tables_uploaded)
         tables_skipped_count = max(0, len(by_table) - tables_uploaded_count)
@@ -1177,6 +1250,7 @@ async def run_amortization_fill_apply(
             "tables_uploaded_count": tables_uploaded_count,
             "tables_skipped_count": tables_skipped_count,
             "idempotent_skips_count": idempotent_skips_count,
+            **event_completeness,
             "abono_groups_applied": len(
                 {
                     it.get("id_pago")

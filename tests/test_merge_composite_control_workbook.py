@@ -607,11 +607,13 @@ def test_merge_id_pago_two_credits_missing_one_asiento_partial_merge(monkeypatch
             )
 
     r = asyncio.run(run())
-    assert r.outputs_count == 1
+    assert r.outputs_count == 0
+    assert r.incomplete_groups_count == 1
     assert r.merge_control_status == "MERGE_PARCIAL"
+    assert r.manifest_status == "PARTIAL"
+    assert r.eligible_for_dry_run is False
     assert any("asiento_contable_not_found" in s for s in r.skipped)
-    assert r.outputs[0].asiento_pdf_paths == (a231,)
-    assert any(p.startswith("OUT/PDFS/") for p in g.uploaded)
+    assert not any(p.startswith("OUT/PDFS/") for p in g.uploaded)
     assert g.deleted == []
 
 

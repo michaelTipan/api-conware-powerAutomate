@@ -70,6 +70,7 @@ from app.application.use_cases.payment_validation_process_control import (
     validate_bank_code,
 )
 from app.application.services.amortization_apply_safety import compute_asiento_pdf_hash
+from app.application.services.merge_manifest_gate import evaluate_merge_incomplete_block
 from app.application.use_cases.validate_payment_report import (
     _graph_download_by_path,
     _graph_get_item_metadata_by_path,
@@ -1183,6 +1184,55 @@ async def run_amortization_fill_dry_run(
             or str(manifest.get("report_date_iso") or "").strip()
             or None
         )
+
+        control_estado = ""
+        merge_skipped_count: int | None = None
+        try:
+            snap = await read_process_control_snapshot(
+                graph, site_id, drive_id, bank_code=resolved_bank_code
+            )
+            control_estado = (snap.estado_proceso or "").strip()
+            raw_skip = getattr(snap, "merge_skipped_count", None)
+            if raw_skip is not None:
+                merge_skipped_count = int(raw_skip)
+        except Exception:
+            pass
+
+        merge_block = evaluate_merge_incomplete_block(
+            manifest,
+            estado_proceso=control_estado,
+            merge_skipped_count=merge_skipped_count,
+        )
+        if merge_block is not None:
+            return {
+                "status": "blocked",
+                "mode": "dry_run",
+                "report_date_iso": effective_report_date,
+                "manifest_path": manifest_rel,
+                "merge_manifest_path": manifest_rel,
+                "historical_file_path": (
+                    resolved_hist or historical_file_path or manifest.get("historico_excel_path")
+                ),
+                "resolved_from_merge_control": False,
+                "items": [],
+                "summary": {"total": 0, "errors": 0, "would_apply": 0, "would_adopt": 0},
+                "can_apply": False,
+                "merge_incomplete_block": merge_block,
+                "error_code": merge_block.get("error_code"),
+                "user_message": merge_block.get("user_message"),
+                "next_action": merge_block.get("next_action"),
+                "bank_code": resolved_bank_code,
+                "bank_name": resolved_bank_name,
+                "bank_code_source": "body" if (bank_code or "").strip() else "auto_detected",
+                "ready_banks_detected": ready_banks_detected,
+                "process_key": resolved_process_key,
+                "process_control_file_path": resolved_control_path,
+                "process_control_updated": process_control_updated,
+                "merge_manifest_source": merge_manifest_source,
+                "historical_file_source": historical_file_source,
+                "dry_run_idempotent": True,
+                "dry_run_wrote_changes": False,
+            }
 
         outputs = manifest.get("outputs") or []
         if not isinstance(outputs, list):

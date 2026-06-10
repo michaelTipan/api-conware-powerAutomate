@@ -36,7 +36,32 @@ def _manifest_bytes(fecha: date) -> bytes:
     payload = {
         "report_date_iso": fecha.isoformat(),
         "historico_excel_path": "HIST/h.xlsx",
-        "outputs": [],
+        "manifest_status": "COMPLETE",
+        "eligible_for_dry_run": True,
+        "incomplete_groups_count": 0,
+        "outputs": [
+            {
+                "id_pago": "p1",
+                "status": "COMPLETE",
+                "cliente": "C",
+                "credito": "258",
+                "tipo_aplicacion": "PAGO",
+                "expected_creditos": ["258"],
+                "creditos_seleccionados": ["258"],
+                "asiento_pdf_path": "a.pdf",
+                "extracto_pdf_path": "e.pdf",
+                "output_relative_path": "OUT/x.pdf",
+                "eligible_for_dry_run": True,
+                "credit_items": [
+                    {
+                        "credito": "258",
+                        "asiento_pdf_paths": ["a.pdf"],
+                        "extracto_pdf_paths": ["e.pdf"],
+                    }
+                ],
+            }
+        ],
+        "skipped": [],
     }
     return json.dumps(payload).encode("utf-8")
 

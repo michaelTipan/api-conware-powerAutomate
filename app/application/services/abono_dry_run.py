@@ -39,13 +39,26 @@ from app.application.services.review_schema import (
     TipoAplicacion,
     normalize_credito_digits,
 )
+from app.application.services.accounting_pdf_processed_move import (
+    _allocate_destination_path,
+    _parent_asientos_folder,
+)
 from app.application.services.amortization_apply_safety import compute_asiento_pdf_hash
+from app.application.services.applied_abono_events import (
+    APPLIED_ABONO_AMOUNT_UNRESOLVABLE,
+    APPLIED_ABONO_EVENT_AMBIGUOUS,
+    AppliedAbonoEventSnapshot,
+    find_applied_abono_event,
+    load_applied_abono_event_snapshots,
+    resolve_applied_abono_amount,
+)
 from app.application.services.amortization_workbook import (
     ADOPTADO_EXISTENTE,
     APLICADO,
     REVISION_MANUAL,
     AmortizationSheetNotFoundError,
     build_amortization_idempotency_key,
+    build_application_row_search_debug,
     detect_amortization_sheet,
     find_next_available_application_row,
     resolve_planned_application_row,
@@ -69,7 +82,10 @@ ABONO_ASIENTOS_NO_CUADRAN = "ABONO_ASIENTOS_NO_CUADRAN"
 ABONO_SCHEDULE_RULE_NOT_CONFIGURED = "ABONO_SCHEDULE_RULE_NOT_CONFIGURED"
 SCHEDULE_NOT_REQUIRED = "NOT_REQUIRED"
 ABONO_APPLICATION_ROW_STRATEGY = "NEXT_AVAILABLE_PAYMENT_ROW"
+ABONO_APPLICATION_ROW_STRATEGY_EXISTING = "EXISTING_AUTOMATION_LOG"
 ABONO_IBR_SKIPPED_REASON = "NOT_REQUIRED_FOR_ABONO"
+APPLICATION_PAYMENT_SECTION_FULL = "APPLICATION_PAYMENT_SECTION_FULL"
+ABONO_APPLICATION_STATUS_ALREADY_APPLIED = "ALREADY_APPLIED"
 
 _ABONO_STATUS_MAP = {
     APLICADO: "WOULD_APPLY",
@@ -108,6 +124,28 @@ class AbonoReconciliationResult:
     credit_amounts: dict[str, Decimal]
     accounting_pdf_amounts: dict[str, Decimal]
     blocking_errors: list[dict[str, Any]] = field(default_factory=list)
+    already_applied_amount: Decimal = Decimal("0")
+    pending_amount: Decimal = Decimal("0")
+    total_reconciled_amount: Decimal = Decimal("0")
+    already_applied_events_count: int = 0
+    pending_events_count: int = 0
+
+
+@dataclass
+class AbonoEventReconcileState:
+    credit_item: AbonoCreditItem
+    asiento_path: str
+    norm_path: str
+    event_index: int
+    status: str
+    amount: Decimal | None = None
+    applied_snapshot: AppliedAbonoEventSnapshot | None = None
+    event: PaymentApplicationEvent | None = None
+    error: dict[str, Any] | None = None
+    resolved_pdf_source: str | None = None
+    requires_pdf_download: bool = True
+    idempotency_key: str = ""
+    pdf_fingerprint: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -570,6 +608,416 @@ async def _download_and_parse_asiento(
     return event, None
 
 
+def _guess_processed_asiento_paths(
+    asiento_path: str,
+    *,
+    payment_date_iso: str,
+    bank_code: str,
+    credito: str,
+    id_pago: str,
+    event_index: int,
+    use_event_suffix: bool,
+) -> list[str]:
+    parent = _parent_asientos_folder(asiento_path)
+    if not parent:
+        return []
+    processed_folder = f"{parent}/PROCESADOS"
+    try:
+        dest = _allocate_destination_path(
+            processed_folder,
+            payment_date_iso=payment_date_iso or "sin-fecha",
+            bank_code=bank_code,
+            credito=credito,
+            id_pago=id_pago,
+            event_index=event_index,
+            use_event_suffix=use_event_suffix,
+            existing_destinations=set(),
+        )
+        return [dest]
+    except ValueError:
+        return []
+
+
+async def _download_abono_asiento_with_fallback(
+    download_fn,
+    *,
+    asiento_path: str,
+    id_pago: str,
+    cliente: str,
+    credito: str,
+    bank_code: str,
+    fecha_banco: date | None,
+    event_index: int,
+    use_event_suffix: bool = False,
+) -> tuple[PaymentApplicationEvent | None, dict[str, Any] | None, str | None, dict[str, Any]]:
+    """
+    Descarga asiento original; si falta, intenta ruta en PROCESADOS (solo parseo pendiente).
+    """
+    fingerprint: dict[str, Any] = {}
+    try:
+        pdf_bytes = await download_fn(asiento_path)
+        fingerprint["asiento_pdf_hash"] = compute_asiento_pdf_hash(pdf_bytes)
+        fingerprint["asiento_pdf_size"] = len(pdf_bytes)
+        text = extract_text_from_pdf(pdf_bytes)
+        event = parse_accounting_text(
+            text,
+            {
+                "id_pago": id_pago,
+                "cliente": cliente,
+                "credito": credito,
+                "asiento_pdf_path": asiento_path,
+            },
+        )
+        return event, None, "ORIGINAL", fingerprint
+    except Exception:
+        pass
+
+    payment_iso = fecha_banco.isoformat() if fecha_banco else ""
+    for candidate in _guess_processed_asiento_paths(
+        asiento_path,
+        payment_date_iso=payment_iso,
+        bank_code=bank_code,
+        credito=credito,
+        id_pago=id_pago,
+        event_index=event_index,
+        use_event_suffix=use_event_suffix,
+    ):
+        try:
+            pdf_bytes = await download_fn(candidate)
+            fingerprint["asiento_pdf_hash"] = compute_asiento_pdf_hash(pdf_bytes)
+            fingerprint["asiento_pdf_size"] = len(pdf_bytes)
+            fingerprint["resolved_accounting_pdf_source"] = "PROCESADOS"
+            text = extract_text_from_pdf(pdf_bytes)
+            event = parse_accounting_text(
+                text,
+                {
+                    "id_pago": id_pago,
+                    "cliente": cliente,
+                    "credito": credito,
+                    "asiento_pdf_path": asiento_path,
+                },
+            )
+            return event, None, "PROCESADOS", fingerprint
+        except Exception:
+            continue
+
+    err = _blocking(
+        ABONO_ASIENTO_FALTANTE,
+        "No se encontró el PDF del asiento en ruta original ni en PROCESADOS",
+        id_pago=id_pago,
+        credito=credito,
+        paths=[asiento_path],
+        next_action="Verifique que el asiento exista o que el evento esté registrado en _AUTOMATION_LOG.",
+    )
+    return None, err, None, fingerprint
+
+
+async def _collect_abono_event_states(
+    group: AbonoDryRunGroup,
+    download_fn,
+    table_download_fn: Callable[[str], Awaitable[bytes]],
+    *,
+    bank_code: str,
+    duplicate_paths: dict[str, list[dict[str, str]]] | None = None,
+) -> list[AbonoEventReconcileState]:
+    states: list[AbonoEventReconcileState] = []
+    group_seen_pdf_paths: set[str] = set()
+    event_counter = 0
+    suffix_by_pago_cred: dict[tuple[str, str], int] = {}
+    for ci in group.credit_items:
+        for _ in ci.asiento_pdf_paths:
+            cred_tok = _norm_credito_token(ci.credito)
+            key = (group.id_pago, cred_tok or ci.credito)
+            suffix_by_pago_cred[key] = suffix_by_pago_cred.get(key, 0) + 1
+    use_suffix_flags = {k: v > 1 for k, v in suffix_by_pago_cred.items()}
+
+    table_cache: dict[str, tuple[bytes, list[AppliedAbonoEventSnapshot], Any, dict[str, int], int]] = {}
+
+    for ci in group.credit_items:
+        cred = _norm_credito_token(ci.credito)
+        tabla_path = (ci.ruta_tabla_amortizacion or "").strip().strip("/")
+        for asiento_path in ci.asiento_pdf_paths:
+            event_counter += 1
+            norm = normalize_sharepoint_path(asiento_path)
+            base_state = AbonoEventReconcileState(
+                credit_item=ci,
+                asiento_path=asiento_path,
+                norm_path=norm or asiento_path,
+                event_index=event_counter,
+                status="PENDING",
+            )
+            if norm in group_seen_pdf_paths:
+                base_state.status = "ERROR"
+                base_state.error = _blocking(
+                    ABONO_ASIENTO_DUPLICADO,
+                    f"Asiento repetido en el grupo: {norm}",
+                    id_pago=group.id_pago,
+                    credito=cred,
+                    creditos_seleccionados=group.creditos_seleccionados,
+                    paths=[norm],
+                )
+                states.append(base_state)
+                continue
+            if duplicate_paths and norm in duplicate_paths:
+                base_state.status = "ERROR"
+                base_state.error = _blocking(
+                    ABONO_ASIENTO_DUPLICADO,
+                    f"Asiento reutilizado: {norm}",
+                    id_pago=group.id_pago,
+                    credito=cred,
+                    creditos_seleccionados=group.creditos_seleccionados,
+                    paths=[norm],
+                    next_action="Use un PDF de asiento distinto por crédito y por ID Pago.",
+                )
+                states.append(base_state)
+                continue
+            group_seen_pdf_paths.add(norm)
+
+            idem_key = build_amortization_idempotency_key(
+                group.id_pago, cred or ci.credito, asiento_path, ""
+            )
+            base_state.idempotency_key = idem_key
+
+            if not tabla_path:
+                base_state.status = "ERROR"
+                base_state.error = _blocking(
+                    ABONO_TABLA_AMORTIZACION_MISSING,
+                    "Falta ruta de tabla de amortización",
+                    id_pago=group.id_pago,
+                    credito=cred,
+                )
+                states.append(base_state)
+                continue
+
+            if tabla_path not in table_cache:
+                try:
+                    tabla_bytes = await table_download_fn(tabla_path)
+                    wb = openpyxl.load_workbook(io.BytesIO(tabla_bytes), data_only=True)
+                    try:
+                        sheet_match = detect_amortization_sheet(
+                            wb, tabla_amortizacion_path=tabla_path
+                        )
+                        snapshots = load_applied_abono_event_snapshots(
+                            wb, id_pago_filter=group.id_pago
+                        )
+                        table_cache[tabla_path] = (
+                            tabla_bytes,
+                            snapshots,
+                            sheet_match.worksheet,
+                            sheet_match.headers,
+                            sheet_match.header_row,
+                        )
+                    finally:
+                        closer = getattr(wb, "close", None)
+                        if callable(closer):
+                            closer()
+                except Exception as exc:
+                    base_state.status = "ERROR"
+                    base_state.error = _blocking(
+                        "TABLE_DOWNLOAD_FAILED",
+                        str(exc)[:500],
+                        id_pago=group.id_pago,
+                        credito=cred,
+                        paths=[tabla_path],
+                    )
+                    states.append(base_state)
+                    continue
+
+            _, snapshots, ws, headers, _header_row = table_cache[tabla_path]
+            match, amb_err = find_applied_abono_event(
+                snapshots,
+                id_pago=group.id_pago,
+                credito=cred or ci.credito,
+                asiento_pdf_path=asiento_path,
+                idempotency_key=idem_key,
+            )
+            if amb_err:
+                base_state.status = "ERROR"
+                base_state.error = _blocking(
+                    amb_err,
+                    "Coincidencia ambigua en _AUTOMATION_LOG para el evento ABONO",
+                    id_pago=group.id_pago,
+                    credito=cred,
+                    paths=[asiento_path],
+                )
+                states.append(base_state)
+                continue
+
+            if match is not None:
+                amount, amount_err = resolve_applied_abono_amount(
+                    match, ws=ws, headers=headers
+                )
+                if amount_err or amount is None:
+                    base_state.status = "ERROR"
+                    base_state.error = _blocking(
+                        amount_err or APPLIED_ABONO_AMOUNT_UNRESOLVABLE,
+                        "No se pudo recuperar el monto del evento ABONO ya aplicado",
+                        id_pago=group.id_pago,
+                        credito=cred,
+                        paths=[asiento_path],
+                        next_action="Complete ValorPagadoCliente en el log o verifique la fila de aplicación.",
+                    )
+                    states.append(base_state)
+                    continue
+                base_state.status = ABONO_APPLICATION_STATUS_ALREADY_APPLIED
+                base_state.amount = amount
+                base_state.applied_snapshot = match
+                base_state.requires_pdf_download = False
+                states.append(base_state)
+                continue
+
+            use_suffix = use_suffix_flags.get((group.id_pago, cred or ci.credito), False)
+            event, err, pdf_source, fingerprint = await _download_abono_asiento_with_fallback(
+                download_fn,
+                asiento_path=asiento_path,
+                id_pago=group.id_pago,
+                cliente=group.cliente,
+                credito=cred or ci.credito,
+                bank_code=bank_code,
+                fecha_banco=group.fecha_banco,
+                event_index=event_counter,
+                use_event_suffix=use_suffix,
+            )
+            base_state.pdf_fingerprint = fingerprint
+            base_state.resolved_pdf_source = pdf_source
+            if err or event is None:
+                base_state.status = "ERROR"
+                base_state.error = err or _blocking(
+                    ABONO_ASIENTO_FALTANTE,
+                    "No se pudo parsear el asiento",
+                    id_pago=group.id_pago,
+                    credito=cred,
+                    paths=[asiento_path],
+                )
+                states.append(base_state)
+                continue
+            amount = _canonical_amount_from_event(event)
+            if amount is None:
+                base_state.status = "ERROR"
+                base_state.error = _blocking(
+                    ABONO_ASIENTO_TOTAL_NOT_FOUND,
+                    "No se pudo determinar valor_pagado_cliente del asiento",
+                    id_pago=group.id_pago,
+                    credito=cred,
+                    paths=[asiento_path],
+                )
+                states.append(base_state)
+                continue
+            base_state.status = "PENDING"
+            base_state.event = event
+            base_state.amount = amount
+            base_state.idempotency_key = build_amortization_idempotency_key(
+                group.id_pago,
+                cred or ci.credito,
+                asiento_path,
+                event.comprobante or "",
+                pdf_hash=str(fingerprint.get("asiento_pdf_hash") or ""),
+            )
+            states.append(base_state)
+
+    return states
+
+
+def reconcile_abono_event_states(
+    group: AbonoDryRunGroup,
+    states: list[AbonoEventReconcileState],
+) -> AbonoReconciliationResult:
+    """Cuadre híbrido: montos ya aplicados + pendientes vs monto bancario."""
+    blocking: list[dict[str, Any]] = []
+    credit_amounts: dict[str, Decimal] = {}
+    pdf_amounts: dict[str, Decimal] = {}
+    already_total = Decimal("0")
+    pending_total = Decimal("0")
+    already_count = 0
+    pending_count = 0
+
+    for st in states:
+        if st.error:
+            blocking.append(st.error)
+            continue
+        if st.amount is None:
+            continue
+        cred = _norm_credito_token(st.credit_item.credito)
+        if st.status == ABONO_APPLICATION_STATUS_ALREADY_APPLIED:
+            already_total += st.amount
+            already_count += 1
+            pdf_amounts[st.norm_path] = st.amount
+            if cred:
+                credit_amounts[cred] = credit_amounts.get(cred, Decimal("0")) + st.amount
+        elif st.status == "PENDING" and st.event is not None:
+            pending_total += st.amount
+            pending_count += 1
+            pdf_amounts[st.norm_path] = st.amount
+            if cred:
+                credit_amounts[cred] = credit_amounts.get(cred, Decimal("0")) + st.amount
+
+    total = already_total + pending_total
+    monto_banco = group.monto_banco
+    if monto_banco is None:
+        return AbonoReconciliationResult(
+            reconciliation_status="FAILED",
+            monto_banco=None,
+            total_asientos=total,
+            diferencia=Decimal("0"),
+            tolerancia=ABONO_RECONCILIATION_TOLERANCE,
+            credit_amounts=credit_amounts,
+            accounting_pdf_amounts=pdf_amounts,
+            blocking_errors=blocking,
+            already_applied_amount=already_total,
+            pending_amount=pending_total,
+            total_reconciled_amount=total,
+            already_applied_events_count=already_count,
+            pending_events_count=pending_count,
+        )
+
+    if blocking:
+        return AbonoReconciliationResult(
+            reconciliation_status="FAILED",
+            monto_banco=monto_banco,
+            total_asientos=total,
+            diferencia=total - monto_banco,
+            tolerancia=ABONO_RECONCILIATION_TOLERANCE,
+            credit_amounts=credit_amounts,
+            accounting_pdf_amounts=pdf_amounts,
+            blocking_errors=blocking,
+            already_applied_amount=already_total,
+            pending_amount=pending_total,
+            total_reconciled_amount=total,
+            already_applied_events_count=already_count,
+            pending_events_count=pending_count,
+        )
+
+    diferencia = total - monto_banco
+    diff_abs = abs(diferencia)
+    status = "PASSED" if diff_abs <= ABONO_RECONCILIATION_TOLERANCE else "FAILED"
+    if status == "FAILED":
+        blocking.append(
+            _blocking(
+                ABONO_ASIENTOS_NO_CUADRAN,
+                "La suma híbrida (aplicados + pendientes) no cuadra con el monto bancario",
+                id_pago=group.id_pago,
+                creditos_seleccionados=group.creditos_seleccionados,
+                next_action="Revise montos de asientos, eventos ya aplicados y monto_banco del manifest.",
+            )
+        )
+
+    return AbonoReconciliationResult(
+        reconciliation_status=status,
+        monto_banco=monto_banco,
+        total_asientos=total,
+        diferencia=diferencia,
+        tolerancia=ABONO_RECONCILIATION_TOLERANCE,
+        credit_amounts=credit_amounts,
+        accounting_pdf_amounts=pdf_amounts,
+        blocking_errors=blocking,
+        already_applied_amount=already_total,
+        pending_amount=pending_total,
+        total_reconciled_amount=total,
+        already_applied_events_count=already_count,
+        pending_events_count=pending_count,
+    )
+
+
 async def reconcile_abono_group(
     group: AbonoDryRunGroup,
     download_fn,
@@ -745,6 +1193,50 @@ def _abono_observability_base(
     }
 
 
+def _build_already_applied_abono_item(
+    group: AbonoDryRunGroup,
+    *,
+    state: AbonoEventReconcileState,
+    schedule: AbonoScheduleContextResult,
+) -> dict[str, Any]:
+    cred = _norm_credito_token(state.credit_item.credito)
+    snap = state.applied_snapshot
+    app_row = snap.application_row if snap else None
+    amount = float(state.amount) if state.amount is not None else None
+    return {
+        "id_pago": group.id_pago,
+        "cliente": group.cliente,
+        "credito": cred or state.credit_item.credito,
+        "asiento_pdf_path": state.asiento_path,
+        "extracto_pdf_path": None,
+        "event_index": state.event_index,
+        "comprobante": None,
+        "tabla_amortizacion_path": (state.credit_item.ruta_tabla_amortizacion or "").strip("/") or None,
+        "detected_codes": [],
+        "parser_mode": None,
+        "payment_application": {
+            "valor_pagado_cliente": amount,
+            "capital": None,
+            "intereses": None,
+            "mora": None,
+            "retenciones": None,
+            "saldos_menores": None,
+        },
+        "warnings": [],
+        **_abono_observability_base(group=group, schedule=schedule),
+        "application_row_strategy": ABONO_APPLICATION_ROW_STRATEGY_EXISTING,
+        "requires_pdf_download": False,
+        "requires_new_application_row": False,
+        "idempotency_key": state.idempotency_key,
+        "application_row": app_row,
+        "target_row": app_row,
+        "application_status": ABONO_APPLICATION_STATUS_ALREADY_APPLIED,
+        "error_code": None,
+        "already_applied_from_log": True,
+        "accounting_pdf_move_status": "already_processed",
+    }
+
+
 async def _plan_abono_asiento_item(
     group: AbonoDryRunGroup,
     *,
@@ -842,19 +1334,60 @@ async def _plan_abono_asiento_item(
             detected_codes=frozenset(event.detected_codes),
             warnings=frozenset(event.parse_warnings or []),
         )
-        application_row, compare_status = resolve_planned_application_row(app_result)
+        application_row, compare_status = resolve_planned_application_row(
+            app_result,
+            allow_suggested_row=False,
+        )
 
         if application_row is None:
+            if app_result.requires_new_row:
+                app_debug = build_application_row_search_debug(
+                    ws,
+                    headers,
+                    event,
+                    due_date_row=None,
+                    header_row=header_row,
+                    sheet_name=ws.title,
+                    tabla_amortizacion_path=tabla_path,
+                    exclude_rows=frozenset(reserved),
+                    find_result=app_result,
+                )
+                occupied = sum(
+                    1
+                    for c in app_debug.get("candidates") or []
+                    if c.get("has_application_data")
+                )
+                return {
+                    **base,
+                    "application_row": None,
+                    "target_row": None,
+                    "application_status": "ERROR",
+                    "error_code": APPLICATION_PAYMENT_SECTION_FULL,
+                    "user_message": (
+                        "La sección de Aplicación de Pagos no tiene filas disponibles "
+                        "para registrar el movimiento."
+                    ),
+                    "next_action": (
+                        "Amplíe de forma controlada la sección en la plantilla de "
+                        "amortización y vuelva a ejecutar Dry-run."
+                    ),
+                    "application_section_full": {
+                        "tabla_amortizacion_path": tabla_path,
+                        "sheet_name": ws.title,
+                        "id_pago": group.id_pago,
+                        "credito": cred or credit_item.credito,
+                        "search_start_row": app_result.search_start_row,
+                        "last_safe_row": ws.max_row,
+                        "suggested_row": app_result.suggested_row,
+                        "occupied_rows_count": occupied,
+                    },
+                }
             return {
                 **base,
                 "application_row": None,
                 "target_row": None,
                 "application_status": "ERROR",
-                "error_code": (
-                    "REQUIRES_APPLICATION_ROW"
-                    if app_result.requires_new_row
-                    else "APPLICATION_ROW_NOT_FOUND"
-                ),
+                "error_code": "APPLICATION_ROW_NOT_FOUND",
             }
 
         if compare_status == REVISION_MANUAL:
@@ -915,6 +1448,11 @@ def abono_group_result_dict(
         "requires_business_rule": group.requires_business_rule,
         "blocking_errors": list(group.blocking_errors),
         "warnings": list(group.warnings),
+        "already_applied_amount": float(reconciliation.already_applied_amount),
+        "pending_amount": float(reconciliation.pending_amount),
+        "total_reconciled_amount": float(reconciliation.total_reconciled_amount),
+        "already_applied_events_count": reconciliation.already_applied_events_count,
+        "pending_events_count": reconciliation.pending_events_count,
     }
 
 
@@ -1062,11 +1600,23 @@ async def process_abono_manifest_outputs(
             all_items.extend(build_abono_observability_items(group, reconciliation, schedule, {}))
             continue
 
-        reconciliation = await reconcile_abono_group(
-            group,
-            download_fn,
-            duplicate_paths=duplicate_paths,
-        )
+        event_states: list[AbonoEventReconcileState] = []
+        if table_download_fn is not None:
+            event_states = await _collect_abono_event_states(
+                group,
+                download_fn,
+                table_download_fn,
+                bank_code=bank_code,
+                duplicate_paths=duplicate_paths,
+            )
+            reconciliation = reconcile_abono_event_states(group, event_states)
+        else:
+            reconciliation = await reconcile_abono_group(
+                group,
+                download_fn,
+                duplicate_paths=duplicate_paths,
+            )
+
         group.blocking_errors.extend(reconciliation.blocking_errors)
         group.reconciliation_status = reconciliation.reconciliation_status
 
@@ -1092,72 +1642,73 @@ async def process_abono_manifest_outputs(
         parsed_events: dict[str, PaymentApplicationEvent] = {}
         group_items: list[dict[str, Any]] = []
 
-        if group.group_ready_for_apply and table_download_fn is not None:
-            event_counter = 0
-            for ci in group.credit_items:
-                for asiento_path in ci.asiento_pdf_paths:
-                    event_counter += 1
-                    norm = normalize_sharepoint_path(asiento_path)
-                    pdf_fingerprint: dict[str, Any] = {}
+        if group.group_ready_for_apply and table_download_fn is not None and event_states:
+            for st in event_states:
+                if st.error:
+                    cred_tok = _norm_credito_token(st.credit_item.credito)
+                    group_items.append(
+                        {
+                            "id_pago": group.id_pago,
+                            "cliente": group.cliente,
+                            "credito": cred_tok or st.credit_item.credito,
+                            "asiento_pdf_path": st.asiento_path,
+                            "event_index": st.event_index,
+                            "application_status": "ERROR",
+                            "error_code": st.error.get("error_code"),
+                            **_abono_observability_base(group=group, schedule=schedule),
+                        }
+                    )
+                    group.group_ready_for_apply = False
+                    continue
+
+                if st.status == ABONO_APPLICATION_STATUS_ALREADY_APPLIED:
+                    group_items.append(
+                        _build_already_applied_abono_item(
+                            group, state=st, schedule=schedule
+                        )
+                    )
+                    continue
+
+                assert st.event is not None
+                norm = st.norm_path
+                parsed_events[norm] = st.event
+                pdf_fingerprint = dict(st.pdf_fingerprint)
+                if asiento_metadata_fn is not None and st.requires_pdf_download:
                     try:
-                        pdf_bytes = await download_fn(asiento_path)
-                        pdf_fingerprint["asiento_pdf_hash"] = compute_asiento_pdf_hash(pdf_bytes)
-                        pdf_fingerprint["asiento_pdf_size"] = len(pdf_bytes)
-                        if asiento_metadata_fn is not None:
-                            meta = await asiento_metadata_fn(asiento_path)
-                            pdf_fingerprint["asiento_pdf_etag"] = str(
-                                meta.get("eTag") or meta.get("etag") or ""
-                            )
-                            pdf_fingerprint["asiento_pdf_last_modified"] = meta.get(
-                                "lastModifiedDateTime"
-                            )
+                        meta = await asiento_metadata_fn(st.asiento_path)
+                        pdf_fingerprint["asiento_pdf_etag"] = str(
+                            meta.get("eTag") or meta.get("etag") or ""
+                        )
+                        pdf_fingerprint["asiento_pdf_last_modified"] = meta.get(
+                            "lastModifiedDateTime"
+                        )
                     except Exception:
                         pass
-                    event, err = await _download_and_parse_asiento(
-                        download_fn,
-                        id_pago=group.id_pago,
-                        cliente=group.cliente,
-                        credito=ci.credito,
-                        asiento_path=asiento_path,
-                    )
-                    if err or event is None:
-                        cred_tok = _norm_credito_token(ci.credito)
-                        group_items.append(
-                            {
-                                "id_pago": group.id_pago,
-                                "cliente": group.cliente,
-                                "credito": cred_tok or ci.credito,
-                                "asiento_pdf_path": asiento_path,
-                                "event_index": event_counter,
-                                "application_status": "ERROR",
-                                "error_code": (err or {}).get("error_code", "ASIENTO_PARSE_FAILED"),
-                                **_abono_observability_base(group=group, schedule=schedule),
-                            }
-                        )
-                        group.group_ready_for_apply = False
-                        break
-                    parsed_events[norm or asiento_path] = event
-                    planned_item = await _plan_abono_asiento_item(
-                        group,
-                        credit_item=ci,
-                        asiento_path=asiento_path,
-                        event_index=event_counter,
-                        event=event,
-                        pdf_fingerprint=pdf_fingerprint,
-                        schedule=schedule,
-                        table_download_fn=table_download_fn,
-                        used_application_rows_by_table=reserved_rows,
-                    )
-                    group_items.append(planned_item)
-                    if planned_item.get("application_status") not in (
-                        "WOULD_APPLY",
-                        "WOULD_ADOPT_EXISTING",
-                    ):
-                        group.group_ready_for_apply = False
-                if not group.group_ready_for_apply:
-                    break
-        else:
-            if reconciliation.reconciliation_status == "PASSED":
+                if st.resolved_pdf_source:
+                    pdf_fingerprint["resolved_accounting_pdf_source"] = st.resolved_pdf_source
+
+                planned_item = await _plan_abono_asiento_item(
+                    group,
+                    credit_item=st.credit_item,
+                    asiento_path=st.asiento_path,
+                    event_index=st.event_index,
+                    event=st.event,
+                    pdf_fingerprint=pdf_fingerprint,
+                    schedule=schedule,
+                    table_download_fn=table_download_fn,
+                    used_application_rows_by_table=reserved_rows,
+                )
+                if st.idempotency_key:
+                    planned_item["idempotency_key"] = st.idempotency_key
+                group_items.append(planned_item)
+                if planned_item.get("application_status") not in (
+                    "WOULD_APPLY",
+                    "WOULD_ADOPT_EXISTING",
+                    ABONO_APPLICATION_STATUS_ALREADY_APPLIED,
+                ):
+                    group.group_ready_for_apply = False
+        elif not group.group_ready_for_apply:
+            if reconciliation.reconciliation_status == "PASSED" and not event_states:
                 for item in group.credit_items:
                     for asiento_path in item.asiento_pdf_paths:
                         norm = normalize_sharepoint_path(asiento_path)
@@ -1170,6 +1721,10 @@ async def process_abono_manifest_outputs(
                         )
                         if event:
                             parsed_events[norm or asiento_path] = event
+            group_items = build_abono_observability_items(
+                group, reconciliation, schedule, parsed_events
+            )
+        else:
             group_items = build_abono_observability_items(
                 group, reconciliation, schedule, parsed_events
             )

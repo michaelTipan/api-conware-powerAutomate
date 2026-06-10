@@ -43,6 +43,8 @@ AUTOMATION_LOG_HEADERS = (
     "AsientoPdfHash",
     "AsientoPdfETag",
     "Estado",
+    "TipoAplicacion",
+    "ValorPagadoCliente",
 )
 
 _AUTOMATION_LOG_COL = {name: idx + 1 for idx, name in enumerate(AUTOMATION_LOG_HEADERS)}
@@ -976,11 +978,17 @@ def find_next_available_application_row(
 
 def resolve_planned_application_row(
     app_result: FindApplicationRowResult,
+    *,
+    allow_suggested_row: bool = True,
 ) -> tuple[int | None, str | None]:
     """Resuelve fila destino: fila existente, adoptada o nueva sugerida al final del bloque."""
     if app_result.row is not None:
         return app_result.row, app_result.compare_status
-    if app_result.requires_new_row and app_result.suggested_row is not None:
+    if (
+        allow_suggested_row
+        and app_result.requires_new_row
+        and app_result.suggested_row is not None
+    ):
         return app_result.suggested_row, APLICADO
     return None, None
 
@@ -1436,6 +1444,11 @@ class AutomationLogRecord:
     application_row: int | None = None
     ibr_row: int | None = None
     estado: str = ""
+    id_pago: str = ""
+    credito: str = ""
+    tipo_aplicacion: str = ""
+    valor_pagado_cliente: str = ""
+    accion: str = ""
 
 
 def _automation_log_header_map(ws: Worksheet) -> dict[str, int]:
@@ -1480,6 +1493,11 @@ def load_automation_log_index(workbook: Workbook) -> dict[str, AutomationLogReco
             application_row=int(app_raw) if app_raw.isdigit() else None,
             ibr_row=int(ibr_raw) if ibr_raw.isdigit() else None,
             estado=_cell("Estado") or _cell("Accion"),
+            id_pago=_cell("IdPago"),
+            credito=_cell("Credito"),
+            tipo_aplicacion=_cell("TipoAplicacion"),
+            valor_pagado_cliente=_cell("ValorPagadoCliente"),
+            accion=_cell("Accion"),
         )
     return index
 
@@ -1489,13 +1507,27 @@ def load_automation_log_idempotency_keys(workbook: Workbook) -> set[str]:
     return set(load_automation_log_index(workbook).keys())
 
 
+def _ensure_automation_log_extension_columns(ws: Worksheet) -> dict[str, int]:
+    """Agrega columnas nuevas al final de hojas de log existentes (backward-compatible)."""
+    header_map = _automation_log_header_map(ws)
+    next_col = (max(header_map.values()) + 1) if header_map else 1
+    for name in ("TipoAplicacion", "ValorPagadoCliente"):
+        if name not in header_map:
+            ws.cell(1, next_col, value=name)
+            header_map[name] = next_col
+            next_col += 1
+    return header_map
+
+
 def append_automation_log(workbook: Workbook, log_entry: dict[str, Any]) -> None:
     ws = ensure_automation_log(workbook)
+    header_map = _ensure_automation_log_extension_columns(ws)
     r = (ws.max_row or 1) + 1
     ts = log_entry.get("timestamp") or datetime.now().isoformat(timespec="seconds")
     application_row = log_entry.get("application_row", log_entry.get("fila"))
     ibr_row = log_entry.get("ibr_row")
     accion = str(log_entry.get("accion", "") or "")
+    vp = log_entry.get("valor_pagado_cliente")
     values = {
         "Timestamp": ts,
         "IdPago": log_entry.get("id_pago", ""),
@@ -1511,9 +1543,12 @@ def append_automation_log(workbook: Workbook, log_entry: dict[str, Any]) -> None
         "AsientoPdfHash": log_entry.get("asiento_pdf_hash", ""),
         "AsientoPdfETag": log_entry.get("asiento_pdf_etag", ""),
         "Estado": log_entry.get("estado", accion),
+        "TipoAplicacion": log_entry.get("tipo_aplicacion", ""),
+        "ValorPagadoCliente": vp if vp is not None else "",
     }
-    for name, col in _AUTOMATION_LOG_COL.items():
-        ws.cell(r, col, value=values.get(name, ""))
+    for name, col in header_map.items():
+        if name in values:
+            ws.cell(r, col, value=values.get(name, ""))
 
 
 @dataclass(frozen=True)

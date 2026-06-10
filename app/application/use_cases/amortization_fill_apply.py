@@ -434,6 +434,10 @@ async def _apply_one_table(
             }
             if is_abono:
                 log_row["tipo_aplicacion"] = TipoAplicacion.ABONO.value
+                pa = item.get("payment_application") or {}
+                vp = pa.get("valor_pagado_cliente")
+                if vp is not None:
+                    log_row["valor_pagado_cliente"] = vp
             append_automation_log(wb, log_row)
 
             result_row = {

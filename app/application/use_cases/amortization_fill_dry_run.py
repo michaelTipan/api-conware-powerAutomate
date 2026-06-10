@@ -1286,7 +1286,8 @@ async def run_amortization_fill_dry_run(
         ]
         abono_applicable = (
             all(
-                it.get("application_status") in ("WOULD_APPLY", "WOULD_ADOPT_EXISTING")
+                it.get("application_status")
+                in ("WOULD_APPLY", "WOULD_ADOPT_EXISTING", "ALREADY_APPLIED")
                 and not it.get("error_code")
                 for it in abono_items_only
             )

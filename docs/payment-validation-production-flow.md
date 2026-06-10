@@ -33,16 +33,19 @@ El dry-run lee el manifest extendido de Merge y distingue **PAGO** y **ABONO**:
   - **no** exige extracto (`extracto_pdf_paths` puede estar vacío);
   - **no** busca fecha límite, `due_date_row` ni IBR (`schedule_resolution_status=NOT_REQUIRED`);
   - suma `valor_pagado_cliente` una vez por PDF de asiento y lo compara con `monto_banco` (tolerancia `0.02`);
-  - si el cuadre pasa, planifica `application_row` como la **siguiente fila libre** de Aplicación de Pagos (`NEXT_AVAILABLE_PAYMENT_ROW`);
+  - si el cuadre pasa, planifica `application_row` como la **siguiente fila libre** dentro del bloque conocido de Aplicación de Pagos (`NEXT_AVAILABLE_PAYMENT_ROW`);
+  - **no** extiende la plantilla automáticamente: si no hay fila libre válida → `APPLICATION_PAYMENT_SECTION_FULL` y `can_apply=false`;
   - la fecha de la fila proviene del asiento (`fecha_asiento`) o, en su defecto, `fecha_banco` del grupo;
   - los valores escritos provienen del asiento contable (misma semántica que PAGO en Aplicación de Pagos);
-  - bloquea el grupo si falta un asiento, hay PDF duplicado, el cuadre no pasa o la tabla no es escribible.
+  - bloquea el grupo si falta un asiento pendiente, hay PDF duplicado, el cuadre no pasa o la tabla no es escribible.
+
+**Retry parcial (`AMORTIZACION_PARCIAL`):** antes de exigir el PDF original, el dry-run abre cada tabla y consulta `_AUTOMATION_LOG`. Un evento ya aplicado (`APLICADO` / `ADOPTADO_EXISTENTE`) se reconoce por `IdempotencyKey` o por `IdPago` + `Credito` + `AsientoPdfPath` + `TipoAplicacion=ABONO`; recupera su monto desde `ValorPagadoCliente` del log o desde la fila de aplicación ya escrita; cuenta en el **cuadre híbrido** (`already_applied_amount + pending_amount` vs `monto_banco`); queda como `ALREADY_APPLIED` sin descargar PDF ni reservar fila nueva. Apply en retry escribe **solo** eventos pendientes (`WOULD_APPLY`); no duplica fila, log ni movimiento a `PROCESADOS` para créditos ya aplicados. Si el PDF original falta pero el evento no está en el log, se puede usar `PROCESADOS/` solo como fallback de parseo para eventos pendientes (no sustituye la idempotencia del log).
 
 Manifest legacy (sin `tipo_aplicacion`) se interpreta como **PAGO**.
 
 **Apply ABONO (Fase 5):** escribe la fila planificada, extiende fórmulas O:P, registra `_AUTOMATION_LOG` y mueve asientos a `PROCESADOS/` tras verificación. **No modifica IBR** ni celdas de cuota contractual. Reintento con la misma huella PDF → `SKIPPED_IDEMPOTENT` (sin fila duplicada).
 
-**Apply mixto:** si un ABONO del mismo `ProcessKey` está bloqueado, Apply no escribe ninguna tabla (fail-closed global). No hay transacción distribuida en SharePoint: un apply parcial deja `AMORTIZACION_PARCIAL` y el retry completa solo tablas pendientes vía idempotencia fina.
+**Apply mixto:** si un ABONO del mismo `ProcessKey` está bloqueado, Apply no escribe ninguna tabla (fail-closed global). No hay transacción distribuida en SharePoint: un apply parcial deja `AMORTIZACION_PARCIAL`; el retry requiere dry-run con cuadre híbrido y reconocimiento previo en `_AUTOMATION_LOG` (no basta con que el asiento ya esté en `PROCESADOS/`).
 
 Tras **Apply** exitoso (tabla verificada y eventos `APPLIED`):
 

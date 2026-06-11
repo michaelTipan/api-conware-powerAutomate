@@ -64,12 +64,13 @@ def test_app_source_has_no_unjustified_incompleto_references():
     allowed_files = {
         "app/application/use_cases/payment_validation_finalize.py",
         "app/application/job_status_enrichment.py",
+        "app/application/use_cases/setup_payment_followup_workbooks.py",
     }
     hits: list[str] = []
     for py_file in app_root.rglob("*.py"):
         rel = str(py_file.relative_to(app_root.parent)).replace("\\", "/")
         text = py_file.read_text(encoding="utf-8")
-        if "pagos_incompletos" in text:
+        if "pagos_incompletos" in text and rel not in allowed_files:
             hits.append(f"{rel}: referencia a pagos_incompletos")
             continue
         if "INCOMPLETO" in text and rel not in allowed_files:

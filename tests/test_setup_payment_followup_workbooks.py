@@ -108,7 +108,11 @@ def test_setup_creates_adelantados_when_missing(mock_resolve):
     out = asyncio.run(setup_payment_followup_workbooks(g))
     assert out["status"] == "success"
     assert out["pagos_adelantados"]["created"] is True
-    assert "pagos_incompletos" not in out
+    inc = out["pagos_incompletos"]
+    assert inc["status"] == "deprecated"
+    assert inc["enabled"] is False
+    assert inc["created"] is False
+    assert inc["file_path"] == ""
     assert g.put_count == 1
 
 
@@ -146,8 +150,10 @@ def test_router_payment_followup_setup(mock_resolve):
 
     r = client.post("/graph/sharepoint/payment-validation/setup/payment-followup-workbooks")
     assert r.status_code == 200
-    assert r.json()["pagos_adelantados"]["created"] is True
-    assert "pagos_incompletos" not in r.json()
+    body = r.json()
+    assert body["pagos_adelantados"]["created"] is True
+    assert body["pagos_incompletos"]["status"] == "deprecated"
+    assert body["pagos_incompletos"]["enabled"] is False
 
     r2 = client.post(
         "/graph/sharepoint/payment-validation/setup/payment-followup-workbooks",

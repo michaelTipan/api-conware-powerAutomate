@@ -104,6 +104,20 @@ def adelantados_workbook_relative_path() -> str:
     return resolve_followup_workbook_path(FILENAME_ADELANTADOS)
 
 
+def _deprecated_pagos_incompletos_response() -> dict[str, Any]:
+    """Stub HTTP para compatibilidad Parse JSON; sin acceso a SharePoint ni Graph."""
+    return {
+        "file_path": "",
+        "created": False,
+        "recreated": False,
+        "file_url": None,
+        "structure_ok": False,
+        "sheets": [SHEET_PENDIENTES, SHEET_HISTORICO],
+        "status": "deprecated",
+        "enabled": False,
+    }
+
+
 async def _file_exists(graph: GraphApiPort, site_id: str, drive_id: str, path: str) -> bool:
     try:
         await graph.get_bytes(_content_endpoint(site_id, drive_id, path))
@@ -286,5 +300,6 @@ async def setup_payment_followup_workbooks(
             "structure_ok": out_ad["structure_ok"],
             "sheets": [SHEET_PENDIENTES, SHEET_HISTORICO],
         },
+        "pagos_incompletos": _deprecated_pagos_incompletos_response(),
         "warnings": global_warnings,
     }

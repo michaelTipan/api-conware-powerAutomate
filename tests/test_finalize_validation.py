@@ -864,6 +864,44 @@ def test_finalize_rejects_incompleto_with_clear_code():
     _run(run_test())
 
 
+def test_finalize_incompleto_fail_fast_zero_graph_writes():
+    async def run_test():
+        set_env_vars()
+        client = MockGraphClient()
+        posts_before = len(client.dynamic_folder_children)
+        r, _ = make_distrib_row(estado="INCOMPLETO", valor_int=80, abono_k=10, mora=10)
+        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
+        with pytest.raises(ValueError, match="INCOMPLETO_NOT_SUPPORTED"):
+            await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        assert client.put_calls == []
+        assert client.uploaded_files == {}
+        assert len(client.dynamic_folder_children) == posts_before
+
+    _run(run_test())
+
+
+def test_finalize_validar_parcial_fail_fast_zero_graph_writes():
+    async def run_test():
+        set_env_vars()
+        client = MockGraphClient()
+        posts_before = len(client.dynamic_folder_children)
+        r, _ = make_distrib_row(
+            valor_int=80,
+            abono_k=0,
+            mora=20,
+            estado="VALIDAR_PARCIAL",
+            observacion="Parcial",
+        )
+        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
+        with pytest.raises(ValueError, match="invalid_estado_pago"):
+            await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+        assert client.put_calls == []
+        assert client.uploaded_files == {}
+        assert len(client.dynamic_folder_children) == posts_before
+
+    _run(run_test())
+
+
 def test_finalize_validar_parcial_legacy_rejected_as_invalid_estado():
     async def run_test():
         set_env_vars()

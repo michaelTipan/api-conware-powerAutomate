@@ -105,14 +105,15 @@ def evaluate_abono_apply_block(dry_run: dict[str, Any]) -> dict[str, Any] | None
             "Los asientos del abono no cuadran con el monto bancario; no se modificó ninguna tabla."
         )
         next_action = (
-            "Revise montos de asientos, monto_banco del manifest y result.blocking_abono_groups."
+            "Revise los montos de los asientos y el monto bancario registrado en Distribucion_Abonos. "
+            "Corrija los valores y vuelva a ejecutar la validación previa."
         )
     else:
         user_message = (
             "La amortización no puede aplicarse: hay grupos ABONO con errores documentales o de cuadre."
         )
         next_action = (
-            "Revise result.blocking_abono_groups y corrija asientos o manifest antes de reintentar Apply."
+            "Revise los grupos de abono bloqueados y corrija asientos o documentos antes de volver a aplicar pagos y abonos."
         )
 
     return {

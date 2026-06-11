@@ -1473,7 +1473,7 @@ async def run_amortization_fill_dry_run(
                     "libre de Aplicación de Pagos; el IBR no se modificará."
                 )
                 result_payload["next_action"] = (
-                    "Revise result.items (application_row, valores del asiento) y ejecute Apply si todo es correcto."
+                    "Revise los detalles de cada asiento y fila planificada; si todo cuadra, ejecute la aplicación de pagos y abonos."
                 )
 
         return result_payload

@@ -758,7 +758,7 @@ def _build_already_applied_result(
             "La amortización de este proceso ya fue aplicada; no se repite dry-run ni movimiento de asientos."
         ),
         "next_action": (
-            "Si necesita un nuevo corte, inicie un nuevo proceso (Generate) para ese banco y fecha/lote."
+            "Si requiere un nuevo corte, ejecute la generación del archivo de revisión para ese banco y fecha."
         ),
         **empty_accounting_pdf_move_summary(),
     }
@@ -1220,14 +1220,16 @@ async def run_amortization_fill_apply(
             last_step_status = "FAILED"
             if event_completeness and not event_completeness.get("all_expected_events_completed"):
                 last_error_user = (
-                    "Apply no cerró el proceso: faltan créditos esperados del manifest."
+                    "La aplicación no cerró el proceso: faltan créditos esperados de la unión de documentos."
                 )
                 last_error_next = (
-                    "Revise missing_credit_events en el resultado y corrija el manifest o Merge."
+                    "No continúe con el siguiente paso. Contacte a soporte e indique el banco, la fecha y la etapa del proceso."
                 )
             else:
-                last_error_user = "No se pudo aplicar amortización en ninguna tabla."
-                last_error_next = "Revise apply_errors y el preflight; corrija y reintente apply."
+                last_error_user = "No fue posible aplicar la amortización en ninguna tabla."
+                last_error_next = (
+                    "Revise los errores de la validación previa, corrija los documentos y vuelva a aplicar pagos y abonos."
+                )
 
         tables_uploaded_count = len(tables_uploaded)
         tables_skipped_count = max(0, len(by_table) - tables_uploaded_count)

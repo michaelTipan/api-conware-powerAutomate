@@ -21,7 +21,7 @@ def test_generate_completed_job_includes_user_message_next_action_severity():
     raw = _completed("generate", {"validation_file": "f.xlsx", "summary": {}})
     out = enrich_job_for_http_response(raw)
     assert out["severity"] == "success"
-    assert "archivo de revisión de pagos" in out["user_message"].lower()
+    assert "archivo de revisión" in out["user_message"].lower()
     assert "Procesar" in out["next_action"] or "SI" in out["next_action"]
 
 
@@ -29,7 +29,7 @@ def test_finalize_completed_job_includes_user_message_next_action_severity():
     raw = _completed("finalize", {"validated_rows": 1, "historical_file_path": "h.xlsx"})
     out = enrich_job_for_http_response(raw)
     assert out["severity"] == "success"
-    assert "cerrada correctamente" in out["user_message"].lower()
+    assert "finalizó" in out["user_message"].lower() or "finalizo" in out["user_message"].lower()
     assert "soporte" in out["user_message"].lower() or "asientos" in out["user_message"].lower()
 
 
@@ -41,7 +41,7 @@ def test_notify_completed_job_includes_user_message_next_action_severity():
     out = enrich_job_for_http_response(raw)
     assert out["severity"] == "success"
     assert "correo" in out["user_message"].lower()
-    assert "pdfs" in out["next_action"].lower() or "bandeja" in out["next_action"].lower()
+    assert "pdf" in out["next_action"].lower() or "correo" in out["next_action"].lower()
 
 
 def test_notify_completed_merge_control_active_process_has_warning_severity():
@@ -132,7 +132,8 @@ def test_finalize_failed_amount_mismatch_returns_standard_error_object():
     out = enrich_job_for_http_response(raw)
     e = out["error"]
     assert e["error_code"] == "amount_mismatch"
-    assert "no suman" in e["user_message"].lower()
+    assert "coinciden" in e["user_message"].lower()
+    assert "Distribucion_Pagos" in e["next_action"]
 
 
 def test_notify_failed_string_error_is_converted_to_standard_error_object():
@@ -172,7 +173,8 @@ def test_unknown_error_returns_generic_user_message():
         "error": {"type": "RuntimeError", "message": "totally_unknown_code_xyz_123"},
     }
     out = enrich_job_for_http_response(raw)
-    assert "no pudo clasificar" in out["error"]["user_message"]
+    assert "inconveniente técnico" in out["error"]["user_message"].lower()
+    assert "contacte a soporte" in out["error"]["next_action"].lower()
 
 
 def test_existing_job_fields_remain_backward_compatible():

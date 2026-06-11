@@ -142,11 +142,11 @@ def evaluate_merge_incomplete_block(
         "output_issues": assessment["output_issues"],
         "blocking_reasons": reasons,
         "user_message": (
-            "El proceso todavía tiene grupos incompletos en Merge y no puede continuar "
-            "al llenado de amortización."
+            "La unión de documentos quedó incompleta y no es posible continuar "
+            "con la validación previa de amortización."
         ),
         "next_action": (
-            "Cargue los documentos faltantes y vuelva a ejecutar Merge."
+            "Revise Asientos_Pendientes y cargue los documentos faltantes. Vuelva a ejecutar la unión de PDF."
         ),
     }
 

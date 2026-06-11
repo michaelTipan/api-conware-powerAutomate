@@ -452,7 +452,7 @@ def validate_abono_group_structure(group: AbonoDryRunGroup) -> list[dict[str, An
                 "Monto bancario inválido o ausente",
                 id_pago=id_pago,
                 creditos_seleccionados=creditos_sel,
-                next_action="Verifique monto_banco en el manifest de Merge.",
+                next_action="Verifique el monto bancario en Distribucion_Abonos y vuelva a ejecutar la validación previa.",
             )
         )
     if group.fecha_banco is None:
@@ -517,7 +517,7 @@ def validate_abono_group_structure(group: AbonoDryRunGroup) -> list[dict[str, An
                     id_pago=id_pago,
                     credito=cred,
                     creditos_seleccionados=creditos_sel,
-                    next_action="Confirme RutaTablaAmortizacion en histórico o manifest.",
+                    next_action="Confirme la ruta de la tabla de amortización en el histórico o en SharePoint.",
                 )
             )
         if not item.ruta_asientos_contables:
@@ -554,7 +554,7 @@ def validate_abono_group_structure(group: AbonoDryRunGroup) -> list[dict[str, An
                     id_pago=id_pago,
                     credito=cred,
                     creditos_seleccionados=creditos_sel,
-                    next_action="Confirme ruta/link de extracto en el histórico o manifest.",
+                    next_action="Confirme la ruta o enlace del extracto en el histórico o cargue el PDF en la carpeta del crédito.",
                 )
             )
 
@@ -1075,7 +1075,7 @@ def reconcile_abono_event_states(
                 "La suma híbrida (aplicados + pendientes) no cuadra con el monto bancario",
                 id_pago=group.id_pago,
                 creditos_seleccionados=group.creditos_seleccionados,
-                next_action="Revise montos de asientos, eventos ya aplicados y monto_banco del manifest.",
+                next_action="Revise los montos de los asientos y el monto bancario en Distribucion_Abonos.",
             )
         )
 
@@ -1193,7 +1193,7 @@ async def reconcile_abono_group(
                 "La suma de asientos no cuadra con el monto bancario",
                 id_pago=group.id_pago,
                 creditos_seleccionados=group.creditos_seleccionados,
-                next_action="Revise montos de asientos y monto_banco del manifest.",
+                next_action="Revise los montos de los asientos y el monto bancario en Distribucion_Abonos.",
             )
         )
 
@@ -1501,7 +1501,7 @@ async def _plan_abono_asiento_item(
                     ),
                     "next_action": (
                         "Amplíe de forma controlada la sección en la plantilla de "
-                        "amortización y vuelva a ejecutar Dry-run."
+                        "amortización y vuelva a ejecutar la validación previa. Si el error continúa, contacte a soporte."
                     ),
                     "application_section_full": {
                         "tabla_amortizacion_path": tabla_path,

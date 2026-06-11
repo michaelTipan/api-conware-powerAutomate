@@ -237,7 +237,7 @@ def test_amortization_dry_run_enrichment_helper_multi_events():
     }
     out = enrich_job_for_http_response(raw)
     assert out["severity"] == "success"
-    assert "análisis preliminar" in out["user_message"].lower()
+    assert "validación previa" in out["user_message"].lower()
 
 
 def test_amortization_dry_run_failed_enrichment_manifest_not_found():

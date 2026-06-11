@@ -311,6 +311,11 @@ def workbook_has_distribucion_pagos_sheet(wb: Any) -> bool:
         return False
 
 
+# Versionado del workbook de revisión (Generate escribe v2; Finalize bloquea v1 activo).
+REVIEW_SCHEMA_VERSION_V1 = 1
+REVIEW_SCHEMA_VERSION = 2
+
+
 # Columnas de hoja Control
 class ControlCols:
     CAMPO = "Campo"
@@ -321,6 +326,7 @@ class ControlCols:
     ROW_FECHA_PROCESAMIENTO = "Fecha procesamiento"
     ROW_RESULTADO = "Resultado"
     ROW_ID_PROCESO = "ID Proceso"
+    ROW_REVIEW_SCHEMA_VERSION = "ReviewSchemaVersion"
     ROW_ESTADO = "Estado"
     ROW_FECHA = "Fecha"
     # Valores esperados
@@ -416,10 +422,10 @@ class DistribucionCols:
     DIAS_MORA = "Días mora"
     VALOR_EXTRACTO = "Valor extracto"
     APLICAR_A_EXTRACTO = "Aplicar a extracto"
-    # ABONO_A_CAPITAL: monto adicional aplicado directamente a capital.
-    ABONO_A_CAPITAL = "Abono a capital"
-    # MORA_A_APLICAR: alias legacy para libros antiguos cuyo encabezado visible era «Mora a aplicar».
+    # MORA_A_APLICAR: intereses o mora aplicados al extracto/cuota (v2 columna propia).
     MORA_A_APLICAR = "Mora a aplicar"
+    # ABONO_A_CAPITAL: monto adicional aplicado directamente a capital (independiente de mora).
+    ABONO_A_CAPITAL = "Abono a capital"
     OTROS_VALORES = "Otros valores"
     TOTAL_APLICADO = "Total aplicado"
     SALDO_POR_ASIGNAR = "Saldo por asignar"
@@ -461,6 +467,7 @@ class DistribucionCols:
         DIAS_MORA,
         VALOR_EXTRACTO,
         APLICAR_A_EXTRACTO,
+        MORA_A_APLICAR,
         ABONO_A_CAPITAL,
         OTROS_VALORES,
         TOTAL_APLICADO,
@@ -674,19 +681,61 @@ def normalize_credito_digits(raw: Any) -> str:
 DISTRIB_LEGACY_HEADER_ALIASES: dict[str, str] = {
     "Valor intereses": DistribucionCols.APLICAR_A_EXTRACTO,
     "Abono a K": DistribucionCols.ABONO_A_CAPITAL,
-    DistribucionCols.MORA_A_APLICAR: DistribucionCols.ABONO_A_CAPITAL,
     "Intereses de mora": DistribucionCols.OTROS_VALORES,
     "Estado línea": DistribucionCols.ESTADO_PAGO,
     "Estado": DistribucionCols.ESTADO_PAGO,
 }
 
 
-def normalize_distrib_row_keys(row: dict[str, Any]) -> dict[str, Any]:
+def detect_distrib_schema_version_from_headers(headers: list[Any]) -> int:
+    """v2: mora, capital, otros y saldo por asignar como columnas separadas; v1: ambigua o incompleta."""
+    names = {str(h or "").strip() for h in headers if h is not None and str(h).strip()}
+    canonical = set(names)
+    for legacy, can in DISTRIB_LEGACY_HEADER_ALIASES.items():
+        if legacy in names:
+            canonical.add(can)
+    required = (
+        DistribucionCols.MORA_A_APLICAR,
+        DistribucionCols.ABONO_A_CAPITAL,
+        DistribucionCols.OTROS_VALORES,
+        DistribucionCols.SALDO_POR_ASIGNAR,
+    )
+    if all(col in canonical for col in required):
+        return REVIEW_SCHEMA_VERSION
+    return REVIEW_SCHEMA_VERSION_V1
+
+
+def read_control_review_schema_version(ws_control: Any) -> int | None:
+    """Lee ReviewSchemaVersion de Control; None si no existe (histórico muy antiguo)."""
+    for row in ws_control.iter_rows(min_row=1, max_row=ws_control.max_row or 1, values_only=True):
+        if not row or len(row) < 2:
+            continue
+        campo = str(row[0] or "").strip()
+        if campo == ControlCols.ROW_REVIEW_SCHEMA_VERSION:
+            try:
+                return int(str(row[1] or "").strip())
+            except ValueError:
+                return None
+    return None
+
+
+def normalize_distrib_row_keys(
+    row: dict[str, Any],
+    *,
+    schema_version: int | None = None,
+) -> dict[str, Any]:
     """Rekey filas leídas por encabezado visible hacia constantes canónicas del schema."""
     out: dict[str, Any] = dict(row)
     for legacy, canonical in DISTRIB_LEGACY_HEADER_ALIASES.items():
         if legacy in out and canonical not in out:
             out[canonical] = out[legacy]
+    # v1 ambigua: no reinterpretar «Mora a aplicar» como Abono a capital.
+    if schema_version == REVIEW_SCHEMA_VERSION_V1:
+        if (
+            DistribucionCols.MORA_A_APLICAR in out
+            and DistribucionCols.ABONO_A_CAPITAL not in out
+        ):
+            pass
     return out
 
 

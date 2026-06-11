@@ -162,9 +162,31 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
         "Falta Abono a capital en una fila con Validar Pago = SI.",
         "Complete Abono a capital (o 0). Guarde y vuelva a finalizar.",
     ),
+    "missing_abono_capital": (
+        "Falta Abono a capital en una fila con Validar Pago = SI.",
+        "Complete Abono a capital (o 0). Guarde y vuelva a finalizar.",
+    ),
+    "missing_mora_a_aplicar": (
+        "Falta Mora a aplicar en una fila con Validar Pago = SI.",
+        "Complete Mora a aplicar (o 0). Guarde y vuelva a finalizar.",
+    ),
+    "missing_otros_valores": (
+        "Faltan Otros valores en una fila con Validar Pago = SI.",
+        "Complete Otros valores (o 0). Guarde y vuelva a finalizar.",
+    ),
+    "review_schema_version_1_requires_regenerate": (
+        "El archivo de revisión usa un esquema antiguo (ReviewSchemaVersion 1).",
+        "Ejecute Generate de nuevo para obtener un workbook con columnas Mora a aplicar y "
+        "Abono a capital separadas (versión 2).",
+    ),
     "missing_mora": (
         "Faltan Otros valores en una fila con Validar Pago = SI.",
         "Complete Otros valores (o 0). Guarde y vuelva a finalizar.",
+    ),
+    "duplicate_bank_amount_in_payment_group": (
+        "Monto banco está repetido en más de una fila del mismo ID Pago en Distribución.",
+        "Deje Monto banco solo en la primera fila del pago (como en workbooks generados). "
+        "Borre el valor duplicado en filas secundarias y vuelva a finalizar.",
     ),
     "amount_mismatch": (
         "Los importes que la secretaría repartió no suman el monto del banco para ese ID de pago.",

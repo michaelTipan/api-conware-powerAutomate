@@ -39,6 +39,7 @@ from app.application.services.review_schema import (
     ErroresCols,
     EstadoPago,
     ExtractRole,
+    REVIEW_SCHEMA_VERSION,
     ReviewSheets,
     SUPPORT_NOT_APPLICABLE,
     TipoAplicacion,
@@ -948,7 +949,8 @@ def _build_distribution_rows(
             DistribucionCols.DIAS_MORA: 0,
             DistribucionCols.VALOR_EXTRACTO: extract_value,
             DistribucionCols.VALOR_INTERESES: "",
-            DistribucionCols.ABONO_K: "",
+            DistribucionCols.MORA_A_APLICAR: "",
+            DistribucionCols.ABONO_A_CAPITAL: "",
             DistribucionCols.INTERESES_MORA: "",
             DistribucionCols.TOTAL_APLICADO: "",
             DistribucionCols.SALDO_POR_ASIGNAR: "",
@@ -1104,7 +1106,8 @@ RESUMEN_SUBTITLE = "Vista ejecutiva del lote de validación"
 RESUMEN_SECTION = "MÉTRICAS GENERALES"
 DISTRIB_TITLE = "DISTRIBUCIÓN DE PAGOS — HOJA PRINCIPAL"
 DISTRIB_HELP = (
-    "Complete únicamente las celdas editables: Aplicar a extracto, Abono a capital, Otros valores, "
+    "Complete únicamente las celdas editables: Aplicar a extracto, Mora a aplicar, Abono a capital, "
+    "Otros valores, "
     "Estado Pago y Validar Pago. "
     "Revise los links si necesita validar documentos. Al terminar, vaya a Control y cambie Procesar a SI."
 )
@@ -1573,6 +1576,7 @@ def _protect_distribution_sheet(ws_distribution: Any, first_data_row: int) -> No
 
     editable_names = {
         DistribucionCols.APLICAR_A_EXTRACTO,
+        DistribucionCols.MORA_A_APLICAR,
         DistribucionCols.ABONO_A_CAPITAL,
         DistribucionCols.OTROS_VALORES,
         DistribucionCols.ESTADO_PAGO,
@@ -1723,6 +1727,7 @@ def _write_control_sheet(ws: Any, process_id: str, process_date: date) -> tuple[
     dr = 4
     rows_data = [
         (ControlCols.ROW_ID_PROCESO, process_id),
+        (ControlCols.ROW_REVIEW_SCHEMA_VERSION, REVIEW_SCHEMA_VERSION),
         (ControlCols.ROW_ESTADO, ControlCols.ESTADO_OPTIONS[0]),
         (ControlCols.ROW_FECHA, str(process_date)),
         (ControlCols.ROW_PROCESAR, ControlCols.VAL_PROCESAR_NO),
@@ -1918,9 +1923,10 @@ def _apply_distribution_formulas(ws_distribution: Any, first_data_row: int) -> N
     col_id = get_column_letter(ix(DistribucionCols.ID_PAGO) + 1)
     col_c = get_column_letter(ix(DistribucionCols.MONTO_BANCO) + 1)
     col_i = get_column_letter(ix(DistribucionCols.APLICAR_A_EXTRACTO) + 1)
-    col_j = get_column_letter(ix(DistribucionCols.ABONO_A_CAPITAL) + 1)
-    col_k = get_column_letter(ix(DistribucionCols.OTROS_VALORES) + 1)
-    col_l = get_column_letter(ix(DistribucionCols.TOTAL_APLICADO) + 1)
+    col_j = get_column_letter(ix(DistribucionCols.MORA_A_APLICAR) + 1)
+    col_k = get_column_letter(ix(DistribucionCols.ABONO_A_CAPITAL) + 1)
+    col_l = get_column_letter(ix(DistribucionCols.OTROS_VALORES) + 1)
+    col_total = get_column_letter(ix(DistribucionCols.TOTAL_APLICADO) + 1)
     col_m = get_column_letter(ix(DistribucionCols.SALDO_POR_ASIGNAR) + 1)
     col_a_num = ix(DistribucionCols.ID_PAGO) + 1
 
@@ -1938,22 +1944,24 @@ def _apply_distribution_formulas(ws_distribution: Any, first_data_row: int) -> N
     rng_i = f"${col_i}${first_data_row}:${col_i}${last_row}"
     rng_j = f"${col_j}${first_data_row}:${col_j}${last_row}"
     rng_k = f"${col_k}${first_data_row}:${col_k}${last_row}"
+    rng_l = f"${col_l}${first_data_row}:${col_l}${last_row}"
 
     for row_idx in range(first_data_row, last_row + 1):
         pid = ws_distribution.cell(row=row_idx, column=col_a_num).value
         if pid is None or str(pid).strip() == "":
-            ws_distribution[f"{col_l}{row_idx}"] = None
+            ws_distribution[f"{col_total}{row_idx}"] = None
             ws_distribution[f"{col_m}{row_idx}"] = None
             continue
         k = str(pid).strip()
         crit = f"{col_id}{row_idx}"
         if first_row_of_id.get(k) != row_idx:
-            ws_distribution[f"{col_l}{row_idx}"] = None
+            ws_distribution[f"{col_total}{row_idx}"] = None
         else:
-            ws_distribution[f"{col_l}{row_idx}"] = (
+            ws_distribution[f"{col_total}{row_idx}"] = (
                 f"=SUMIF({rng_a},{crit},{rng_i})"
                 f"+SUMIF({rng_a},{crit},{rng_j})"
                 f"+SUMIF({rng_a},{crit},{rng_k})"
+                f"+SUMIF({rng_a},{crit},{rng_l})"
             )
         if first_row_of_id.get(k) != row_idx:
             ws_distribution[f"{col_m}{row_idx}"] = None
@@ -1964,6 +1972,7 @@ def _apply_distribution_formulas(ws_distribution: Any, first_data_row: int) -> N
             f"-SUMIF({rng_a},{crit},{rng_i})"
             f"-SUMIF({rng_a},{crit},{rng_j})"
             f"-SUMIF({rng_a},{crit},{rng_k})"
+            f"-SUMIF({rng_a},{crit},{rng_l})"
         )
 
 
@@ -2084,6 +2093,7 @@ def _style_distrib_sheet(ws_distribution: Any, header_row: int, first_data_row: 
         DistribucionCols.HEADERS.index(DistribucionCols.MONTO_BANCO) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.VALOR_EXTRACTO) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.APLICAR_A_EXTRACTO) + 1,
+        DistribucionCols.HEADERS.index(DistribucionCols.MORA_A_APLICAR) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.ABONO_A_CAPITAL) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.OTROS_VALORES) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.TOTAL_APLICADO) + 1,
@@ -2091,6 +2101,7 @@ def _style_distrib_sheet(ws_distribution: Any, header_row: int, first_data_row: 
     }
     money_editable_cols = {
         DistribucionCols.HEADERS.index(DistribucionCols.APLICAR_A_EXTRACTO) + 1,
+        DistribucionCols.HEADERS.index(DistribucionCols.MORA_A_APLICAR) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.ABONO_A_CAPITAL) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.OTROS_VALORES) + 1,
     }
@@ -2160,6 +2171,7 @@ def _style_distrib_sheet(ws_distribution: Any, header_row: int, first_data_row: 
             _dc(DistribucionCols.DIAS_MORA) + 1: 10,
             _dc(DistribucionCols.VALOR_EXTRACTO) + 1: 14,
             _dc(DistribucionCols.APLICAR_A_EXTRACTO) + 1: int(DIST_MONEY_COL_WIDTH),
+            _dc(DistribucionCols.MORA_A_APLICAR) + 1: int(DIST_MONEY_COL_WIDTH),
             _dc(DistribucionCols.ABONO_A_CAPITAL) + 1: int(DIST_MONEY_COL_WIDTH),
             _dc(DistribucionCols.OTROS_VALORES) + 1: int(DIST_MONEY_COL_WIDTH),
             _dc(DistribucionCols.TOTAL_APLICADO) + 1: int(DIST_MONEY_COL_WIDTH),

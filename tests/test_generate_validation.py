@@ -344,6 +344,25 @@ def setup_client_structure(client, include_web_urls=False):
     }
 
 
+def setup_triple_credit_client(client, cliente: str = "MULTICRED", credits: tuple[str, ...] = ("258", "265", "270")):
+    """Cliente con varios créditos candidatos para un mismo pago (misma fecha límite)."""
+    client.downloaded_files[resolve_bank_control_file_path(BANK_CODE_BOGOTA)] = (
+        _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
+    )
+    client.folder_children["clientes"] = [make_item(cliente, is_folder=True)]
+    client.folder_children[f"clientes/{cliente}"] = [make_item(c, is_folder=True) for c in credits]
+    due = date(2025, 12, 23)
+    for credit in credits:
+        pdf_path = f"clientes/{cliente}/{credit}/Extracto 2025-12-23 CREDITO # {credit}.pdf"
+        tabla_path = f"clientes/{cliente}/{credit}/Tabla amortizacion {cliente} {credit}.xlsx"
+        client.folder_children[f"clientes/{cliente}/{credit}"] = [
+            make_item(f"Extracto 2025-12-23 CREDITO # {credit}.pdf"),
+            make_item(f"Tabla amortizacion {cliente} {credit}.xlsx"),
+        ]
+        client.downloaded_files[tabla_path] = create_amortization_excel([[due, None, None, 100.0, None]])
+        client.downloaded_files[pdf_path] = create_pdf_bytes("100", due)
+
+
 def load_generated_workbook(client):
     assert client.uploaded_files, "Generate no subió ningún workbook"
     uploaded_key = list(client.uploaded_files.keys())[0]
@@ -473,6 +492,86 @@ def test_generate_multiple_credits_per_payment():
     assert case_rows[0][CasosPagoCols.ID_PAGO] == dist_rows[0][DistribucionCols.ID_PAGO]
     assert case_rows[0][CasosPagoCols.CLIENTE] == "GEOEXCON"
     assert any(endpoint.endswith("/banco.xlsx:/content") for endpoint in client.requested_endpoints)
+
+
+def test_generate_monto_banco_not_duplicated_with_three_credit_candidates():
+    """Monto banco pertenece al ID Pago: solo la primera fila del grupo lleva valor (evita SUMIF×N)."""
+
+    async def run_test():
+        set_env_vars()
+        client = MockGraphClient()
+        client.children = []
+        setup_triple_credit_client(client)
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
+            [[datetime(2025, 12, 23), 1000, "MULTICRED", ""]]
+        )
+        fake_uuid = mock.Mock()
+        fake_uuid.__str__ = lambda self: "TEST-001-aaaa-bbbb-cccc-dddddddddddd"
+        extractor = make_pdf_extractor_mock(client)
+        with (
+            mock.patch(
+                "app.application.use_cases.payment_validation_generate.uuid.uuid4",
+                return_value=fake_uuid,
+            ),
+            mock.patch(
+                "app.application.use_cases.payment_validation_generate.extract_total_a_pagar_from_pdf",
+                side_effect=extractor,
+            ),
+            mock.patch(
+                "app.application.use_cases.payment_validation_generate.extract_fecha_limite_pago_from_pdf",
+                side_effect=_fake_fecha_limite_from_marker_bytes(),
+            ),
+        ):
+            await generate_payment_validation(client, date(2025, 12, 23))
+
+        workbook = load_generated_workbook(client)
+        ws = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
+        dist_rows = sheet_to_dicts(ws)
+        case_rows = sheet_to_dicts(workbook[ReviewSheets.CASOS_PAGO])
+
+        assert len(dist_rows) == 3
+        assert {r[DistribucionCols.CREDITO] for r in dist_rows} == {"258", "265", "270"}
+        assert {r[DistribucionCols.ID_PAGO] for r in dist_rows} == {"TEST-001"}
+        assert case_rows[0][CasosPagoCols.ID_PAGO] == "TEST-001"
+        assert case_rows[0][CasosPagoCols.MONTO_BANCO] == 1000
+
+        montos = [r[DistribucionCols.MONTO_BANCO] for r in dist_rows]
+        assert montos[0] == 1000
+        assert montos[1] in (None, "")
+        assert montos[2] in (None, "")
+
+        dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
+        last_row = ws.max_row
+        col_a = get_column_letter(_dist_col(DistribucionCols.ID_PAGO))
+        col_c = get_column_letter(_dist_col(DistribucionCols.MONTO_BANCO))
+        col_i = get_column_letter(_dist_col(DistribucionCols.APLICAR_A_EXTRACTO))
+        col_j = get_column_letter(_dist_col(DistribucionCols.MORA_A_APLICAR))
+        col_k = get_column_letter(_dist_col(DistribucionCols.ABONO_A_CAPITAL))
+        col_l = get_column_letter(_dist_col(DistribucionCols.OTROS_VALORES))
+        saldo_formula = ws.cell(dr, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value
+        total_formula = ws.cell(dr, _dist_col(DistribucionCols.TOTAL_APLICADO)).value
+        crit = f"{col_a}{dr}"
+        rng_a = f"${col_a}${dr}:${col_a}${last_row}"
+        assert saldo_formula == (
+            f"=SUMIF({rng_a},{crit},${col_c}${dr}:${col_c}${last_row})"
+            f"-SUMIF({rng_a},{crit},${col_i}${dr}:${col_i}${last_row})"
+            f"-SUMIF({rng_a},{crit},${col_j}${dr}:${col_j}${last_row})"
+            f"-SUMIF({rng_a},{crit},${col_k}${dr}:${col_k}${last_row})"
+            f"-SUMIF({rng_a},{crit},${col_l}${dr}:${col_l}${last_row})"
+        )
+        assert total_formula == (
+            f"=SUMIF({rng_a},{crit},${col_i}${dr}:${col_i}${last_row})"
+            f"+SUMIF({rng_a},{crit},${col_j}${dr}:${col_j}${last_row})"
+            f"+SUMIF({rng_a},{crit},${col_k}${dr}:${col_k}${last_row})"
+            f"+SUMIF({rng_a},{crit},${col_l}${dr}:${col_l}${last_row})"
+        )
+        assert isinstance(saldo_formula, str) and saldo_formula.startswith("=")
+        assert saldo_formula.upper().count("SUMIF") == 5
+        assert f"${col_c}$" in saldo_formula
+        assert ws.cell(dr + 1, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value in (None, "")
+        assert ws.cell(dr + 2, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value in (None, "")
+
+    asyncio.run(run_test())
 
 
 def test_generate_mora_fields_are_empty():
@@ -2186,8 +2285,10 @@ def test_generate_adds_visual_formulas_dropdowns_and_hidden_lists_sheet():
 
     ws_dist = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
-    assert ws_dist[f"L{dr}"].value.startswith("=")
-    assert "SUMIF" in ws_dist[f"M{dr}"].value.upper()
+    c_total = _dist_col(DistribucionCols.TOTAL_APLICADO)
+    c_saldo = _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)
+    assert ws_dist.cell(dr, c_total).value.startswith("=")
+    assert "SUMIF" in str(ws_dist.cell(dr, c_saldo).value).upper()
 
     validation_formulas = [dv.formula1 for dv in ws_control.data_validations.dataValidation]
     assert "=_Listas!$A$1:$A$5" in validation_formulas
@@ -2220,13 +2321,23 @@ def test_generate_pendiente_mora_keeps_total_blank_and_saldo_formula():
         ws = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
 
-        assert ws[f"N{dr}"].value == EstadoPago.ATRASADO
-        assert isinstance(ws[f"L{dr}"].value, str) and ws[f"L{dr}"].value.startswith("=")
-        m_formula = ws[f"M{dr}"].value
+        c_estado = _dist_col(DistribucionCols.ESTADO_PAGO)
+        c_total = _dist_col(DistribucionCols.TOTAL_APLICADO)
+        c_saldo = _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)
+        assert ws.cell(dr, c_estado).value == EstadoPago.ATRASADO
+        assert isinstance(ws.cell(dr, c_total).value, str) and ws.cell(dr, c_total).value.startswith("=")
+        m_formula = ws.cell(dr, c_saldo).value
         assert isinstance(m_formula, str) and m_formula.startswith("=")
-        assert m_formula.upper().count("SUMIF") == 4
-        assert "$L$" not in m_formula
-        assert "$I$" in m_formula and "$J$" in m_formula and "$K$" in m_formula and "$D$" in m_formula
+        assert m_formula.upper().count("SUMIF") == 5
+        col_total = get_column_letter(c_total)
+        assert f"${col_total}$" not in m_formula
+        col_i = get_column_letter(_dist_col(DistribucionCols.APLICAR_A_EXTRACTO))
+        col_j = get_column_letter(_dist_col(DistribucionCols.MORA_A_APLICAR))
+        col_k = get_column_letter(_dist_col(DistribucionCols.ABONO_A_CAPITAL))
+        col_l = get_column_letter(_dist_col(DistribucionCols.OTROS_VALORES))
+        col_d = get_column_letter(_dist_col(DistribucionCols.MONTO_BANCO))
+        assert f"${col_i}$" in m_formula and f"${col_j}$" in m_formula
+        assert f"${col_k}$" in m_formula and f"${col_l}$" in m_formula and f"${col_d}$" in m_formula
 
     asyncio.run(run_test())
 
@@ -2530,20 +2641,21 @@ def test_saldo_por_asignar_formula_uses_group_assignments():
     f = ws.cell(dr, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value
     assert isinstance(f, str) and f.startswith("=")
     uf = f.upper()
-    assert uf.count("SUMIF") == 4
+    assert uf.count("SUMIF") == 5
     col_a = get_column_letter(_dist_col(DistribucionCols.ID_PAGO))
     col_c = get_column_letter(_dist_col(DistribucionCols.MONTO_BANCO))
-    col_i = get_column_letter(_dist_col(DistribucionCols.VALOR_INTERESES))
-    col_j = get_column_letter(_dist_col(DistribucionCols.ABONO_K))
-    col_k = get_column_letter(_dist_col(DistribucionCols.INTERESES_MORA))
+    col_i = get_column_letter(_dist_col(DistribucionCols.APLICAR_A_EXTRACTO))
+    col_j = get_column_letter(_dist_col(DistribucionCols.MORA_A_APLICAR))
+    col_k = get_column_letter(_dist_col(DistribucionCols.ABONO_A_CAPITAL))
+    col_l = get_column_letter(_dist_col(DistribucionCols.OTROS_VALORES))
     assert f"${col_a}$" in f
     assert f"${col_c}$" in f
     assert f"${col_i}$" in f
     assert f"${col_j}$" in f
     assert f"${col_k}$" in f
-    assert "$L$" not in f
-    col_l = get_column_letter(_dist_col(DistribucionCols.TOTAL_APLICADO))
-    assert f"${col_l}$" not in f
+    assert f"${col_l}$" in f
+    col_total = get_column_letter(_dist_col(DistribucionCols.TOTAL_APLICADO))
+    assert f"${col_total}$" not in f
 
 
 def test_saldo_por_asignar_updates_for_multi_credit_payment():
@@ -2587,15 +2699,17 @@ def test_total_aplicado_formula_uses_group_assignments():
     f = ws.cell(dr, _dist_col(DistribucionCols.TOTAL_APLICADO)).value
     assert isinstance(f, str) and f.startswith("=")
     uf = f.upper()
-    assert uf.count("SUMIF") == 3
+    assert uf.count("SUMIF") == 4
     col_a = get_column_letter(_dist_col(DistribucionCols.ID_PAGO))
-    col_i = get_column_letter(_dist_col(DistribucionCols.VALOR_INTERESES))
-    col_j = get_column_letter(_dist_col(DistribucionCols.ABONO_K))
-    col_k = get_column_letter(_dist_col(DistribucionCols.INTERESES_MORA))
+    col_i = get_column_letter(_dist_col(DistribucionCols.APLICAR_A_EXTRACTO))
+    col_j = get_column_letter(_dist_col(DistribucionCols.MORA_A_APLICAR))
+    col_k = get_column_letter(_dist_col(DistribucionCols.ABONO_A_CAPITAL))
+    col_l = get_column_letter(_dist_col(DistribucionCols.OTROS_VALORES))
     assert f"${col_a}$" in f
     assert f"${col_i}$" in f
     assert f"${col_j}$" in f
     assert f"${col_k}$" in f
+    assert f"${col_l}$" in f
     col_m = get_column_letter(_dist_col(DistribucionCols.SALDO_POR_ASIGNAR))
     assert f"${col_m}$" not in f
 
@@ -2610,19 +2724,21 @@ def test_saldo_por_asignar_still_uses_group_assignments():
     f = ws.cell(dr, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value
     assert isinstance(f, str) and f.startswith("=")
     uf = f.upper()
-    assert uf.count("SUMIF") == 4
+    assert uf.count("SUMIF") == 5
     col_a = get_column_letter(_dist_col(DistribucionCols.ID_PAGO))
     col_c = get_column_letter(_dist_col(DistribucionCols.MONTO_BANCO))
-    col_i = get_column_letter(_dist_col(DistribucionCols.VALOR_INTERESES))
-    col_j = get_column_letter(_dist_col(DistribucionCols.ABONO_K))
-    col_k = get_column_letter(_dist_col(DistribucionCols.INTERESES_MORA))
+    col_i = get_column_letter(_dist_col(DistribucionCols.APLICAR_A_EXTRACTO))
+    col_j = get_column_letter(_dist_col(DistribucionCols.MORA_A_APLICAR))
+    col_k = get_column_letter(_dist_col(DistribucionCols.ABONO_A_CAPITAL))
+    col_l = get_column_letter(_dist_col(DistribucionCols.OTROS_VALORES))
     assert f"${col_a}$" in f
     assert f"${col_c}$" in f
     assert f"${col_i}$" in f
     assert f"${col_j}$" in f
     assert f"${col_k}$" in f
-    col_l = get_column_letter(_dist_col(DistribucionCols.TOTAL_APLICADO))
-    assert f"${col_l}$" not in f
+    assert f"${col_l}$" in f
+    col_total = get_column_letter(_dist_col(DistribucionCols.TOTAL_APLICADO))
+    assert f"${col_total}$" not in f
 
 
 def _top_border_style(cell) -> str | None:
@@ -2908,7 +3024,7 @@ def test_distribucion_headers_do_not_include_legacy_names():
     assert "Intereses de mora" not in headers
     assert DistribucionCols.APLICAR_A_EXTRACTO in headers
     assert DistribucionCols.ABONO_A_CAPITAL in headers
-    assert DistribucionCols.MORA_A_APLICAR not in headers
+    assert DistribucionCols.MORA_A_APLICAR in headers
     assert DistribucionCols.OTROS_VALORES in headers
     assert DistribucionCols.ESTADO_PAGO in headers
     assert DistribucionCols.VALIDAR_PAGO in headers

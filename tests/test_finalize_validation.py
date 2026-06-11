@@ -18,6 +18,7 @@ from app.application.services.review_schema import (
     DistribucionCols,
     EstadoLinea,
     EstadoPago,
+    REVIEW_SCHEMA_VERSION,
     ReviewSheets,
     SUPPORT_NOT_APPLICABLE,
     TipoAplicacion,
@@ -184,8 +185,11 @@ def make_distrib_row(
     fecha_banco=None,
     fecha_limite=None,
     valor_int=70,
-    abono_k=20,
-    mora=10,
+    mora_a_aplicar=10,
+    abono_capital=20,
+    otros=0,
+    abono_k=None,
+    mora=None,
     monto_banco=100,
     estado=EstadoLinea.VALIDAR,
     validar_pago=ValidarPago.SI,
@@ -213,7 +217,11 @@ def make_distrib_row(
             return float(x)
         return 0.0
 
-    total = _n(valor_int) + _n(abono_k) + _n(mora)
+    if abono_k is not None:
+        abono_capital = abono_k
+    if mora is not None:
+        mora_a_aplicar = mora
+    total = _n(valor_int) + _n(mora_a_aplicar) + _n(abono_capital) + _n(otros)
     vals = {
         DistribucionCols.ID_PAGO: id_pago,
         DistribucionCols.CLIENTE: cliente,
@@ -224,8 +232,9 @@ def make_distrib_row(
         DistribucionCols.DIAS_MORA: 0,
         DistribucionCols.VALOR_EXTRACTO: 100,
         DistribucionCols.APLICAR_A_EXTRACTO: valor_int,
-        DistribucionCols.ABONO_A_CAPITAL: abono_k,
-        DistribucionCols.OTROS_VALORES: mora,
+        DistribucionCols.MORA_A_APLICAR: mora_a_aplicar,
+        DistribucionCols.ABONO_A_CAPITAL: abono_capital,
+        DistribucionCols.OTROS_VALORES: otros,
         DistribucionCols.TOTAL_APLICADO: total,
         DistribucionCols.SALDO_POR_ASIGNAR: 0,
         DistribucionCols.ESTADO_PAGO: estado,
@@ -300,6 +309,7 @@ def create_review_workbook(
     if include_control:
         ws_ctrl.append([ControlCols.CAMPO, ControlCols.VALOR])
         ws_ctrl.append([ControlCols.ROW_PROCESAR, procesar])
+        ws_ctrl.append([ControlCols.ROW_REVIEW_SCHEMA_VERSION, REVIEW_SCHEMA_VERSION])
         ws_ctrl.append([ControlCols.ROW_ESTADO, estado])
 
     ws_casos = wb.create_sheet(ReviewSheets.CASOS_PAGO)
@@ -510,7 +520,7 @@ def test_finalize_validar_requires_intereses_mora_filled():
         client = MockGraphClient()
         r, _ = make_distrib_row(valor_int=100, abono_k=0, mora="")
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        with pytest.raises(ValueError, match="missing_mora"):
+        with pytest.raises(ValueError, match="missing_mora_a_aplicar"):
             await finalize_payment_validation(client, "val_latest.xlsx")
 
     _run(run_test())
@@ -587,7 +597,7 @@ def test_finalize_treats_empty_mora_as_invalid_for_validar():
         client = MockGraphClient()
         r_bad, _ = make_distrib_row(mora="")
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r_bad, None)])
-        with pytest.raises(ValueError, match="missing_mora"):
+        with pytest.raises(ValueError, match="missing_mora_a_aplicar"):
             await finalize_payment_validation(client, "val_latest.xlsx")
 
     _run(run_test())
@@ -659,7 +669,7 @@ def test_finalize_validar_requires_abono_k():
         client = MockGraphClient()
         r, _ = make_distrib_row(abono_k="")
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        with pytest.raises(ValueError, match="missing_abono_k"):
+        with pytest.raises(ValueError, match="missing_abono_capital"):
             await finalize_payment_validation(client, "val_latest.xlsx")
 
     _run(run_test())
@@ -942,10 +952,12 @@ def test_finalize_multi_credito_same_pago_cuadra():
         )
         r1 = list(r1)
         r2 = list(r2)
-        r1[2] = 100
-        r2[2] = 100
+        monto_col = DistribucionCols.HEADERS.index(DistribucionCols.MONTO_BANCO)
+        r1[monto_col] = 100
+        r2[monto_col] = None
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(
-            distrib_specs=[(r1, h1), (r2, h2)]
+            casos_data=[["ID1", date(2026, 5, 10), "CLI", "concepto", 100, ""]],
+            distrib_specs=[(r1, h1), (r2, h2)],
         )
         res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         assert res["status"] == "success"

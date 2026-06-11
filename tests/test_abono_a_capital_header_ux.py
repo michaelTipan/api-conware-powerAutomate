@@ -1,4 +1,4 @@
-"""UX: encabezado «Abono a capital» en workbooks nuevos; lectura legacy «Mora a aplicar»."""
+"""Schema v2: columnas Mora a aplicar y Abono a capital independientes."""
 
 import asyncio
 import io
@@ -10,9 +10,12 @@ from openpyxl.utils import get_column_letter
 
 from app.application.services.review_schema import (
     ApplicationSubtype,
+    ControlCols,
     DistribucionCols,
+    REVIEW_SCHEMA_VERSION,
     ReviewSheets,
     TipoAplicacionVisible,
+    detect_distrib_schema_version_from_headers,
     normalize_distrib_row_keys,
     resolve_application_policy,
 )
@@ -29,23 +32,14 @@ from tests.test_generate_validation import (
     _header_row_index,
     run_generate,
 )
-from tests.test_pago_y_abono_capital_finalize import (
-    make_pago_y_abono_capital_row,
-)
+from tests.test_pago_y_abono_capital_finalize import make_pago_y_abono_capital_row
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def _legacy_distrib_headers() -> list[str]:
-    headers = list(DistribucionCols.HEADERS)
-    idx = headers.index(DistribucionCols.ABONO_A_CAPITAL)
-    headers[idx] = DistribucionCols.MORA_A_APLICAR
-    return headers
-
-
-def test_generate_new_workbook_uses_abono_a_capital_header():
+def test_generate_v2_has_both_mora_and_capital_headers():
     _, _, wb = run_generate(
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
@@ -53,23 +47,28 @@ def test_generate_new_workbook_uses_abono_a_capital_header():
     ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     hr = _header_row_index(ws, DistribucionCols.ID_PAGO)
     headers = [c.value for c in ws[hr]]
+    assert DistribucionCols.MORA_A_APLICAR in headers
     assert DistribucionCols.ABONO_A_CAPITAL in headers
-    assert DistribucionCols.MORA_A_APLICAR not in headers
+    assert headers.count(DistribucionCols.MORA_A_APLICAR) == 1
+    assert headers.count(DistribucionCols.ABONO_A_CAPITAL) == 1
+    assert detect_distrib_schema_version_from_headers(headers) == REVIEW_SCHEMA_VERSION
 
 
-def test_generate_does_not_emit_both_capital_headers():
+def test_generate_control_writes_review_schema_version_2():
     _, _, wb = run_generate(
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
-    hr = _header_row_index(ws, DistribucionCols.ID_PAGO)
-    headers = [str(c.value or "") for c in ws[hr]]
-    assert headers.count(DistribucionCols.ABONO_A_CAPITAL) == 1
-    assert DistribucionCols.MORA_A_APLICAR not in headers
+    ws = wb[ReviewSheets.CONTROL]
+    found = False
+    for row in ws.iter_rows(values_only=True):
+        if row and row[0] == ControlCols.ROW_REVIEW_SCHEMA_VERSION:
+            assert int(row[1]) == REVIEW_SCHEMA_VERSION
+            found = True
+    assert found
 
 
-def test_saldo_formula_references_abono_a_capital_column():
+def test_saldo_formula_uses_all_four_assignment_columns():
     _, _, wb = run_generate(
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
@@ -77,12 +76,17 @@ def test_saldo_formula_references_abono_a_capital_column():
     ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     formula = ws.cell(dr, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value
-    col_j = get_column_letter(_dist_col(DistribucionCols.ABONO_A_CAPITAL))
-    assert isinstance(formula, str) and formula.startswith("=")
-    assert f"${col_j}$" in formula
+    for col_name in (
+        DistribucionCols.APLICAR_A_EXTRACTO,
+        DistribucionCols.MORA_A_APLICAR,
+        DistribucionCols.ABONO_A_CAPITAL,
+        DistribucionCols.OTROS_VALORES,
+    ):
+        letter = get_column_letter(_dist_col(col_name))
+        assert f"${letter}$" in formula
 
 
-def test_finalize_accepts_new_workbook_with_abono_a_capital_header():
+def test_finalize_accepts_v2_workbook():
     async def run_test():
         set_env_vars()
         client = MockGraphClient()
@@ -96,62 +100,49 @@ def test_finalize_accepts_new_workbook_with_abono_a_capital_header():
     _run(run_test())
 
 
-def test_finalize_accepts_legacy_workbook_with_mora_a_aplicar_header():
+def test_finalize_rejects_v1_review_workbook():
     async def run_test():
         set_env_vars()
         client = MockGraphClient()
-        r, _ = make_distrib_row(valor_int=800, abono_k=200, mora=0, monto_banco=1000)
+        r, _ = make_distrib_row(valor_int=70, mora_a_aplicar=10, abono_capital=20)
+        headers_v1 = list(DistribucionCols.HEADERS)
+        idx_cap = headers_v1.index(DistribucionCols.ABONO_A_CAPITAL)
+        headers_v1.pop(headers_v1.index(DistribucionCols.MORA_A_APLICAR))
         wb = openpyxl.Workbook()
         ws_ctrl = wb.active
         ws_ctrl.title = ReviewSheets.CONTROL
         ws_ctrl.append(["Campo", "Valor"])
-        ws_ctrl.append(["Procesar", "SI"])
-        ws_ctrl.append(["Estado", "EN_REVISION"])
+        ws_ctrl.append([ControlCols.ROW_PROCESAR, "SI"])
+        ws_ctrl.append([ControlCols.ROW_REVIEW_SCHEMA_VERSION, 1])
+        ws_ctrl.append([ControlCols.ROW_ESTADO, "EN_REVISION"])
+        from app.application.services.review_schema import CasosPagoCols
+
         ws_casos = wb.create_sheet(ReviewSheets.CASOS_PAGO)
-        ws_casos.append(["ID Pago", "Fecha banco", "Cliente", "Concepto banco", "Monto banco", "Observación"])
-        ws_casos.append(["ID1", None, "CLI", "c", 1000, ""])
+        ws_casos.append(CasosPagoCols.HEADERS)
+        ws_casos.append(["ID1", None, "CLI", "c", 100, ""])
         ws_dist = wb.create_sheet(ReviewSheets.DISTRIBUCION)
-        legacy_headers = _legacy_distrib_headers()
-        ws_dist.append(legacy_headers)
+        ws_dist.append(headers_v1)
         vals = dict(zip(DistribucionCols.HEADERS, r))
-        legacy_row = [
-            vals.get(DistribucionCols.ABONO_A_CAPITAL, "")
-            if h == DistribucionCols.MORA_A_APLICAR
-            else vals.get(h, "")
-            for h in legacy_headers
-        ]
-        ws_dist.append(legacy_row)
+        row_v1 = [vals.get(h, "") for h in headers_v1]
+        ws_dist.append(row_v1)
         buf = io.BytesIO()
         wb.save(buf)
         client.downloaded_files["revision/val_latest.xlsx"] = buf.getvalue()
-        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
-        assert res["status"] == "success"
+        with pytest.raises(ValueError, match="review_schema_version_1_requires_regenerate"):
+            await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
 
     _run(run_test())
 
 
-def test_normalize_distrib_row_keys_maps_legacy_mora_header():
+def test_legacy_v1_row_normalize_does_not_map_mora_to_capital():
     row = normalize_distrib_row_keys(
-        {
-            DistribucionCols.MORA_A_APLICAR: 200,
-            DistribucionCols.APLICAR_A_EXTRACTO: 800,
-        }
+        {DistribucionCols.MORA_A_APLICAR: 50, DistribucionCols.APLICAR_A_EXTRACTO: 100},
+        schema_version=1,
     )
-    assert row[DistribucionCols.ABONO_A_CAPITAL] == 200
-    assert DistribucionCols.ABONO_A_CAPITAL in row
+    assert row[DistribucionCols.MORA_A_APLICAR] == 50
+    assert DistribucionCols.ABONO_A_CAPITAL not in row
 
 
-def test_abono_mora_policy_does_not_use_capital_column_for_subtype():
+def test_abono_mora_policy_independent_of_capital_column():
     policy = resolve_application_policy(TipoAplicacionVisible.ABONO_MORA, from_bank=False)
     assert policy.subtipo_aplicacion == ApplicationSubtype.MORA
-    assert policy.tipo_aplicacion_canonica == "ABONO"
-
-
-def test_legacy_historical_row_keys_remain_readable():
-    legacy = {
-        DistribucionCols.MORA_A_APLICAR: 50,
-        DistribucionCols.APLICAR_A_EXTRACTO: 100,
-        DistribucionCols.OTROS_VALORES: 10,
-    }
-    normalized = normalize_distrib_row_keys(legacy)
-    assert normalized[DistribucionCols.ABONO_A_CAPITAL] == 50

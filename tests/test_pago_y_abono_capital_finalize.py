@@ -47,19 +47,21 @@ def make_pago_y_abono_capital_row(
     *,
     valor_extracto: float,
     abono_capital: float,
-    mora_intereses: float = 0,
+    mora_a_aplicar: float = 0,
+    otros: float = 0,
     saldo_por_asignar: float = 0,
     monto_banco: float = 1000,
     estado: str = EstadoPago.NORMAL,
     id_pago: str = "PYAC1",
 ):
-    total = valor_extracto + abono_capital + mora_intereses
+    total = valor_extracto + mora_a_aplicar + abono_capital + otros
     row, hl = make_distrib_row(
         id_pago=id_pago,
         monto_banco=monto_banco,
         valor_int=valor_extracto,
-        abono_k=abono_capital,
-        mora=mora_intereses,
+        mora_a_aplicar=mora_a_aplicar,
+        abono_capital=abono_capital,
+        otros=otros,
         estado=estado,
         validar_pago=ValidarPago.SI,
     )
@@ -147,7 +149,8 @@ def test_pago_y_abono_capital_atrasado_cierra_como_pago():
         r, _ = make_pago_y_abono_capital_row(
             valor_extracto=700,
             abono_capital=300,
-            mora_intereses=0,
+            mora_a_aplicar=0,
+            otros=0,
             estado=EstadoPago.ATRASADO,
             monto_banco=1000,
         )
@@ -180,9 +183,12 @@ def test_pago_y_abono_capital_atrasado_cierra_como_pago():
 
 
 def test_distribucion_column_semantics_documented():
-    """Canónico «Abono a capital»; legacy «Mora a aplicar» solo lectura; mora adicional en Otros valores."""
+    """v2: Mora a aplicar y Abono a capital son columnas independientes; Otros valores aparte."""
     assert DistribucionCols.ABONO_A_CAPITAL == "Abono a capital"
     assert DistribucionCols.MORA_A_APLICAR == "Mora a aplicar"
     assert DistribucionCols.ABONO_A_CAPITAL != DistribucionCols.MORA_A_APLICAR
-    assert DistribucionCols.INTERESES_MORA == DistribucionCols.OTROS_VALORES
-    assert DistribucionCols.APLICAR_A_EXTRACTO == "Aplicar a extracto"
+    assert DistribucionCols.MORA_A_APLICAR in DistribucionCols.HEADERS
+    assert DistribucionCols.ABONO_A_CAPITAL in DistribucionCols.HEADERS
+    idx_mora = DistribucionCols.HEADERS.index(DistribucionCols.MORA_A_APLICAR)
+    idx_cap = DistribucionCols.HEADERS.index(DistribucionCols.ABONO_A_CAPITAL)
+    assert idx_mora < idx_cap

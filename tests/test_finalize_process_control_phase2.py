@@ -10,7 +10,13 @@ import httpx
 import openpyxl
 import pytest
 
-from app.application.services.review_schema import ControlCols, DistribucionCols, ReviewSheets
+from app.application.services.review_schema import (
+    REVIEW_SCHEMA_VERSION,
+    CasosPagoCols,
+    ControlCols,
+    DistribucionCols,
+    ReviewSheets,
+)
 from app.application.use_cases.payment_validation_finalize import finalize_payment_validation
 from app.application.use_cases.setup_merge_control_workbook import (
     PROCESS_CONTROL_BANK_FILE_BANCOLOMBIA,
@@ -39,10 +45,42 @@ def _review_xlsx_ready() -> bytes:
     ws_ctrl = wb.active
     ws_ctrl.title = ReviewSheets.CONTROL
     ws_ctrl.append([ControlCols.ROW_PROCESAR, ControlCols.VAL_PROCESAR_SI])
+    ws_ctrl.append([ControlCols.ROW_REVIEW_SCHEMA_VERSION, REVIEW_SCHEMA_VERSION])
     ws_ctrl.append([ControlCols.ROW_ESTADO, "EN_REVISION"])
+    ws_casos = wb.create_sheet(ReviewSheets.CASOS_PAGO)
+    ws_casos.append(CasosPagoCols.HEADERS)
+    ws_casos.append(["ID1", None, "CLI", "concepto", 100, ""])
     ws_dist = wb.create_sheet(ReviewSheets.DISTRIBUCION)
-    # Finalize requiere al menos la columna Link extracto.
-    ws_dist.append([DistribucionCols.ID_PAGO, DistribucionCols.LINK_EXTRACTO])
+    ws_dist.append(DistribucionCols.HEADERS)
+    ws_dist.append(
+        [
+            "ID1",
+            "CLI",
+            "CRED",
+            100,
+            None,
+            None,
+            0,
+            100,
+            70,
+            10,
+            20,
+            0,
+            100,
+            0,
+            "NORMAL",
+            "SI",
+            "",
+            "clientes/CLI/CRED/extractos/e1.pdf",
+            "",
+            "",
+            "",
+            "clientes/CLI/CRED",
+            "",
+            "",
+            "",
+        ]
+    )
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

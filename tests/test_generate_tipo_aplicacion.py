@@ -71,7 +71,9 @@ def test_bank_header_tipo_aplicacion_normalized_variants(header):
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
             result = await generate_payment_validation(client, date(2026, 5, 26))
         assert result["pagos_detectados"] == 1
-        assert ReviewSheets.DISTRIBUCION in load_generated_workbook(client).sheetnames
+        wb = load_generated_workbook(client)
+        assert ReviewSheets.DISTRIBUCION_PAGOS in wb.sheetnames
+        assert ReviewSheets.DISTRIBUCION not in wb.sheetnames
 
     asyncio.run(_run())
 
@@ -131,7 +133,17 @@ def test_transaccion_column_can_be_in_position_e():
     asyncio.run(_run())
 
 
-@pytest.mark.parametrize("raw,expected", [("PAGO", TipoAplicacion.PAGO), ("pago", TipoAplicacion.PAGO), ("abono", TipoAplicacion.ABONO)])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("PAGO", TipoAplicacion.PAGO),
+        ("pago", TipoAplicacion.PAGO),
+        ("PAGO Y ABONO CAPITAL", TipoAplicacion.PAGO),
+        ("ABONO CAPITAL", TipoAplicacion.ABONO),
+        ("ABONO MORA", TipoAplicacion.ABONO),
+        ("abono", TipoAplicacion.ABONO),
+    ],
+)
 def test_normalize_tipo_aplicacion_values(raw, expected):
     assert normalize_tipo_aplicacion(raw) == expected
 
@@ -152,6 +164,23 @@ def test_row_empty_tipo_fails_fast():
             [[date(2025, 12, 23), 25443565, "GEOEXCON", "", "tx"]],
         )
         with pytest.raises(ValueError, match="tipo_aplicacion_required"):
+            with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
+                await generate_payment_validation(client, date(2026, 5, 26))
+        assert not client.uploaded_files
+
+    asyncio.run(_run())
+
+
+def test_row_generic_abono_fails_fast():
+    async def _run():
+        set_env_vars()
+        client = MockGraphClient()
+        client.children = []
+        setup_client_structure(client)
+        client.downloaded_files["banco.xlsx"] = create_bank_excel(
+            [[date(2025, 12, 23), 25443565, "GEOEXCON", "ABONO", "tx"]],
+        )
+        with pytest.raises(ValueError, match="generic_abono_not_supported"):
             with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
                 await generate_payment_validation(client, date(2026, 5, 26))
         assert not client.uploaded_files
@@ -207,20 +236,21 @@ def test_abono_creates_distribucion_abonos_sheet():
         client.children = []
         setup_client_structure(client)
         client.downloaded_files["banco.xlsx"] = create_bank_excel(
-            [[date(2025, 12, 23), 500000, "GEOEXCON", "ABONO", "tx-ab"]],
-            default_tipo="ABONO",
+            [[date(2025, 12, 23), 500000, "GEOEXCON", "ABONO CAPITAL", "tx-ab"]],
+            default_tipo="ABONO CAPITAL",
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
             result = await generate_payment_validation(client, date(2026, 5, 26))
         wb = load_generated_workbook(client)
         assert ReviewSheets.DISTRIBUCION_ABONOS in wb.sheetnames
-        assert ReviewSheets.DISTRIBUCION in wb.sheetnames
+        assert ReviewSheets.DISTRIBUCION_PAGOS in wb.sheetnames
+        assert ReviewSheets.DISTRIBUCION not in wb.sheetnames
         abono_rows = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_ABONOS])
         assert len(abono_rows) >= 2
         ids = {r[DistribucionAbonosCols.ID_PAGO] for r in abono_rows}
         assert len(ids) == 1
         assert all(r[DistribucionAbonosCols.VALIDAR_ABONO] == ValidarAbono.NO for r in abono_rows)
-        assert "Link extracto" not in DistribucionAbonosCols.HEADERS
+        assert DistribucionAbonosCols.LINK_EXTRACTO in DistribucionAbonosCols.HEADERS
         assert DistribucionCols.ESTADO_PAGO not in DistribucionAbonosCols.HEADERS
         assert result["abonos_detectados"] == 1
         assert result["distribution_abonos_sheet"] == ReviewSheets.DISTRIBUCION_ABONOS
@@ -238,13 +268,13 @@ def test_mixed_pago_and_abono_workbook():
             STANDARD_BANK_HEADERS,
             [
                 [date(2025, 12, 23), 25443565, "GEOEXCON", "PAGO", "tx-p"],
-                [date(2025, 12, 24), 100000, "GEOEXCON", "ABONO", "tx-a"],
+                [date(2025, 12, 24), 100000, "GEOEXCON", "ABONO CAPITAL", "tx-a"],
             ],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
             result = await generate_payment_validation(client, date(2026, 5, 26))
         wb = load_generated_workbook(client)
-        pago_rows = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        pago_rows = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         abono_rows = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_ABONOS])
         assert len(pago_rows) >= 1
         assert len(abono_rows) >= 1
@@ -269,7 +299,7 @@ def test_distribucion_sheet_keeps_23_columns():
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
             await generate_payment_validation(client, date(2026, 5, 26))
         wb = load_generated_workbook(client)
-        ws = wb[ReviewSheets.DISTRIBUCION]
+        ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         hr = 3
         headers = [ws.cell(hr, c).value for c in range(1, ws.max_column + 1)]
         assert len([h for h in headers if h]) == len(DistribucionCols.HEADERS)

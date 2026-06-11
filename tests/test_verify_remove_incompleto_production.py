@@ -65,7 +65,7 @@ def test_generate_workbook_listas_and_validation_exclude_incompleto():
     assert "INCOMPLETO" not in dist_statuses
     assert dist_statuses == list(EstadoPago.OPTIONS_ORDERED)
 
-    ws_dist = workbook[ReviewSheets.DISTRIBUCION]
+    ws_dist = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
     formulas = [dv.formula1 for dv in ws_dist.data_validations.dataValidation]
     assert any("=_Listas!$C$1:$C$4" in f for f in formulas)
     assert not any("INCOMPLETO" in (f or "") for f in formulas)
@@ -121,7 +121,7 @@ def test_finalize_adelantado_only_touches_pagos_adelantados_followup():
                     DistribucionCols.MONTO_BANCO: 100.0,
                     DistribucionCols.VALOR_EXTRACTO: 100.0,
                     DistribucionCols.APLICAR_A_EXTRACTO: 100.0,
-                    DistribucionCols.MORA_A_APLICAR: 0.0,
+                    DistribucionCols.ABONO_A_CAPITAL: 0.0,
                     DistribucionCols.OTROS_VALORES: 0.0,
                     DistribucionCols.TOTAL_APLICADO: 100.0,
                     DistribucionCols.SALDO_POR_ASIGNAR: 0.0,

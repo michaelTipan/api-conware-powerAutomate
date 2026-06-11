@@ -43,6 +43,7 @@ from app.application.use_cases.validate_payment_report import (
     _norm_key,
     _parse_excel_date,
 )
+from app.application.services.review_schema import ExtractRole, find_distribucion_pagos_sheet
 from app.domain.exceptions import GraphConfigError
 from app.domain.ports.graph import GraphApiPort
 
@@ -208,6 +209,8 @@ class ValidarExtractosNotifyResult:
     abono_credit_rows_included: int = 0
     extracts_attached_count: int = 0
     extracts_not_required_count: int = 0
+    closing_extracts_attached_count: int = 0
+    reference_mora_extracts_attached_count: int = 0
     movement_groups_included: int = 0
 
 
@@ -239,7 +242,7 @@ def _abono_table_from_groups(groups: list[Any]) -> tuple[list[str], list[list[st
             [
                 str(getattr(g, "id_pago", "") or ""),
                 str(getattr(g, "cliente", "") or ""),
-                "ABONO",
+                str(getattr(g, "tipo_aplicacion_original", "") or "ABONO"),
                 _format_abono_amount(getattr(g, "monto_banco", None)),
                 fecha,
                 ", ".join(getattr(g, "creditos_seleccionados", ()) or ()),
@@ -287,13 +290,25 @@ def _norm_sheet_name(s: str) -> str:
     return "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
 
 
+def _row_extract_role(row: dict[str, Any]) -> str:
+    return str(row.get("rol_extracto") or "").strip().upper()
+
+
+def _row_policy_attaches_extract(row: dict[str, Any]) -> bool:
+    if not row.get("requiere_extracto"):
+        return False
+    return _row_extract_role(row) in (ExtractRole.CIERRE_CUOTA, ExtractRole.REFERENCIA_MORA)
+
+
 def _find_distribucion_sheet(wb: Any) -> Any:
-    for ws in wb.worksheets:
-        if _norm_sheet_name(ws.title) == "distribucion":
-            return ws
-    raise ValueError(
-        'No se encontró una hoja llamada "Distribución" / "Distribucion" (sin importar mayúsculas o tilde).'
-    )
+    """Distribucion_Pagos; alias legacy Distribucion."""
+    try:
+        return find_distribucion_pagos_sheet(wb)
+    except ValueError:
+        raise ValueError(
+            'No se encontró una hoja llamada "Distribucion_Pagos" o "Distribución" / "Distribucion" '
+            "(sin importar mayúsculas o tilde)."
+        ) from None
 
 
 _ESTADO_DISTRIB_HEADER_KEYS = frozenset({"ESTADO", "ESTADO LINEA", "ESTADOLINEA"})
@@ -1248,6 +1263,8 @@ async def send_validar_extractos_notification_email(
     pdf_paths_ordered: list[str] = []
     abono_groups: list[Any] = []
     abono_credit_rows_included = 0
+    closing_extracts_attached_count = 0
+    reference_mora_extracts_attached_count = 0
 
     wb = load_workbook(filename=BytesIO(hist_bytes), data_only=True)
     try:
@@ -1259,6 +1276,9 @@ async def send_validar_extractos_notification_email(
 
         seen_pdf_paths: set[str] = set()
         for row in payment_rows:
+            if not _row_policy_attaches_extract(row):
+                continue
+            row_paths: list[str] = []
             for p in await _collect_pdf_paths_from_ruta_cell(
                 graph, site_id, drive_id, row.get("ruta_cell")
             ):
@@ -1266,6 +1286,27 @@ async def send_validar_extractos_notification_email(
                 if np and np not in seen_pdf_paths:
                     seen_pdf_paths.add(np)
                     pdf_paths_ordered.append(np)
+                    row_paths.append(np)
+            if row_paths:
+                if _row_extract_role(row) == ExtractRole.REFERENCIA_MORA:
+                    reference_mora_extracts_attached_count += len(row_paths)
+                elif _row_extract_role(row) == ExtractRole.CIERRE_CUOTA:
+                    closing_extracts_attached_count += len(row_paths)
+        for row in abono_rows:
+            if not _row_policy_attaches_extract(row):
+                continue
+            if _row_extract_role(row) != ExtractRole.REFERENCIA_MORA:
+                continue
+            row_paths = []
+            for p in await _collect_pdf_paths_from_ruta_cell(
+                graph, site_id, drive_id, row.get("ruta_cell")
+            ):
+                np = p.strip().strip("/")
+                if np and np not in seen_pdf_paths:
+                    seen_pdf_paths.add(np)
+                    pdf_paths_ordered.append(np)
+                    row_paths.append(np)
+            reference_mora_extracts_attached_count += len(row_paths)
     finally:
         closer = getattr(wb, "close", None)
         if callable(closer):
@@ -1278,7 +1319,11 @@ async def send_validar_extractos_notification_email(
     abono_groups_included = len(abono_groups)
     movement_groups_included = payment_groups_included + abono_groups_included
     extracts_attached_count = len(pdf_paths_ordered)
-    extracts_not_required_count = abono_groups_included
+    extracts_not_required_count = sum(
+        1
+        for row in payment_rows + abono_rows
+        if not _row_policy_attaches_extract(row)
+    )
 
     attach_on = os.getenv("GRAPH_VALIDAR_NOTIFY_ATTACH_PDFS", "true").strip().lower() in (
         "1",
@@ -1472,5 +1517,7 @@ async def send_validar_extractos_notification_email(
         abono_credit_rows_included=abono_credit_rows_included,
         extracts_attached_count=extracts_attached_count,
         extracts_not_required_count=extracts_not_required_count,
+        closing_extracts_attached_count=closing_extracts_attached_count,
+        reference_mora_extracts_attached_count=reference_mora_extracts_attached_count,
         movement_groups_included=movement_groups_included,
     )

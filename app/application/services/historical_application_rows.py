@@ -16,14 +16,17 @@ from app.application.services.review_schema import (
     DistribucionCols,
     ReviewSheets,
     TipoAplicacion,
+    TipoAplicacionVisible,
+    find_distribucion_pagos_sheet,
     normalize_credito_digits,
+    policy_from_row,
     require_validar_abono_value,
+    resolve_application_policy,
 )
 from app.application.use_cases.send_validar_extractos_notification import (
     _accent_fold_upper,
     _excel_cell_display,
     _find_distribucion_header_row,
-    _find_distribucion_sheet,
     _get_col_distrib,
     _norm_key,
     _norm_sheet_name,
@@ -37,6 +40,10 @@ def _get_col_abono(header_map: dict[str, int], *candidates: str) -> int | None:
         if key in header_map:
             return header_map[key]
     return None
+
+
+def _find_distribucion_sheet(wb: Any) -> Any:
+    return find_distribucion_pagos_sheet(wb)
 
 
 def _find_distribucion_abonos_sheet(wb: Any) -> Any | None:
@@ -102,6 +109,79 @@ def _coerce_historical_amount(value: Any) -> float | None:
             return None
 
 
+def _policy_fields_from_abono_cells(ws: Any, row: int, header_map: dict[str, int]) -> dict[str, Any]:
+    row_dict: dict[str, Any] = {}
+    col_map = {
+        DistribucionAbonosCols.TIPO_APLICACION_ORIGINAL: _get_col_abono(
+            header_map, DistribucionAbonosCols.TIPO_APLICACION_ORIGINAL, "TipoAplicacionOriginal"
+        ),
+        DistribucionAbonosCols.TIPO_APLICACION: _get_col_abono(
+            header_map, DistribucionAbonosCols.TIPO_APLICACION, "TipoAplicacion"
+        ),
+        DistribucionAbonosCols.TIPO_APLICACION_CANONICA: _get_col_abono(
+            header_map, DistribucionAbonosCols.TIPO_APLICACION_CANONICA, "TipoAplicacionCanonica"
+        ),
+        DistribucionAbonosCols.REQUIERE_EXTRACTO: _get_col_abono(
+            header_map, DistribucionAbonosCols.REQUIERE_EXTRACTO, "RequiereExtracto"
+        ),
+        DistribucionAbonosCols.ROL_EXTRACTO: _get_col_abono(
+            header_map, DistribucionAbonosCols.ROL_EXTRACTO, "RolExtracto"
+        ),
+        DistribucionAbonosCols.SUBTIPO_APLICACION: _get_col_abono(
+            header_map, DistribucionAbonosCols.SUBTIPO_APLICACION, "SubtipoAplicacion"
+        ),
+    }
+    for key, col in col_map.items():
+        if col is not None:
+            row_dict[key] = ws.cell(row=row, column=col).value
+    try:
+        policy = policy_from_row(row_dict)
+    except ValueError:
+        policy = resolve_application_policy(TipoAplicacionVisible.ABONO_LEGACY, from_bank=False)
+    return {
+        "tipo_aplicacion": policy.tipo_aplicacion_canonica,
+        "tipo_aplicacion_original": policy.tipo_aplicacion_original,
+        "subtipo_aplicacion": policy.subtipo_aplicacion,
+        "requiere_extracto": policy.requiere_extracto,
+        "rol_extracto": policy.rol_extracto,
+    }
+
+
+def _policy_fields_from_payment_cells(ws: Any, row: int, header_map: dict[str, int]) -> dict[str, Any]:
+    row_dict: dict[str, Any] = {}
+    col_map = {
+        DistribucionCols.TIPO_APLICACION_ORIGINAL: _get_col_distrib(
+            header_map, DistribucionCols.TIPO_APLICACION_ORIGINAL, "TipoAplicacionOriginal"
+        ),
+        DistribucionCols.TIPO_APLICACION_CANONICA: _get_col_distrib(
+            header_map, DistribucionCols.TIPO_APLICACION_CANONICA, "TipoAplicacionCanonica"
+        ),
+        DistribucionCols.REQUIERE_EXTRACTO: _get_col_distrib(
+            header_map, DistribucionCols.REQUIERE_EXTRACTO, "RequiereExtracto"
+        ),
+        DistribucionCols.ROL_EXTRACTO: _get_col_distrib(
+            header_map, DistribucionCols.ROL_EXTRACTO, "RolExtracto"
+        ),
+        DistribucionCols.SUBTIPO_APLICACION: _get_col_distrib(
+            header_map, DistribucionCols.SUBTIPO_APLICACION, "SubtipoAplicacion"
+        ),
+    }
+    for key, col in col_map.items():
+        if col is not None:
+            row_dict[key] = ws.cell(row=row, column=col).value
+    try:
+        policy = policy_from_row(row_dict)
+    except ValueError:
+        policy = resolve_application_policy(TipoAplicacionVisible.PAGO, from_bank=False)
+    return {
+        "tipo_aplicacion": policy.tipo_aplicacion_canonica,
+        "tipo_aplicacion_original": policy.tipo_aplicacion_original,
+        "subtipo_aplicacion": policy.subtipo_aplicacion,
+        "requiere_extracto": policy.requiere_extracto,
+        "rol_extracto": policy.rol_extracto,
+    }
+
+
 def abono_row_included_for_notify_merge(
     ws: Any,
     row: int,
@@ -122,17 +202,9 @@ def abono_row_included_for_notify_merge(
     if norm_va != "SI":
         return False
 
-    col_tipo = _get_col_abono(header_map, DistribucionAbonosCols.TIPO_APLICACION, "TipoAplicacion")
-    if col_tipo is not None:
-        tipo = str(ws.cell(row=row, column=col_tipo).value or "").strip().upper()
-        if tipo and tipo != TipoAplicacion.ABONO.value:
-            return False
-
-    col_req = _get_col_abono(header_map, DistribucionAbonosCols.REQUIERE_EXTRACTO, "RequiereExtracto")
-    if col_req is not None:
-        req = str(ws.cell(row=row, column=col_req).value or "").strip().upper()
-        if req and req != "NO":
-            return False
+    policy_fields = _policy_fields_from_abono_cells(ws, row, header_map)
+    if policy_fields["tipo_aplicacion"] != TipoAplicacion.ABONO.value:
+        return False
 
     col_ra = _get_col_abono(
         header_map,
@@ -150,6 +222,20 @@ def abono_row_included_for_notify_merge(
     if col_cred is not None:
         cred = _excel_cell_display(ws.cell(row=row, column=col_cred).value).strip()
         if not cred:
+            return False
+
+    if policy_fields["requiere_extracto"]:
+        col_ruta = _get_col_abono(
+            header_map,
+            DistribucionAbonosCols.RUTA_EXTRACTO,
+            DistribucionAbonosCols.RUTA_EXTRACTO,
+            "Ruta",
+            "RUTA",
+        )
+        if col_ruta is None:
+            return False
+        ruta_ext = _excel_cell_display(ws.cell(row=row, column=col_ruta).value).strip()
+        if not ruta_ext:
             return False
 
     return True
@@ -208,14 +294,15 @@ def read_validated_payment_rows(
 
     if col_estado is None and col_vp is None:
         raise ValueError("missing_distribucion_status_column")
-    if col_ruta is None:
-        raise ValueError("missing_distribucion_route_column")
 
     rows: list[dict[str, Any]] = []
     last = ws.max_row or h_row
     for r in range(h_row + 1, last + 1):
         if not distrib_row_included_for_validar_extractos(ws, r, header_map, legacy_estado_token):
             continue
+        policy_fields = _policy_fields_from_payment_cells(ws, r, header_map)
+        if policy_fields["requiere_extracto"] and col_ruta is None:
+            raise ValueError("missing_distribucion_route_column")
         id_raw = ws.cell(row=r, column=col_id).value if col_id else None
         id_str = _excel_cell_display(id_raw).strip() if col_id else ""
         if not id_str:
@@ -231,8 +318,7 @@ def read_validated_payment_rows(
         fecha = _coerce_historical_date(ws.cell(row=r, column=col_fecha).value) if col_fecha else None
         rows.append(
             {
-                "tipo_aplicacion": TipoAplicacion.PAGO.value,
-                "requiere_extracto": True,
+                **policy_fields,
                 "excel_row": r,
                 "id_pago": id_str,
                 "cliente": cliente,
@@ -283,12 +369,20 @@ def read_validated_abono_rows(wb: Any) -> list[dict[str, Any]]:
         "CREDITO_NORMALIZADO",
     )
     col_obs = _get_col_abono(header_map, DistribucionAbonosCols.OBSERVACION, "Observación", "Observacion")
+    col_ruta_ext = _get_col_abono(
+        header_map,
+        DistribucionAbonosCols.RUTA_EXTRACTO,
+        DistribucionAbonosCols.RUTA_EXTRACTO,
+        "Ruta",
+        "RUTA",
+    )
 
     rows: list[dict[str, Any]] = []
     last = ws.max_row or h_row
     for r in range(h_row + 1, last + 1):
         if not abono_row_included_for_notify_merge(ws, r, header_map):
             continue
+        policy_fields = _policy_fields_from_abono_cells(ws, r, header_map)
         id_str = _excel_cell_display(ws.cell(row=r, column=col_id).value).strip() if col_id else ""
         if not id_str:
             id_str = f"__sin_id_fila_{r}__"
@@ -303,8 +397,7 @@ def read_validated_abono_rows(wb: Any) -> list[dict[str, Any]]:
         cliente = _excel_cell_display(ws.cell(row=r, column=col_cliente).value).strip() if col_cliente else ""
         rows.append(
             {
-                "tipo_aplicacion": TipoAplicacion.ABONO.value,
-                "requiere_extracto": False,
+                **policy_fields,
                 "excel_row": r,
                 "id_pago": id_str,
                 "cliente": cliente,
@@ -315,6 +408,7 @@ def read_validated_abono_rows(wb: Any) -> list[dict[str, Any]]:
                 "fecha_banco": _coerce_historical_date(ws.cell(row=r, column=col_fecha).value) if col_fecha else None,
                 "observacion": _excel_cell_display(ws.cell(row=r, column=col_obs).value).strip() if col_obs else "",
                 "ruta_asientos_cell": ws.cell(row=r, column=col_ra).value if col_ra else None,
+                "ruta_cell": ws.cell(row=r, column=col_ruta_ext).value if col_ruta_ext else None,
             }
         )
     return rows
@@ -327,6 +421,7 @@ class AbonoEmailGroup:
     monto_banco: float | None
     fecha_banco: date | None
     creditos_seleccionados: tuple[str, ...]
+    tipo_aplicacion_original: str = TipoAplicacionVisible.ABONO_LEGACY
 
 
 def group_abono_rows_for_email(abono_rows: list[dict[str, Any]]) -> list[AbonoEmailGroup]:
@@ -344,12 +439,15 @@ def group_abono_rows_for_email(abono_rows: list[dict[str, Any]]) -> list[AbonoEm
         cliente = str(ref.get("cliente") or "").strip()
         monto = ref.get("monto_banco")
         fecha = ref.get("fecha_banco")
+        ref_tipo_original = str(ref.get("tipo_aplicacion_original") or TipoAplicacionVisible.ABONO_LEGACY).strip()
         for row in members[1:]:
             if str(row.get("cliente") or "").strip() != cliente:
                 raise ValueError(f"abono_group_inconsistent|id_pago={id_pago}")
             if row.get("monto_banco") != monto:
                 raise ValueError(f"abono_group_inconsistent|id_pago={id_pago}")
             if row.get("fecha_banco") != fecha:
+                raise ValueError(f"abono_group_inconsistent|id_pago={id_pago}")
+            if str(row.get("tipo_aplicacion_original") or "").strip() != ref_tipo_original:
                 raise ValueError(f"abono_group_inconsistent|id_pago={id_pago}")
         creditos: list[str] = []
         seen: set[str] = set()
@@ -365,6 +463,7 @@ def group_abono_rows_for_email(abono_rows: list[dict[str, Any]]) -> list[AbonoEm
                 monto_banco=monto if isinstance(monto, (int, float)) else None,
                 fecha_banco=fecha if isinstance(fecha, date) else None,
                 creditos_seleccionados=tuple(creditos),
+                tipo_aplicacion_original=ref_tipo_original,
             )
         )
     return groups

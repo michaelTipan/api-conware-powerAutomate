@@ -8,28 +8,268 @@ Si necesitas cambiar un nombre de columna, cámbialo AQUÍ, no en cada archivo.
 from __future__ import annotations
 
 import re
+import unicodedata
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 class TipoAplicacion(str, Enum):
+    """Tipo canónico del motor (PAGO / ABONO)."""
+
     PAGO = "PAGO"
     ABONO = "ABONO"
 
 
-def normalize_tipo_aplicacion(value: Any) -> TipoAplicacion:
-    """Normaliza Tipo Aplicación del Excel bancario; solo acepta PAGO o ABONO."""
-    text = str(value or "").strip().upper()
+class TipoAplicacionVisible:
+    PAGO = "PAGO"
+    PAGO_Y_ABONO_CAPITAL = "PAGO Y ABONO CAPITAL"
+    ABONO_CAPITAL = "ABONO CAPITAL"
+    ABONO_MORA = "ABONO MORA"
+    ABONO_LEGACY = "ABONO"
+
+
+BANK_VISIBLE_APPLICATION_TYPES: tuple[str, ...] = (
+    TipoAplicacionVisible.PAGO,
+    TipoAplicacionVisible.PAGO_Y_ABONO_CAPITAL,
+    TipoAplicacionVisible.ABONO_CAPITAL,
+    TipoAplicacionVisible.ABONO_MORA,
+)
+
+APPLICATION_TYPES_SUPPORTED: tuple[str, ...] = BANK_VISIBLE_APPLICATION_TYPES
+
+
+class CanonicalApplicationType:
+    PAGO = "PAGO"
+    ABONO = "ABONO"
+
+
+class ApplicationSubtype:
+    CUOTA = "CUOTA"
+    CUOTA_MAS_CAPITAL = "CUOTA_MAS_CAPITAL"
+    CAPITAL = "CAPITAL"
+    MORA = "MORA"
+    GENERAL = "GENERAL"
+
+
+class ExtractRole:
+    CIERRE_CUOTA = "CIERRE_CUOTA"
+    REFERENCIA_MORA = "REFERENCIA_MORA"
+    NO_APLICA = "NO_APLICA"
+
+
+@dataclass(frozen=True)
+class ApplicationPolicy:
+    tipo_aplicacion_original: str
+    tipo_aplicacion_canonica: str
+    subtipo_aplicacion: str
+    requiere_extracto: bool
+    rol_extracto: str
+    cierra_cuota: bool
+    actualiza_ibr: bool
+    genera_siguiente_extracto: bool
+    legacy: bool = False
+
+    @property
+    def canonical_enum(self) -> TipoAplicacion:
+        if self.tipo_aplicacion_canonica == TipoAplicacion.ABONO.value:
+            return TipoAplicacion.ABONO
+        return TipoAplicacion.PAGO
+
+    def policy_dict(self) -> dict[str, Any]:
+        return {
+            "tipo_aplicacion_original": self.tipo_aplicacion_original,
+            "tipo_aplicacion_canonica": self.tipo_aplicacion_canonica,
+            "subtipo_aplicacion": self.subtipo_aplicacion,
+            "requiere_extracto": self.requiere_extracto,
+            "rol_extracto": self.rol_extracto,
+            "cierra_cuota": self.cierra_cuota,
+            "actualiza_ibr": self.actualiza_ibr,
+            "genera_siguiente_extracto": self.genera_siguiente_extracto,
+            "legacy": self.legacy,
+        }
+
+
+def _accent_fold_upper(text: str) -> str:
+    folded = unicodedata.normalize("NFD", text)
+    stripped = "".join(c for c in folded if unicodedata.category(c) != "Mn")
+    return stripped.upper()
+
+
+def _normalize_visible_tipo_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    collapsed = re.sub(r"\s+", " ", raw)
+    return _accent_fold_upper(collapsed)
+
+
+def resolve_application_policy(value: Any, *, from_bank: bool = False) -> ApplicationPolicy:
+    """Resuelve política inmutable desde Tipo Aplicación visible u original."""
+    text = _normalize_visible_tipo_text(value)
     if not text:
         raise ValueError("tipo_aplicacion_required")
-    if text == TipoAplicacion.PAGO.value:
-        return TipoAplicacion.PAGO
-    if text == TipoAplicacion.ABONO.value:
-        return TipoAplicacion.ABONO
+
+    if text == _normalize_visible_tipo_text(TipoAplicacionVisible.PAGO):
+        return ApplicationPolicy(
+            tipo_aplicacion_original=TipoAplicacionVisible.PAGO,
+            tipo_aplicacion_canonica=CanonicalApplicationType.PAGO,
+            subtipo_aplicacion=ApplicationSubtype.CUOTA,
+            requiere_extracto=True,
+            rol_extracto=ExtractRole.CIERRE_CUOTA,
+            cierra_cuota=True,
+            actualiza_ibr=True,
+            genera_siguiente_extracto=True,
+        )
+    if text == _normalize_visible_tipo_text(TipoAplicacionVisible.PAGO_Y_ABONO_CAPITAL):
+        return ApplicationPolicy(
+            tipo_aplicacion_original=TipoAplicacionVisible.PAGO_Y_ABONO_CAPITAL,
+            tipo_aplicacion_canonica=CanonicalApplicationType.PAGO,
+            subtipo_aplicacion=ApplicationSubtype.CUOTA_MAS_CAPITAL,
+            requiere_extracto=True,
+            rol_extracto=ExtractRole.CIERRE_CUOTA,
+            cierra_cuota=True,
+            actualiza_ibr=True,
+            genera_siguiente_extracto=True,
+        )
+    if text == _normalize_visible_tipo_text(TipoAplicacionVisible.ABONO_CAPITAL):
+        return ApplicationPolicy(
+            tipo_aplicacion_original=TipoAplicacionVisible.ABONO_CAPITAL,
+            tipo_aplicacion_canonica=CanonicalApplicationType.ABONO,
+            subtipo_aplicacion=ApplicationSubtype.CAPITAL,
+            requiere_extracto=False,
+            rol_extracto=ExtractRole.NO_APLICA,
+            cierra_cuota=False,
+            actualiza_ibr=False,
+            genera_siguiente_extracto=False,
+        )
+    if text == _normalize_visible_tipo_text(TipoAplicacionVisible.ABONO_MORA):
+        return ApplicationPolicy(
+            tipo_aplicacion_original=TipoAplicacionVisible.ABONO_MORA,
+            tipo_aplicacion_canonica=CanonicalApplicationType.ABONO,
+            subtipo_aplicacion=ApplicationSubtype.MORA,
+            requiere_extracto=True,
+            rol_extracto=ExtractRole.REFERENCIA_MORA,
+            cierra_cuota=False,
+            actualiza_ibr=False,
+            genera_siguiente_extracto=False,
+        )
+    if text == _normalize_visible_tipo_text(TipoAplicacionVisible.ABONO_LEGACY):
+        if from_bank:
+            raise ValueError("generic_abono_not_supported")
+        return ApplicationPolicy(
+            tipo_aplicacion_original=TipoAplicacionVisible.ABONO_LEGACY,
+            tipo_aplicacion_canonica=CanonicalApplicationType.ABONO,
+            subtipo_aplicacion=ApplicationSubtype.GENERAL,
+            requiere_extracto=False,
+            rol_extracto=ExtractRole.NO_APLICA,
+            cierra_cuota=False,
+            actualiza_ibr=False,
+            genera_siguiente_extracto=False,
+            legacy=True,
+        )
+
+    if from_bank:
+        raise ValueError("tipo_aplicacion_invalid")
     raise ValueError("tipo_aplicacion_invalid")
 
 
-def requiere_extracto(tipo: TipoAplicacion) -> bool:
-    return tipo == TipoAplicacion.PAGO
+def parse_bank_tipo_aplicacion(value: Any) -> ApplicationPolicy:
+    """Valida Tipo Aplicación del Excel bancario (solo valores visibles nuevos)."""
+    return resolve_application_policy(value, from_bank=True)
+
+
+def normalize_tipo_aplicacion(value: Any) -> TipoAplicacion:
+    """Devuelve tipo canónico; acepta valores visibles nuevos y ABONO legacy en lecturas."""
+    return resolve_application_policy(value, from_bank=False).canonical_enum
+
+
+def requiere_extracto(tipo: TipoAplicacion | ApplicationPolicy | str | Any) -> bool:
+    if isinstance(tipo, ApplicationPolicy):
+        return tipo.requiere_extracto
+    if isinstance(tipo, TipoAplicacion):
+        return resolve_application_policy(tipo.value, from_bank=False).requiere_extracto
+    try:
+        return resolve_application_policy(tipo, from_bank=False).requiere_extracto
+    except ValueError:
+        return tipo == TipoAplicacion.PAGO or str(tipo or "").strip().upper() == TipoAplicacion.PAGO.value
+
+
+def policy_requires_closing_extract(policy: ApplicationPolicy) -> bool:
+    return policy.rol_extracto == ExtractRole.CIERRE_CUOTA and policy.requiere_extracto
+
+
+def policy_requires_reference_extract(policy: ApplicationPolicy) -> bool:
+    return policy.rol_extracto == ExtractRole.REFERENCIA_MORA and policy.requiere_extracto
+
+
+def resolve_manifest_policy(
+    source: dict[str, Any],
+    *,
+    default_canonical: str | None = None,
+) -> ApplicationPolicy:
+    """Resuelve política desde manifest/output/credit_item; legacy → PAGO o ABONO general."""
+    original = (
+        source.get("tipo_aplicacion_original")
+        or source.get(DistribucionCols.TIPO_APLICACION_ORIGINAL)
+        or source.get(DistribucionAbonosCols.TIPO_APLICACION_ORIGINAL)
+        or source.get("tipo_aplicacion")
+        or source.get(DistribucionAbonosCols.TIPO_APLICACION)
+    )
+    if original:
+        try:
+            return resolve_application_policy(original, from_bank=False)
+        except ValueError:
+            pass
+
+    canon = str(source.get("tipo_aplicacion_canonica") or "").strip().upper()
+    subtipo = str(source.get("subtipo_aplicacion") or "").strip().upper()
+    if canon and subtipo:
+        return ApplicationPolicy(
+            tipo_aplicacion_original=str(
+                source.get("tipo_aplicacion_original") or original or canon
+            ),
+            tipo_aplicacion_canonica=canon,
+            subtipo_aplicacion=subtipo,
+            requiere_extracto=bool(source.get("requiere_extracto")),
+            rol_extracto=str(source.get("rol_extracto") or ""),
+            cierra_cuota=bool(source.get("cierra_cuota")),
+            actualiza_ibr=bool(source.get("actualiza_ibr")),
+            genera_siguiente_extracto=bool(source.get("genera_siguiente_extracto")),
+            legacy=bool(source.get("legacy") or source.get("policy_legacy")),
+        )
+
+    if canon == CanonicalApplicationType.ABONO:
+        return resolve_application_policy(TipoAplicacionVisible.ABONO_LEGACY, from_bank=False)
+    if canon == CanonicalApplicationType.PAGO:
+        return resolve_application_policy(TipoAplicacionVisible.PAGO, from_bank=False)
+    if default_canonical == TipoAplicacion.ABONO.value:
+        return resolve_application_policy(TipoAplicacionVisible.ABONO_LEGACY, from_bank=False)
+    return resolve_application_policy(TipoAplicacionVisible.PAGO, from_bank=False)
+
+
+def policy_observability_dict(policy: ApplicationPolicy) -> dict[str, Any]:
+    """Campos de política para items de dry-run/apply."""
+    pd = policy.policy_dict()
+    return {
+        "tipo_aplicacion": policy.tipo_aplicacion_canonica,
+        "tipo_aplicacion_original": pd["tipo_aplicacion_original"],
+        "tipo_aplicacion_canonica": pd["tipo_aplicacion_canonica"],
+        "subtipo_aplicacion": pd["subtipo_aplicacion"],
+        "requiere_extracto": pd["requiere_extracto"],
+        "requires_extract": pd["requiere_extracto"],
+        "rol_extracto": pd["rol_extracto"],
+        "cierra_cuota": pd["cierra_cuota"],
+        "actualiza_ibr": pd["actualiza_ibr"],
+        "genera_siguiente_extracto": pd["genera_siguiente_extracto"],
+        "updates_ibr": pd["actualiza_ibr"],
+        "policy_legacy": pd["legacy"],
+    }
+
+
+def policy_fields_for_manifest(policy: ApplicationPolicy) -> dict[str, Any]:
+    """Subconjunto serializable para manifest (sin aliases de observabilidad)."""
+    pd = policy.policy_dict()
+    return {k: pd[k] for k in pd if k != "legacy"}
 
 
 # Nombres de hojas
@@ -37,11 +277,38 @@ class ReviewSheets:
     CONTROL = "Control"
     RESUMEN = "Resumen"
     CASOS_PAGO = "Casos_Pago"
-    DISTRIBUCION = "Distribucion"
+    DISTRIBUCION_PAGOS = "Distribucion_Pagos"
+    DISTRIBUCION_LEGACY = "Distribucion"
     DISTRIBUCION_ABONOS = "Distribucion_Abonos"
-    DISTRIBUCION_PAGOS_FUTURE = "Distribucion_Pagos"
     LISTAS = "_Listas"
     ERRORES = "Errores"
+    # Alias legacy: lectores antiguos; Generate usa DISTRIBUCION_PAGOS.
+    DISTRIBUCION = DISTRIBUCION_LEGACY
+    DISTRIBUCION_PAGOS_FUTURE = DISTRIBUCION_PAGOS
+
+
+def _norm_sheet_name(title: str) -> str:
+    return _accent_fold_upper(str(title or "").strip().replace("_", " "))
+
+
+def find_distribucion_pagos_sheet(wb: Any) -> Any:
+    """Busca Distribucion_Pagos; si no existe, alias legacy Distribucion."""
+    targets = (
+        _norm_sheet_name(ReviewSheets.DISTRIBUCION_PAGOS),
+        _norm_sheet_name(ReviewSheets.DISTRIBUCION_LEGACY),
+    )
+    for ws in wb.worksheets:
+        if _norm_sheet_name(ws.title) in targets:
+            return ws
+    raise ValueError("missing_distribucion_pagos_sheet")
+
+
+def workbook_has_distribucion_pagos_sheet(wb: Any) -> bool:
+    try:
+        find_distribucion_pagos_sheet(wb)
+        return True
+    except ValueError:
+        return False
 
 
 # Columnas de hoja Control
@@ -149,6 +416,9 @@ class DistribucionCols:
     DIAS_MORA = "Días mora"
     VALOR_EXTRACTO = "Valor extracto"
     APLICAR_A_EXTRACTO = "Aplicar a extracto"
+    # ABONO_A_CAPITAL: monto adicional aplicado directamente a capital.
+    ABONO_A_CAPITAL = "Abono a capital"
+    # MORA_A_APLICAR: alias legacy para libros antiguos cuyo encabezado visible era «Mora a aplicar».
     MORA_A_APLICAR = "Mora a aplicar"
     OTROS_VALORES = "Otros valores"
     TOTAL_APLICADO = "Total aplicado"
@@ -166,9 +436,16 @@ class DistribucionCols:
     # Columnas técnicas (ocultas en Excel); ruta estable para amortización / dry-run
     RUTA_TABLA_AMORTIZACION = "RutaTablaAmortizacion"
     CREDITO_NORMALIZADO = "CreditoNormalizado"
+    TIPO_APLICACION_ORIGINAL = "TipoAplicacionOriginal"
+    TIPO_APLICACION_CANONICA = "TipoAplicacionCanonica"
+    SUBTIPO_APLICACION = "SubtipoAplicacion"
+    REQUIERE_EXTRACTO = "RequiereExtracto"
+    ROL_EXTRACTO = "RolExtracto"
+    CIERRA_CUOTA = "CierraCuota"
+    ACTUALIZA_IBR = "ActualizaIBR"
     # Alias de código (mismo texto visible que las columnas renombradas)
     VALOR_INTERESES = APLICAR_A_EXTRACTO
-    ABONO_K = MORA_A_APLICAR
+    ABONO_K = ABONO_A_CAPITAL
     INTERESES_MORA = OTROS_VALORES
 
     # Alias retrocompat lecturas (misma cadena que ESTADO_PAGO)
@@ -184,7 +461,7 @@ class DistribucionCols:
         DIAS_MORA,
         VALOR_EXTRACTO,
         APLICAR_A_EXTRACTO,
-        MORA_A_APLICAR,
+        ABONO_A_CAPITAL,
         OTROS_VALORES,
         TOTAL_APLICADO,
         SALDO_POR_ASIGNAR,
@@ -198,6 +475,13 @@ class DistribucionCols:
         RUTA_UNIDAD_CREDITO,
         RUTA_TABLA_AMORTIZACION,
         CREDITO_NORMALIZADO,
+        TIPO_APLICACION_ORIGINAL,
+        TIPO_APLICACION_CANONICA,
+        SUBTIPO_APLICACION,
+        REQUIERE_EXTRACTO,
+        ROL_EXTRACTO,
+        CIERRA_CUOTA,
+        ACTUALIZA_IBR,
     ]
 
 
@@ -206,6 +490,13 @@ DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS = frozenset(
     {
         DistribucionCols.RUTA_TABLA_AMORTIZACION,
         DistribucionCols.CREDITO_NORMALIZADO,
+        DistribucionCols.TIPO_APLICACION_ORIGINAL,
+        DistribucionCols.TIPO_APLICACION_CANONICA,
+        DistribucionCols.SUBTIPO_APLICACION,
+        DistribucionCols.REQUIERE_EXTRACTO,
+        DistribucionCols.ROL_EXTRACTO,
+        DistribucionCols.CIERRA_CUOTA,
+        DistribucionCols.ACTUALIZA_IBR,
     }
 )
 
@@ -225,7 +516,16 @@ class DistribucionAbonosCols:
     RUTA_TABLA_AMORTIZACION = "RutaTablaAmortizacion"
     CREDITO_NORMALIZADO = "CreditoNormalizado"
     TIPO_APLICACION = "TipoAplicacion"
+    TIPO_APLICACION_ORIGINAL = "TipoAplicacionOriginal"
+    TIPO_APLICACION_CANONICA = "TipoAplicacionCanonica"
+    SUBTIPO_APLICACION = "SubtipoAplicacion"
     REQUIERE_EXTRACTO = "RequiereExtracto"
+    ROL_EXTRACTO = "RolExtracto"
+    CIERRA_CUOTA = "CierraCuota"
+    ACTUALIZA_IBR = "ActualizaIBR"
+    LINK_EXTRACTO = "Link extracto"
+    RUTA_EXTRACTO = "Ruta"
+    FECHA_LIMITE = "Fecha límite"
     # Solo en cartera_validada (Finalize); no en validacion_pagos de Generate
     RUTA_ASIENTOS_CONTABLES = "RutaAsientosContables"
 
@@ -240,11 +540,20 @@ class DistribucionAbonosCols:
         LINK_TABLA,
         LINK_CARPETA_CREDITO,
         ORIGEN_CREDITO,
+        LINK_EXTRACTO,
+        FECHA_LIMITE,
         RUTA_UNIDAD_CREDITO,
         RUTA_TABLA_AMORTIZACION,
         CREDITO_NORMALIZADO,
         TIPO_APLICACION,
+        TIPO_APLICACION_ORIGINAL,
+        TIPO_APLICACION_CANONICA,
+        SUBTIPO_APLICACION,
         REQUIERE_EXTRACTO,
+        ROL_EXTRACTO,
+        CIERRA_CUOTA,
+        ACTUALIZA_IBR,
+        RUTA_EXTRACTO,
     ]
 
 
@@ -291,10 +600,62 @@ DISTRIBUCION_ABONOS_TECHNICAL_HIDDEN_COLUMNS = frozenset(
         DistribucionAbonosCols.RUTA_TABLA_AMORTIZACION,
         DistribucionAbonosCols.CREDITO_NORMALIZADO,
         DistribucionAbonosCols.TIPO_APLICACION,
+        DistribucionAbonosCols.TIPO_APLICACION_ORIGINAL,
+        DistribucionAbonosCols.TIPO_APLICACION_CANONICA,
+        DistribucionAbonosCols.SUBTIPO_APLICACION,
         DistribucionAbonosCols.REQUIERE_EXTRACTO,
+        DistribucionAbonosCols.ROL_EXTRACTO,
+        DistribucionAbonosCols.CIERRA_CUOTA,
+        DistribucionAbonosCols.ACTUALIZA_IBR,
+        DistribucionAbonosCols.RUTA_EXTRACTO,
         DistribucionAbonosCols.RUTA_ASIENTOS_CONTABLES,
     }
 )
+
+
+def apply_policy_to_pagos_row(row: dict[str, Any], policy: ApplicationPolicy) -> None:
+    """Escribe columnas técnicas de política en fila Distribucion_Pagos."""
+    pd = policy.policy_dict()
+    row[DistribucionCols.TIPO_APLICACION_ORIGINAL] = pd["tipo_aplicacion_original"]
+    row[DistribucionCols.TIPO_APLICACION_CANONICA] = pd["tipo_aplicacion_canonica"]
+    row[DistribucionCols.SUBTIPO_APLICACION] = pd["subtipo_aplicacion"]
+    row[DistribucionCols.REQUIERE_EXTRACTO] = pd["requiere_extracto"]
+    row[DistribucionCols.ROL_EXTRACTO] = pd["rol_extracto"]
+    row[DistribucionCols.CIERRA_CUOTA] = pd["cierra_cuota"]
+    row[DistribucionCols.ACTUALIZA_IBR] = pd["actualiza_ibr"]
+
+
+def apply_policy_to_abonos_row(row: dict[str, Any], policy: ApplicationPolicy) -> None:
+    """Escribe columnas técnicas de política en fila Distribucion_Abonos."""
+    pd = policy.policy_dict()
+    row[DistribucionAbonosCols.TIPO_APLICACION] = policy.tipo_aplicacion_canonica
+    row[DistribucionAbonosCols.TIPO_APLICACION_ORIGINAL] = pd["tipo_aplicacion_original"]
+    row[DistribucionAbonosCols.TIPO_APLICACION_CANONICA] = pd["tipo_aplicacion_canonica"]
+    row[DistribucionAbonosCols.SUBTIPO_APLICACION] = pd["subtipo_aplicacion"]
+    row[DistribucionAbonosCols.REQUIERE_EXTRACTO] = pd["requiere_extracto"]
+    row[DistribucionAbonosCols.ROL_EXTRACTO] = pd["rol_extracto"]
+    row[DistribucionAbonosCols.CIERRA_CUOTA] = pd["cierra_cuota"]
+    row[DistribucionAbonosCols.ACTUALIZA_IBR] = pd["actualiza_ibr"]
+
+
+def policy_from_row(row: dict[str, Any]) -> ApplicationPolicy:
+    """Reconstruye política desde columnas técnicas o TipoAplicacion legacy en fila."""
+    original = (
+        row.get(DistribucionCols.TIPO_APLICACION_ORIGINAL)
+        or row.get(DistribucionAbonosCols.TIPO_APLICACION_ORIGINAL)
+        or row.get(DistribucionAbonosCols.TIPO_APLICACION)
+        or row.get(AsientosPendientesCols.TIPO_APLICACION)
+    )
+    if original:
+        return resolve_application_policy(original, from_bank=False)
+    canon = row.get(DistribucionAbonosCols.TIPO_APLICACION_CANONICA) or row.get(
+        DistribucionCols.TIPO_APLICACION_CANONICA
+    )
+    if canon == CanonicalApplicationType.PAGO:
+        return resolve_application_policy(TipoAplicacionVisible.PAGO, from_bank=False)
+    if canon == CanonicalApplicationType.ABONO:
+        return resolve_application_policy(TipoAplicacionVisible.ABONO_LEGACY, from_bank=False)
+    raise ValueError("tipo_aplicacion_required")
 
 
 def normalize_credito_digits(raw: Any) -> str:
@@ -312,7 +673,8 @@ def normalize_credito_digits(raw: Any) -> str:
 # Encabezados legacy en libros generados antes del renombre UX (Finalize los normaliza)
 DISTRIB_LEGACY_HEADER_ALIASES: dict[str, str] = {
     "Valor intereses": DistribucionCols.APLICAR_A_EXTRACTO,
-    "Abono a K": DistribucionCols.MORA_A_APLICAR,
+    "Abono a K": DistribucionCols.ABONO_A_CAPITAL,
+    DistribucionCols.MORA_A_APLICAR: DistribucionCols.ABONO_A_CAPITAL,
     "Intereses de mora": DistribucionCols.OTROS_VALORES,
     "Estado línea": DistribucionCols.ESTADO_PAGO,
     "Estado": DistribucionCols.ESTADO_PAGO,

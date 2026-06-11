@@ -122,6 +122,7 @@ def build_missing_inputs(
     pre_skips: list[str],
     *,
     tipo_aplicacion: str,
+    requiere_extracto: bool = True,
 ) -> list[dict[str, Any]]:
     inputs: list[dict[str, Any]] = []
     for cred in missing_creditos:
@@ -132,7 +133,11 @@ def build_missing_inputs(
                 found = parsed
                 break
         if found is None:
-            doc_type = "EXTRACTO" if tipo_aplicacion == TipoAplicacion.PAGO.value else "ASIENTO_CONTABLE"
+            needs_extract = requiere_extracto and tipo_aplicacion in (
+                TipoAplicacion.PAGO.value,
+                TipoAplicacion.ABONO.value,
+            )
+            doc_type = "EXTRACTO" if needs_extract else "ASIENTO_CONTABLE"
             error_code = (
                 "extract_routes_missing"
                 if doc_type == "EXTRACTO"
@@ -166,8 +171,12 @@ def validate_merge_group_completeness(
     expected = expected_creditos_for_id_pago(group_rows)
     complete = _credit_items_complete_creditos(credit_items)
     missing = tuple(sorted(set(expected) - set(complete)))
+    group_requiere_extracto = any(bool(r.get("requiere_extracto")) for r in group_rows)
     missing_inputs = build_missing_inputs(
-        list(missing), pre_skips, tipo_aplicacion=tipo_aplicacion
+        list(missing),
+        pre_skips,
+        tipo_aplicacion=tipo_aplicacion,
+        requiere_extracto=group_requiere_extracto,
     )
 
     is_complete = not missing and bool(expected) and set(expected) == set(complete)

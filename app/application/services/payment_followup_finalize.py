@@ -54,7 +54,7 @@ def _row_adelantados(dist: dict[str, Any], historical_relative_path: str, now_s:
         "MontoBanco": dist.get(DistribucionCols.MONTO_BANCO),
         "ValorExtracto": dist.get(DistribucionCols.VALOR_EXTRACTO),
         "AplicarAExtracto": dist.get(DistribucionCols.APLICAR_A_EXTRACTO),
-        "MoraAAplicar": dist.get(DistribucionCols.MORA_A_APLICAR),
+        "MoraAAplicar": dist.get(DistribucionCols.ABONO_A_CAPITAL),
         "OtrosValores": dist.get(DistribucionCols.OTROS_VALORES),
         "TotalAplicado": dist.get(DistribucionCols.TOTAL_APLICADO),
         "SaldoPorAsignar": dist.get(DistribucionCols.SALDO_POR_ASIGNAR),

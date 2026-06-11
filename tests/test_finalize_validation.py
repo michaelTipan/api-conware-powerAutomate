@@ -224,7 +224,7 @@ def make_distrib_row(
         DistribucionCols.DIAS_MORA: 0,
         DistribucionCols.VALOR_EXTRACTO: 100,
         DistribucionCols.APLICAR_A_EXTRACTO: valor_int,
-        DistribucionCols.MORA_A_APLICAR: abono_k,
+        DistribucionCols.ABONO_A_CAPITAL: abono_k,
         DistribucionCols.OTROS_VALORES: mora,
         DistribucionCols.TOTAL_APLICADO: total,
         DistribucionCols.SALDO_POR_ASIGNAR: 0,
@@ -239,7 +239,7 @@ def make_distrib_row(
         DistribucionCols.RUTA_TABLA_AMORTIZACION: "",
         DistribucionCols.CREDITO_NORMALIZADO: "",
     }
-    row = [vals[c] for c in DistribucionCols.HEADERS]
+    row = [vals.get(c, "") for c in DistribucionCols.HEADERS]
     return row, tabla_hyperlink_target
 
 
@@ -277,7 +277,7 @@ def make_abono_row(
         DistribucionAbonosCols.TIPO_APLICACION: TipoAplicacion.ABONO.value,
         DistribucionAbonosCols.REQUIERE_EXTRACTO: "NO",
     }
-    row = [vals[c] for c in DistribucionAbonosCols.HEADERS]
+    row = [vals.get(c, "") for c in DistribucionAbonosCols.HEADERS]
     return row, tabla_hyperlink_target
 
 

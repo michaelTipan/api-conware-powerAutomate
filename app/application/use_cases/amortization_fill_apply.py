@@ -141,7 +141,16 @@ def validate_amortization_preflight(dry_run: dict[str, Any]) -> None:
 
 
 def _is_abono_item(item: dict[str, Any]) -> bool:
-    return str(item.get("tipo_aplicacion") or "") == TipoAplicacion.ABONO.value
+    canon = str(
+        item.get("tipo_aplicacion_canonica") or item.get("tipo_aplicacion") or ""
+    ).strip().upper()
+    return canon == TipoAplicacion.ABONO.value
+
+
+def _item_actualiza_ibr(item: dict[str, Any]) -> bool:
+    if "actualiza_ibr" in item:
+        return bool(item.get("actualiza_ibr"))
+    return not _is_abono_item(item)
 
 
 def _payment_date_from_item(
@@ -350,7 +359,8 @@ async def _apply_one_table(
                 continue
 
             is_abono = _is_abono_item(item)
-            if application_row is None or (not is_abono and ibr_row is None):
+            actualiza_ibr = _item_actualiza_ibr(item)
+            if application_row is None or (actualiza_ibr and ibr_row is None):
                 results.append(
                     {
                         **base,
@@ -410,7 +420,7 @@ async def _apply_one_table(
             ibr_block = item.get("ibr") or {}
             ibr_status = ibr_block.get("status")
             if (
-                not is_abono
+                actualiza_ibr
                 and ibr_status == "WOULD_WRITE_IBR"
                 and ibr_row is not None
             ):
@@ -433,14 +443,25 @@ async def _apply_one_table(
                 "ibr_row": ibr_row if not is_abono else None,
                 "accion": accion_log,
                 "estado": accion_log,
-                "detalle": f"apply|{app_status}|ibr={ibr_status}|tipo={item.get('tipo_aplicacion') or 'PAGO'}",
+                "detalle": (
+                    f"apply|{app_status}|ibr={ibr_status}|tipo="
+                    f"{item.get('tipo_aplicacion_canonica') or item.get('tipo_aplicacion') or 'PAGO'}"
+                    f"|subtipo={item.get('subtipo_aplicacion') or ''}"
+                ),
                 "idempotency_key": idem_key,
                 "asiento_pdf_path": item.get("asiento_pdf_path"),
                 "asiento_pdf_hash": item.get("asiento_pdf_hash"),
                 "asiento_pdf_etag": item.get("asiento_pdf_etag"),
+                "tipo_aplicacion": item.get("tipo_aplicacion_canonica")
+                or item.get("tipo_aplicacion")
+                or TipoAplicacion.PAGO.value,
+                "tipo_aplicacion_original": item.get("tipo_aplicacion_original"),
+                "tipo_aplicacion_canonica": item.get("tipo_aplicacion_canonica"),
+                "subtipo_aplicacion": item.get("subtipo_aplicacion"),
+                "rol_extracto": item.get("rol_extracto"),
+                "actualiza_ibr": actualiza_ibr,
             }
             if is_abono:
-                log_row["tipo_aplicacion"] = TipoAplicacion.ABONO.value
                 pa = item.get("payment_application") or {}
                 vp = pa.get("valor_pagado_cliente")
                 if vp is not None:
@@ -452,8 +473,10 @@ async def _apply_one_table(
                 "apply_status": apply_status,
                 "apply_accion": accion_log,
                 "apply_ibr_written": apply_ibr_written,
-                "updates_ibr": False if is_abono else item.get("updates_ibr", True),
-                "ibr_skipped_reason": item.get("ibr_skipped_reason") if is_abono else None,
+                "updates_ibr": actualiza_ibr and apply_ibr_written,
+                "ibr_skipped_reason": (
+                    item.get("ibr_skipped_reason") if not actualiza_ibr else None
+                ),
                 "sheet_name": sheet_name or base.get("sheet_name"),
                 "write_plan": write_plan if apply_status == APPLY_STATUS_APPLIED else {},
             }

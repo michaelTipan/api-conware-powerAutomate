@@ -42,7 +42,14 @@ from app.application.services.abono_dry_run import (
     load_abono_historical_index,
     process_abono_manifest_outputs,
 )
-from app.application.services.review_schema import DistribucionCols, TipoAplicacion, normalize_credito_digits
+from app.application.services.review_schema import (
+    ApplicationPolicy,
+    DistribucionCols,
+    TipoAplicacion,
+    normalize_credito_digits,
+    policy_observability_dict,
+    resolve_manifest_policy,
+)
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.application.use_cases.send_validar_extractos_notification import (
     _find_distribucion_header_row,
@@ -577,7 +584,9 @@ def _empty_item(
     event_index: int = 1,
     extracto_pdf_path: str | None = None,
     payment_date_iso: str | None = None,
+    policy: ApplicationPolicy | None = None,
 ) -> dict[str, Any]:
+    resolved_policy = policy or resolve_manifest_policy({})
     item = {
         "id_pago": id_pago,
         "cliente": cliente,
@@ -605,8 +614,16 @@ def _empty_item(
         },
         "warnings": warnings,
         "error_code": error_code,
+        **policy_observability_dict(resolved_policy),
     }
     item.update(_payment_date_meta(payment_date_iso))
+    if not resolved_policy.actualiza_ibr:
+        item["ibr"] = {
+            "required_date": None,
+            "found": False,
+            "value": None,
+            "status": "NOT_REQUIRED",
+        }
     return item
 
 
@@ -653,9 +670,11 @@ async def _plan_one_asiento_event(
     planned_ibr_keys: set[str],
     extracto_pdf_path: str | None = None,
     payment_date_iso: str | None = None,
+    policy: ApplicationPolicy | None = None,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     payment_meta = _payment_date_meta(payment_date_iso)
+    resolved_policy = policy or resolve_manifest_policy({})
 
     if not asiento_path:
         return _empty_item(
@@ -667,6 +686,7 @@ async def _plan_one_asiento_event(
             application_status="ERROR",
             error_code="ASIENTO_PATH_MISSING",
             warnings=["asiento_pdf_path vacío en manifest"],
+            policy=resolved_policy,
         )
 
     hist_row = _find_hist_row(hist_index, id_pago, credito)
@@ -682,6 +702,7 @@ async def _plan_one_asiento_event(
             application_status="ERROR",
             error_code=TABLE_PATH_NOT_FOUND,
             warnings=["No se encontró Link tabla amortización en histórico para ID Pago + Crédito"],
+            policy=resolved_policy,
         )
 
     pdf_fingerprint: dict[str, Any] = {}
@@ -710,6 +731,7 @@ async def _plan_one_asiento_event(
         )
         item.update(pdf_fingerprint)
         item.update(payment_meta)
+        item.update(policy_observability_dict(resolved_policy))
         return item
     except Exception as exc:
         item = _empty_item(
@@ -721,6 +743,7 @@ async def _plan_one_asiento_event(
             application_status="ERROR",
             error_code="ASIENTO_DOWNLOAD_FAILED",
             warnings=[str(exc)[:500]],
+            policy=resolved_policy,
         )
         item.update(pdf_fingerprint)
         item.update(payment_meta)
@@ -760,6 +783,7 @@ async def _plan_one_asiento_event(
             item["parser_mode"] = exc.parser_mode
         item.update(pdf_fingerprint)
         item.update(payment_meta)
+        item.update(policy_observability_dict(resolved_policy))
         return item
 
     if event.parse_warnings:
@@ -781,6 +805,7 @@ async def _plan_one_asiento_event(
             application_status="ERROR",
             error_code="TABLE_DOWNLOAD_FAILED",
             warnings=[str(exc)[:500]],
+            policy=resolved_policy,
         )
 
     # data_only=True: leer valores calculados de fórmulas (solo lectura en dry-run).
@@ -818,6 +843,7 @@ async def _plan_one_asiento_event(
             item.update(parser_meta)
             item.update(pdf_fingerprint)
             item.update(payment_meta)
+            item.update(policy_observability_dict(resolved_policy))
             return item
 
         ws = sheet_match.worksheet
@@ -853,6 +879,7 @@ async def _plan_one_asiento_event(
                 **parser_meta,
                 **pdf_fingerprint,
                 **payment_meta,
+                **policy_observability_dict(resolved_policy),
             }
 
         tabla_key = normalize_sharepoint_path(tabla_path)
@@ -910,6 +937,7 @@ async def _plan_one_asiento_event(
                 **parser_meta,
                 **pdf_fingerprint,
                 **payment_meta,
+                **policy_observability_dict(resolved_policy),
             }
 
         payment_date: date | None = None
@@ -989,6 +1017,7 @@ async def _plan_one_asiento_event(
                 **parser_meta,
                 **pdf_fingerprint,
                 **payment_meta,
+                **policy_observability_dict(resolved_policy),
             }
 
         compare_status = app_result.compare_status or APLICADO
@@ -996,11 +1025,20 @@ async def _plan_one_asiento_event(
         if compare_status == APLICADO:
             reserved_application_rows.add(application_row)
 
-        ibr_block = _plan_ibr_block(
-            ibr_bytes=ibr_bytes,
-            fecha_limite=fecha_limite,
-            ibr_plan_key=ibr_plan_key,
-            planned_ibr_keys=planned_ibr_keys,
+        ibr_block = (
+            _plan_ibr_block(
+                ibr_bytes=ibr_bytes,
+                fecha_limite=fecha_limite,
+                ibr_plan_key=ibr_plan_key,
+                planned_ibr_keys=planned_ibr_keys,
+            )
+            if resolved_policy.actualiza_ibr
+            else {
+                "required_date": fecha_limite.isoformat(),
+                "found": False,
+                "value": None,
+                "status": "NOT_REQUIRED",
+            }
         )
 
         return {
@@ -1029,6 +1067,7 @@ async def _plan_one_asiento_event(
             **parser_meta,
             **pdf_fingerprint,
             **payment_meta,
+            **policy_observability_dict(resolved_policy),
         }
     finally:
         closer = getattr(wb, "close", None)
@@ -1050,6 +1089,7 @@ async def _plan_events_for_manifest_output(
     id_pago = str(output.get("id_pago") or "").strip()
     cliente = str(output.get("cliente") or "").strip()
     legacy_credito = str(output.get("credito") or "").strip()
+    output_policy = resolve_manifest_policy(output)
 
     credit_items = output.get("credit_items")
     event_specs: list[tuple[str, str, str | None]] = []
@@ -1059,6 +1099,10 @@ async def _plan_events_for_manifest_output(
             if not isinstance(ci, dict):
                 continue
             event_credit = str(ci.get("credito") or "").strip()
+            item_policy = resolve_manifest_policy(
+                {**output, **ci},
+                default_canonical=output_policy.tipo_aplicacion_canonica,
+            )
             extracto = str(ci.get("extracto_pdf_path") or "").strip() or None
             if not extracto:
                 eps = ci.get("extracto_pdf_paths") or []
@@ -1067,12 +1111,12 @@ async def _plan_events_for_manifest_output(
             for asiento_path in ci.get("asiento_pdf_paths") or []:
                 ap = str(asiento_path).strip().strip("/")
                 if ap:
-                    event_specs.append((event_credit, ap, extracto))
+                    event_specs.append((event_credit, ap, extracto, item_policy))
     else:
         for asiento_path in _resolve_asiento_paths_from_output(output):
             inferred = _infer_credit_from_asiento_path(asiento_path)
             event_credit = inferred or legacy_credito
-            event_specs.append((event_credit, asiento_path, None))
+            event_specs.append((event_credit, asiento_path, None, output_policy))
 
     if not event_specs:
         return [
@@ -1086,11 +1130,14 @@ async def _plan_events_for_manifest_output(
                 error_code="ASIENTO_PATH_MISSING",
                 warnings=["asiento_pdf_path / asiento_pdf_paths / credit_items vacío en manifest"],
                 payment_date_iso=payment_date_iso,
+                policy=output_policy,
             )
         ]
 
     events: list[dict[str, Any]] = []
-    for event_index, (event_credit, asiento_path, extracto_path) in enumerate(event_specs, start=1):
+    for event_index, (event_credit, asiento_path, extracto_path, item_policy) in enumerate(
+        event_specs, start=1
+    ):
         item = await _plan_one_asiento_event(
             graph,
             site_id,
@@ -1106,6 +1153,7 @@ async def _plan_events_for_manifest_output(
             planned_ibr_keys=planned_ibr_keys,
             extracto_pdf_path=extracto_path,
             payment_date_iso=payment_date_iso,
+            policy=item_policy,
         )
         events.append(item)
     return events

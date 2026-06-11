@@ -57,7 +57,12 @@ from app.application.services.merge_group_validation import (
     validate_merge_group_completeness,
 )
 from app.application.services.merge_manifest_gate import assess_manifest_completeness
-from app.application.services.review_schema import TipoAplicacion
+from app.application.services.review_schema import (
+    ExtractRole,
+    TipoAplicacion,
+    policy_fields_for_manifest,
+    resolve_manifest_policy,
+)
 from app.application.use_cases.send_validar_extractos_notification import (
     _collect_pdf_paths_from_ruta_cell,
     _excel_cell_display,
@@ -300,6 +305,28 @@ async def _drive_item_exists(
         raise
 
 
+def _row_application_policy(
+    row: dict[str, Any],
+    *,
+    default_canonical: str,
+) -> Any:
+    return resolve_manifest_policy(row, default_canonical=default_canonical)
+
+
+def _mora_reference_amount_from_row(row: dict[str, Any]) -> float | None:
+    for key in ("mora_reference_amount", "valor_extracto", "otros_valores", "intereses_mora"):
+        raw = row.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        try:
+            return float(str(raw).replace(",", "."))
+        except ValueError:
+            continue
+    return None
+
+
 def _finalize_credit_item(
     credit_digits: str,
     asiento_paths: list[str],
@@ -310,15 +337,24 @@ def _finalize_credit_item(
     ruta_tabla_amortizacion: str = "",
     ruta_unidad_credito: str = "",
     ruta_asientos_contables: str = "",
+    policy: Any | None = None,
+    mora_reference_amount: float | None = None,
 ) -> dict[str, Any]:
     asientos = unique_paths_preserve_order(asiento_paths)
     extractos = unique_paths_preserve_order(extract_paths)
     w = list(warnings or [])
     if len(extractos) > 1:
         w.append("MULTIPLE_EXTRACTS_FOR_CREDIT")
-    return {
+    resolved_policy = policy
+    if resolved_policy is None:
+        resolved_policy = resolve_manifest_policy(
+            {"tipo_aplicacion": tipo_aplicacion},
+            default_canonical=tipo_aplicacion,
+        )
+    item: dict[str, Any] = {
         "credito": credit_digits,
-        "tipo_aplicacion": tipo_aplicacion,
+        "tipo_aplicacion": resolved_policy.tipo_aplicacion_canonica,
+        **policy_fields_for_manifest(resolved_policy),
         "ruta_tabla_amortizacion": ruta_tabla_amortizacion,
         "ruta_unidad_credito": ruta_unidad_credito,
         "ruta_asientos_contables": ruta_asientos_contables,
@@ -327,6 +363,9 @@ def _finalize_credit_item(
         "extracto_pdf_path": extractos[0] if extractos else "",
         "warnings": w,
     }
+    if mora_reference_amount is not None:
+        item["mora_reference_amount"] = mora_reference_amount
+    return item
 
 
 async def _prevalidate_id_pago_group(
@@ -346,14 +385,18 @@ async def _prevalidate_id_pago_group(
         cliente = str(row.get("cliente") or "").strip()
         credito_label = str(row.get("credito_label") or "").strip()
         row_cred = str(row.get("credito_digits") or "").strip()
+        row_requiere_extracto = bool(row.get("requiere_extracto", True))
+        row_rol = str(row.get("rol_extracto") or ExtractRole.CIERRE_CUOTA).strip().upper()
+        tipo_visible = str(row.get("tipo_aplicacion_original") or TipoAplicacion.PAGO.value).strip()
 
         extract_paths: list[str] = []
-        ruta_cell = row.get("ruta_cell")
-        for p in await _collect_pdf_paths_from_ruta_cell(graph, site_id, drive_id, ruta_cell):
-            extract_paths.append(p.strip().strip("/").replace("\\", "/"))
-        extract_paths = unique_paths_preserve_order(extract_paths)
+        if row_requiere_extracto and row_rol in (ExtractRole.CIERRE_CUOTA, ExtractRole.REFERENCIA_MORA):
+            ruta_cell = row.get("ruta_cell")
+            for p in await _collect_pdf_paths_from_ruta_cell(graph, site_id, drive_id, ruta_cell):
+                extract_paths.append(p.strip().strip("/").replace("\\", "/"))
+            extract_paths = unique_paths_preserve_order(extract_paths)
 
-        if not extract_paths:
+        if row_requiere_extracto and not extract_paths:
             skip_lines.append(
                 _merge_skip_line(
                     id_pago,
@@ -362,13 +405,17 @@ async def _prevalidate_id_pago_group(
                     credito_label=credito_label,
                     credit_number_expected=row_cred or "-",
                     extracto_path="-",
+                    tipo_aplicacion=tipo_visible,
+                    requiere_extracto="SI",
                 )
             )
             continue
 
-        credit_digits = row_cred or _resolve_credit_digits_for_extract(extract_paths[0], "")
-        if not credit_digits:
-            credit_digits = _resolve_credit_digits_for_extract(extract_paths[0], row_cred)
+        credit_digits = row_cred
+        if extract_paths:
+            credit_digits = row_cred or _resolve_credit_digits_for_extract(extract_paths[0], "")
+            if not credit_digits:
+                credit_digits = _resolve_credit_digits_for_extract(extract_paths[0], row_cred)
         if not credit_digits:
             skip_lines.append(
                 _merge_skip_line(
@@ -376,7 +423,7 @@ async def _prevalidate_id_pago_group(
                     "credit_number_not_resolved",
                     cliente=cliente,
                     credito_label=credito_label,
-                    extracto_path=extract_paths[0],
+                    extracto_path=extract_paths[0] if extract_paths else "-",
                 )
             )
             continue
@@ -390,7 +437,7 @@ async def _prevalidate_id_pago_group(
                     cliente=cliente,
                     credito_label=credito_label,
                     credit_number_expected=credit_digits,
-                    extracto_path=extract_paths[0],
+                    extracto_path=extract_paths[0] if extract_paths else "-",
                 )
             )
             continue
@@ -408,7 +455,7 @@ async def _prevalidate_id_pago_group(
                     credito_label=credito_label,
                     credit_number_expected=credit_digits,
                     asiento_folder_path=asientos_dir_ep,
-                    extracto_path=extract_paths[0],
+                    extracto_path=extract_paths[0] if extract_paths else "-",
                     names_seen=str(exc)[:800],
                 )
             )
@@ -445,12 +492,14 @@ async def _prevalidate_id_pago_group(
             )
             continue
 
+        policy = _row_application_policy(row, default_canonical=TipoAplicacion.PAGO.value)
         bucket = credit_accum.setdefault(
             credit_digits,
             {
                 "asiento_pdf_paths": [],
                 "extracto_pdf_paths": [],
                 "warnings": [],
+                "policy": policy,
             },
         )
         for asiento_name in valid_names:
@@ -466,6 +515,7 @@ async def _prevalidate_id_pago_group(
             raw["asiento_pdf_paths"],
             raw["extracto_pdf_paths"],
             warnings=raw.get("warnings"),
+            policy=raw.get("policy"),
         )
         if not item["asiento_pdf_paths"] or not item["extracto_pdf_paths"]:
             skip_lines.append(
@@ -518,6 +568,9 @@ async def _prevalidate_abono_id_pago_group(
         cliente = str(row.get("cliente") or "").strip()
         credito_label = str(row.get("credito_label") or "").strip()
         row_cred = str(row.get("credito_digits") or "").strip()
+        row_requiere_extracto = bool(row.get("requiere_extracto"))
+        row_rol = str(row.get("rol_extracto") or ExtractRole.NO_APLICA).strip().upper()
+        tipo_visible = str(row.get("tipo_aplicacion_original") or TipoAplicacion.ABONO.value).strip()
 
         asientos_dir_ep = _ruta_asientos_from_cell(row.get("ruta_asientos_cell"))
         if not asientos_dir_ep:
@@ -528,8 +581,8 @@ async def _prevalidate_abono_id_pago_group(
                     cliente=cliente,
                     credito_label=credito_label,
                     credit_number_expected=row_cred or "-",
-                    tipo_aplicacion=TipoAplicacion.ABONO.value,
-                    requiere_extracto="NO",
+                    tipo_aplicacion=tipo_visible,
+                    requiere_extracto="SI" if row_requiere_extracto else "NO",
                     creditos_seleccionados=creditos_sel,
                 )
             )
@@ -542,12 +595,35 @@ async def _prevalidate_abono_id_pago_group(
                     "credit_number_not_resolved",
                     cliente=cliente,
                     credito_label=credito_label,
-                    tipo_aplicacion=TipoAplicacion.ABONO.value,
-                    requiere_extracto="NO",
+                    tipo_aplicacion=tipo_visible,
+                    requiere_extracto="SI" if row_requiere_extracto else "NO",
                     creditos_seleccionados=creditos_sel,
                 )
             )
             continue
+
+        extract_paths: list[str] = []
+        if row_requiere_extracto and row_rol == ExtractRole.REFERENCIA_MORA:
+            for p in await _collect_pdf_paths_from_ruta_cell(
+                graph, site_id, drive_id, row.get("ruta_cell")
+            ):
+                extract_paths.append(p.strip().strip("/").replace("\\", "/"))
+            extract_paths = unique_paths_preserve_order(extract_paths)
+            if not extract_paths:
+                skip_lines.append(
+                    _merge_skip_line(
+                        id_pago,
+                        "extract_routes_missing",
+                        cliente=cliente,
+                        credito_label=credito_label,
+                        credit_number_expected=row_cred,
+                        extracto_path="-",
+                        tipo_aplicacion=tipo_visible,
+                        requiere_extracto="SI",
+                        creditos_seleccionados=creditos_sel,
+                    )
+                )
+                continue
 
         try:
             asiento_children = await _list_drive_folder_children(
@@ -563,8 +639,8 @@ async def _prevalidate_abono_id_pago_group(
                     credit_number_expected=row_cred,
                     asiento_folder_path=asientos_dir_ep,
                     names_seen=str(exc)[:800],
-                    tipo_aplicacion=TipoAplicacion.ABONO.value,
-                    requiere_extracto="NO",
+                    tipo_aplicacion=tipo_visible,
+                    requiere_extracto="SI" if row_requiere_extracto else "NO",
                     creditos_seleccionados=creditos_sel,
                 )
             )
@@ -583,8 +659,8 @@ async def _prevalidate_abono_id_pago_group(
                     asiento_pdf_found=rej,
                     asiento_folder_path=asientos_dir_ep,
                     names_seen=", ".join(names) if names else "-",
-                    tipo_aplicacion=TipoAplicacion.ABONO.value,
-                    requiere_extracto="NO",
+                    tipo_aplicacion=tipo_visible,
+                    requiere_extracto="SI" if row_requiere_extracto else "NO",
                     creditos_seleccionados=creditos_sel,
                 )
             )
@@ -598,13 +674,14 @@ async def _prevalidate_abono_id_pago_group(
                     credit_number_expected=row_cred,
                     asiento_folder_path=asientos_dir_ep,
                     names_seen=", ".join(names) if names else "-",
-                    tipo_aplicacion=TipoAplicacion.ABONO.value,
-                    requiere_extracto="NO",
+                    tipo_aplicacion=tipo_visible,
+                    requiere_extracto="SI" if row_requiere_extracto else "NO",
                     creditos_seleccionados=creditos_sel,
                 )
             )
             continue
 
+        policy = _row_application_policy(row, default_canonical=TipoAplicacion.ABONO.value)
         bucket = credit_accum.setdefault(
             row_cred,
             {
@@ -612,22 +689,32 @@ async def _prevalidate_abono_id_pago_group(
                 "extracto_pdf_paths": [],
                 "warnings": [],
                 "ruta_asientos_contables": asientos_dir_ep,
+                "policy": policy,
+                "mora_reference_amount": _mora_reference_amount_from_row(row),
             },
         )
         for asiento_name in valid_names:
             asiento_rel = f"{asientos_dir_ep}/{asiento_name}".replace("//", "/")
             bucket["asiento_pdf_paths"].append(asiento_rel)
+        bucket["extracto_pdf_paths"].extend(extract_paths)
 
     credit_items: list[dict[str, Any]] = []
     for credit_digits in sorted(credit_accum.keys(), key=lambda x: (len(x), x)):
         raw = credit_accum[credit_digits]
+        raw_policy = raw.get("policy")
         item = _finalize_credit_item(
             credit_digits,
             raw["asiento_pdf_paths"],
-            [],
+            raw.get("extracto_pdf_paths") or [],
             warnings=raw.get("warnings"),
-            tipo_aplicacion=TipoAplicacion.ABONO.value,
+            tipo_aplicacion=str(
+                raw_policy.tipo_aplicacion_canonica
+                if raw_policy is not None
+                else TipoAplicacion.ABONO.value
+            ),
             ruta_asientos_contables=str(raw.get("ruta_asientos_contables") or ""),
+            policy=raw_policy,
+            mora_reference_amount=raw.get("mora_reference_amount"),
         )
         if not item["asiento_pdf_paths"]:
             skip_lines.append(
@@ -892,11 +979,8 @@ def _merge_composite_output_basename(
     cred = _merge_composite_credit_for_filename_display(credit_part)
     if not cli:
         cli = "CLIENTE"
-    token = (
-        TipoAplicacion.ABONO.value
-        if str(tipo_aplicacion or "").strip().upper() == TipoAplicacion.ABONO.value
-        else TipoAplicacion.PAGO.value
-    )
+    tipo_upper = str(tipo_aplicacion or "").strip().upper()
+    token = TipoAplicacion.ABONO.value if tipo_upper == TipoAplicacion.ABONO.value else TipoAplicacion.PAGO.value
     base = f"{day} {mes} {bank_token} {token} {cli} {cred}.pdf"
     return _sanitize_pdf_filename_component(base) or base
 
@@ -927,6 +1011,13 @@ class MergeCompositePdfOutput:
     credit_items: tuple[dict[str, Any], ...] = ()
     tipo_aplicacion: str = TipoAplicacion.PAGO.value
     requiere_extracto: bool = True
+    tipo_aplicacion_original: str = ""
+    tipo_aplicacion_canonica: str = ""
+    subtipo_aplicacion: str = ""
+    rol_extracto: str = ""
+    cierra_cuota: bool = False
+    actualiza_ibr: bool = True
+    genera_siguiente_extracto: bool = True
     monto_banco: float | None = None
     fecha_banco: str = ""
     creditos_seleccionados: tuple[str, ...] = ()
@@ -1037,6 +1128,7 @@ def _merge_output_record(
     credit_items: list[dict[str, Any]],
     tipo_aplicacion: str = TipoAplicacion.PAGO.value,
     requiere_extracto: bool = True,
+    policy: Any | None = None,
     monto_banco: float | None = None,
     fecha_banco: str = "",
     creditos_seleccionados: tuple[str, ...] = (),
@@ -1044,6 +1136,11 @@ def _merge_output_record(
     asiento_paths, extracto_path = _legacy_paths_from_credit_items(credit_items)
     legacy_asiento = asiento_paths[0] if asiento_paths else ""
     frozen_items = tuple(dict(ci) for ci in credit_items)
+    resolved_policy = policy or resolve_manifest_policy(
+        credit_items[0] if credit_items else {"tipo_aplicacion": tipo_aplicacion},
+        default_canonical=tipo_aplicacion,
+    )
+    policy_fields = policy_fields_for_manifest(resolved_policy)
     return MergeCompositePdfOutput(
         id_pago=id_pago,
         output_relative_path=output_relative_path,
@@ -1056,12 +1153,39 @@ def _merge_output_record(
         asiento_pdf_paths=tuple(asiento_paths),
         extracto_pdf_path=extracto_path,
         credit_items=frozen_items,
-        tipo_aplicacion=tipo_aplicacion,
-        requiere_extracto=requiere_extracto,
+        tipo_aplicacion=resolved_policy.tipo_aplicacion_canonica,
+        requiere_extracto=bool(policy_fields.get("requiere_extracto", requiere_extracto)),
+        tipo_aplicacion_original=str(policy_fields.get("tipo_aplicacion_original") or ""),
+        tipo_aplicacion_canonica=str(policy_fields.get("tipo_aplicacion_canonica") or ""),
+        subtipo_aplicacion=str(policy_fields.get("subtipo_aplicacion") or ""),
+        rol_extracto=str(policy_fields.get("rol_extracto") or ""),
+        cierra_cuota=bool(policy_fields.get("cierra_cuota")),
+        actualiza_ibr=bool(policy_fields.get("actualiza_ibr")),
+        genera_siguiente_extracto=bool(policy_fields.get("genera_siguiente_extracto")),
         monto_banco=monto_banco,
         fecha_banco=fecha_banco,
         creditos_seleccionados=creditos_seleccionados,
     )
+
+
+def _manifest_output_dict(
+    output: MergeCompositePdfOutput,
+    *,
+    expected_creditos: tuple[str, ...],
+) -> dict[str, Any]:
+    base = complete_output_manifest_dict(output, expected_creditos=expected_creditos)
+    base.update(
+        {
+            "tipo_aplicacion_original": output.tipo_aplicacion_original,
+            "tipo_aplicacion_canonica": output.tipo_aplicacion_canonica,
+            "subtipo_aplicacion": output.subtipo_aplicacion,
+            "rol_extracto": output.rol_extracto,
+            "cierra_cuota": output.cierra_cuota,
+            "actualiza_ibr": output.actualiza_ibr,
+            "genera_siguiente_extracto": output.genera_siguiente_extracto,
+        }
+    )
+    return base
 
 
 def _group_meta_from_rows(
@@ -1305,7 +1429,11 @@ async def merge_composite_validado_pdfs(
         payment_incomplete_groups_count = 0
         abono_incomplete_groups_count = 0
         failed_groups_count = 0
-        extracts_not_required_count = len(abono_groups)
+        extracts_not_required_count = sum(
+            1
+            for _id, grp in {**payment_groups, **abono_groups}.items()
+            if not any(bool(r.get("requiere_extracto")) for r in grp)
+        )
         expected_by_id_pago: dict[str, tuple[str, ...]] = {}
 
         work_queue: list[tuple[str, str, list[dict[str, Any]]]] = []
@@ -1377,9 +1505,15 @@ async def merge_composite_validado_pdfs(
             base_rel = f"{out_folder}/{out_base}".replace("//", "/")
             already_exists = await _drive_item_exists(graph, site_id, drive_id, base_rel)
 
+            group_policy = _row_application_policy(
+                group_rows[0] if group_rows else {},
+                default_canonical=tipo_aplicacion,
+            )
+            group_requiere_extracto = group_policy.requiere_extracto
             output_meta = dict(
-                tipo_aplicacion=tipo_aplicacion,
-                requiere_extracto=not is_abono,
+                tipo_aplicacion=group_policy.tipo_aplicacion_canonica,
+                requiere_extracto=group_requiere_extracto,
+                policy=group_policy,
                 monto_banco=monto_meta,
                 fecha_banco=fecha_meta,
                 creditos_seleccionados=creditos_meta,
@@ -1403,7 +1537,7 @@ async def merge_composite_validado_pdfs(
                 for item in sorted(credit_items, key=lambda x: str(x.get("credito") or "")):
                     for a in item.get("asiento_pdf_paths") or []:
                         labels_preview.append(f"asiento:{a}")
-                    if not is_abono:
+                    if group_requiere_extracto:
                         for ep in item.get("extracto_pdf_paths") or []:
                             labels_preview.append(f"extracto:{ep}")
                 outputs.append(
@@ -1438,7 +1572,7 @@ async def merge_composite_validado_pdfs(
                 email_bytes,
                 email_rel,
                 credit_items,
-                include_extracts=not is_abono,
+                include_extracts=group_requiere_extracto,
             )
             if build_skips:
                 skipped.extend(build_skips)
@@ -1566,7 +1700,7 @@ async def merge_composite_validado_pdfs(
                 "abono_skipped_count": abono_skipped_count,
                 "extracts_not_required_count": extracts_not_required_count,
                 "outputs": [
-                    complete_output_manifest_dict(
+                    _manifest_output_dict(
                         o,
                         expected_creditos=expected_by_id_pago.get(
                             o.id_pago, o.creditos_seleccionados

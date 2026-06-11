@@ -34,10 +34,17 @@ from app.application.services.accounting_pdf_parser import (
     parse_accounting_text,
 )
 from app.application.services.review_schema import (
+    ApplicationPolicy,
+    ApplicationSubtype,
     DistribucionAbonosCols,
     ReviewSheets,
     TipoAplicacion,
+    TipoAplicacionVisible,
     normalize_credito_digits,
+    policy_observability_dict,
+    policy_requires_reference_extract,
+    resolve_application_policy,
+    resolve_manifest_policy,
 )
 from app.application.services.accounting_pdf_processed_move import (
     _allocate_destination_path,
@@ -86,6 +93,8 @@ ABONO_APPLICATION_ROW_STRATEGY_EXISTING = "EXISTING_AUTOMATION_LOG"
 ABONO_IBR_SKIPPED_REASON = "NOT_REQUIRED_FOR_ABONO"
 APPLICATION_PAYMENT_SECTION_FULL = "APPLICATION_PAYMENT_SECTION_FULL"
 ABONO_APPLICATION_STATUS_ALREADY_APPLIED = "ALREADY_APPLIED"
+ABONO_MORA_REFERENCE_EXTRACT_MISSING = "ABONO_MORA_REFERENCE_EXTRACT_MISSING"
+MORA_REFERENCE_TOLERANCE = ABONO_RECONCILIATION_TOLERANCE
 
 _ABONO_STATUS_MAP = {
     APLICADO: "WOULD_APPLY",
@@ -102,6 +111,43 @@ class AbonoCreditItem:
     ruta_asientos_contables: str
     asiento_pdf_paths: list[str]
     extracto_pdf_paths: list[str]
+    policy: ApplicationPolicy | None = None
+    mora_reference_amount: Decimal | None = None
+
+
+def compute_mora_reference_coverage(
+    *,
+    mora_reference_amount: Decimal | None,
+    accounting_mora: Decimal | None,
+    accounting_total: Decimal | None,
+) -> dict[str, Any]:
+    """Cobertura mora extracto vs asiento; MISMATCH es warning, no bloqueo."""
+    ref = mora_reference_amount
+    acct: Decimal | None = accounting_mora
+    if acct is None and accounting_total is not None:
+        acct = accounting_total
+    if ref is None:
+        return {
+            "mora_reference_amount": None,
+            "accounting_total": float(acct) if acct is not None else None,
+            "mora_reference_difference": None,
+            "mora_reference_coverage_status": "MISSING_REFERENCE",
+        }
+    if acct is None:
+        return {
+            "mora_reference_amount": float(ref),
+            "accounting_total": None,
+            "mora_reference_difference": None,
+            "mora_reference_coverage_status": "MISSING_ACCOUNTING",
+        }
+    diff = acct - ref
+    status = "MATCH" if abs(diff) <= MORA_REFERENCE_TOLERANCE else "MISMATCH"
+    return {
+        "mora_reference_amount": float(ref),
+        "accounting_total": float(acct),
+        "mora_reference_difference": float(diff),
+        "mora_reference_coverage_status": status,
+    }
 
 
 @dataclass
@@ -167,16 +213,14 @@ class AbonoDryRunGroup:
 
 
 def infer_manifest_tipo_aplicacion(output: dict[str, Any]) -> str:
-    raw = str(output.get("tipo_aplicacion") or "").strip().upper()
-    if raw in (TipoAplicacion.PAGO.value, TipoAplicacion.ABONO.value):
-        return raw
-    return TipoAplicacion.PAGO.value
+    """Tipo canónico (PAGO/ABONO) para enrutar dry-run."""
+    return resolve_manifest_policy(output).tipo_aplicacion_canonica
 
 
-def infer_manifest_requiere_extracto(output: dict[str, Any], tipo: str) -> bool:
+def infer_manifest_requiere_extracto(output: dict[str, Any], tipo: str = "") -> bool:
     if "requiere_extracto" in output:
         return bool(output.get("requiere_extracto"))
-    return tipo == TipoAplicacion.PAGO.value
+    return resolve_manifest_policy(output).requiere_extracto
 
 
 def resolve_abono_schedule_context(
@@ -226,6 +270,16 @@ def _parse_decimal_amount(value: Any) -> Decimal | None:
             return Decimal(re.sub(r"[^\d.\-]", "", text.replace(",", ".")))
         except InvalidOperation:
             return None
+
+
+def _mora_reference_from_credit_source(ci: dict[str, Any]) -> Decimal | None:
+    for key in ("mora_reference_amount", "valor_extracto", "otros_valores", "intereses_mora"):
+        if key not in ci:
+            continue
+        parsed = _parse_decimal_amount(ci.get(key))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _parse_banco_date(value: Any) -> date | None:
@@ -294,15 +348,22 @@ def _credit_items_from_output(output: dict[str, Any]) -> list[AbonoCreditItem]:
             for p in (ci.get("extracto_pdf_paths") or [])
             if str(p).strip()
         ]
+        policy = resolve_manifest_policy(
+            ci,
+            default_canonical=TipoAplicacion.ABONO.value,
+        )
+        mora_ref = _mora_reference_from_credit_source(ci)
         items.append(
             AbonoCreditItem(
                 credito=str(ci.get("credito") or "").strip(),
-                tipo_aplicacion=str(ci.get("tipo_aplicacion") or TipoAplicacion.ABONO.value).strip().upper(),
+                tipo_aplicacion=policy.tipo_aplicacion_canonica,
                 ruta_tabla_amortizacion=str(ci.get("ruta_tabla_amortizacion") or "").strip().strip("/"),
                 ruta_unidad_credito=str(ci.get("ruta_unidad_credito") or "").strip().strip("/"),
                 ruta_asientos_contables=str(ci.get("ruta_asientos_contables") or "").strip().strip("/"),
                 asiento_pdf_paths=paths,
                 extracto_pdf_paths=extractos,
+                policy=policy,
+                mora_reference_amount=mora_ref,
             )
         )
     return items
@@ -352,7 +413,9 @@ def build_abono_group_from_manifest_output(
                 ruta_asientos_contables=item.ruta_asientos_contables
                 or str((hist or {}).get("ruta_asientos_contables") or "").strip().strip("/"),
                 asiento_pdf_paths=list(item.asiento_pdf_paths),
-                extracto_pdf_paths=[],
+                extracto_pdf_paths=list(item.extracto_pdf_paths),
+                policy=item.policy,
+                mora_reference_amount=item.mora_reference_amount,
             )
         )
 
@@ -477,6 +540,21 @@ def validate_abono_group_structure(group: AbonoDryRunGroup) -> list[dict[str, An
                     creditos_seleccionados=creditos_sel,
                     paths=[item.ruta_asientos_contables],
                     next_action="Cargue el PDF del asiento en la carpeta del crédito.",
+                )
+            )
+        policy = item.policy or resolve_manifest_policy(
+            {"tipo_aplicacion": item.tipo_aplicacion},
+            default_canonical=TipoAplicacion.ABONO.value,
+        )
+        if policy_requires_reference_extract(policy) and not item.extracto_pdf_paths:
+            errors.append(
+                _blocking(
+                    ABONO_MORA_REFERENCE_EXTRACT_MISSING,
+                    f"ABONO MORA requiere extracto de referencia para crédito {cred}",
+                    id_pago=id_pago,
+                    credito=cred,
+                    creditos_seleccionados=creditos_sel,
+                    next_action="Confirme ruta/link de extracto en el histórico o manifest.",
                 )
             )
 
@@ -1160,12 +1238,19 @@ def _abono_payment_date_fields(
     return {"payment_date_source": "none"}
 
 
-def _abono_ibr_block() -> dict[str, Any]:
+def _abono_ibr_block(policy: ApplicationPolicy | None = None) -> dict[str, Any]:
+    if policy is None or not policy.actualiza_ibr:
+        return {
+            "required_date": None,
+            "found": False,
+            "value": None,
+            "status": "NOT_REQUIRED",
+        }
     return {
         "required_date": None,
         "found": False,
         "value": None,
-        "status": "NOT_REQUIRED",
+        "status": "PENDING_IBR",
     }
 
 
@@ -1173,13 +1258,17 @@ def _abono_observability_base(
     *,
     group: AbonoDryRunGroup,
     schedule: AbonoScheduleContextResult,
+    policy: ApplicationPolicy | None = None,
 ) -> dict[str, Any]:
-    return {
-        "tipo_aplicacion": TipoAplicacion.ABONO.value,
-        "requiere_extracto": False,
-        "requires_extract": False,
-        "updates_ibr": False,
-        "ibr_skipped_reason": ABONO_IBR_SKIPPED_REASON,
+    resolved = policy or resolve_manifest_policy(
+        {"tipo_aplicacion": TipoAplicacion.ABONO.value},
+        default_canonical=TipoAplicacion.ABONO.value,
+    )
+    base = {
+        **policy_observability_dict(resolved),
+        "ibr_skipped_reason": (
+            ABONO_IBR_SKIPPED_REASON if not resolved.actualiza_ibr else None
+        ),
         "schedule_resolution_status": schedule.status,
         "schedule_context": schedule.status,
         "application_row_strategy": ABONO_APPLICATION_ROW_STRATEGY,
@@ -1189,8 +1278,29 @@ def _abono_observability_base(
         "due_date_row": None,
         "fecha_limite_pago": None,
         "ibr_row": None,
-        "ibr": _abono_ibr_block(),
+        "ibr": _abono_ibr_block(resolved),
     }
+    return base
+
+
+def _mora_coverage_for_event(
+    credit_item: AbonoCreditItem,
+    event: PaymentApplicationEvent | None,
+) -> dict[str, Any]:
+    policy = credit_item.policy
+    if policy is None or policy.subtipo_aplicacion != ApplicationSubtype.MORA:
+        return {}
+    accounting_mora: Decimal | None = None
+    accounting_total: Decimal | None = None
+    if event is not None:
+        if event.mora is not None:
+            accounting_mora = _parse_decimal_amount(event.mora)
+        accounting_total = _canonical_amount_from_event(event)
+    return compute_mora_reference_coverage(
+        mora_reference_amount=credit_item.mora_reference_amount,
+        accounting_mora=accounting_mora,
+        accounting_total=accounting_total,
+    )
 
 
 def _build_already_applied_abono_item(
@@ -1203,12 +1313,18 @@ def _build_already_applied_abono_item(
     snap = state.applied_snapshot
     app_row = snap.application_row if snap else None
     amount = float(state.amount) if state.amount is not None else None
+    extracto_path = (
+        (state.credit_item.extracto_pdf_paths or [None])[0]
+        if state.credit_item.extracto_pdf_paths
+        else None
+    )
+    policy = state.credit_item.policy
     return {
         "id_pago": group.id_pago,
         "cliente": group.cliente,
         "credito": cred or state.credit_item.credito,
         "asiento_pdf_path": state.asiento_path,
-        "extracto_pdf_path": None,
+        "extracto_pdf_path": extracto_path,
         "event_index": state.event_index,
         "comprobante": None,
         "tabla_amortizacion_path": (state.credit_item.ruta_tabla_amortizacion or "").strip("/") or None,
@@ -1223,7 +1339,7 @@ def _build_already_applied_abono_item(
             "saldos_menores": None,
         },
         "warnings": [],
-        **_abono_observability_base(group=group, schedule=schedule),
+        **_abono_observability_base(group=group, schedule=schedule, policy=policy),
         "application_row_strategy": ABONO_APPLICATION_ROW_STRATEGY_EXISTING,
         "requires_pdf_download": False,
         "requires_new_application_row": False,
@@ -1251,20 +1367,36 @@ async def _plan_abono_asiento_item(
 ) -> dict[str, Any]:
     cred = _norm_credito_token(credit_item.credito)
     tabla_path = (credit_item.ruta_tabla_amortizacion or "").strip().strip("/")
+    policy = credit_item.policy
+    extracto_path = (
+        (credit_item.extracto_pdf_paths or [None])[0]
+        if credit_item.extracto_pdf_paths
+        else None
+    )
+    mora_coverage = _mora_coverage_for_event(credit_item, event)
+    item_warnings = list(event.parse_warnings or [])
+    if mora_coverage.get("mora_reference_coverage_status") == "MISMATCH":
+        item_warnings.append(
+            "mora_reference_mismatch:"
+            f"ref={mora_coverage.get('mora_reference_amount')}"
+            f",asiento={mora_coverage.get('accounting_total')}"
+            f",diff={mora_coverage.get('mora_reference_difference')}"
+        )
     base = {
         "id_pago": group.id_pago,
         "cliente": group.cliente,
         "credito": cred or credit_item.credito,
         "asiento_pdf_path": asiento_path,
-        "extracto_pdf_path": None,
+        "extracto_pdf_path": extracto_path,
         "event_index": event_index,
         "comprobante": event.comprobante or None,
         "tabla_amortizacion_path": tabla_path or None,
         "detected_codes": list(event.detected_codes),
         "parser_mode": event.parser_mode or None,
         "payment_application": _payment_application_dict(event),
-        "warnings": list(event.parse_warnings or []),
-        **_abono_observability_base(group=group, schedule=schedule),
+        "warnings": item_warnings,
+        **_abono_observability_base(group=group, schedule=schedule, policy=policy),
+        **mora_coverage,
         **_abono_payment_date_fields(group, event),
         **pdf_fingerprint,
         "idempotency_key": build_amortization_idempotency_key(
@@ -1655,7 +1787,11 @@ async def process_abono_manifest_outputs(
                             "event_index": st.event_index,
                             "application_status": "ERROR",
                             "error_code": st.error.get("error_code"),
-                            **_abono_observability_base(group=group, schedule=schedule),
+                            **_abono_observability_base(
+                                group=group,
+                                schedule=schedule,
+                                policy=st.credit_item.policy,
+                            ),
                         }
                     )
                     group.group_ready_for_apply = False
@@ -1700,6 +1836,11 @@ async def process_abono_manifest_outputs(
                 )
                 if st.idempotency_key:
                     planned_item["idempotency_key"] = st.idempotency_key
+                coverage_status = planned_item.get("mora_reference_coverage_status")
+                if coverage_status == "MISMATCH":
+                    group.warnings.append(
+                        f"mora_reference_mismatch|id_pago={group.id_pago}|credito={st.credit_item.credito}"
+                    )
                 group_items.append(planned_item)
                 if planned_item.get("application_status") not in (
                     "WOULD_APPLY",
@@ -1767,12 +1908,14 @@ def build_abono_observability_items(
                     else ABONO_MANIFEST_INVALID
                 )
 
+            extracto_path = (ci.extracto_pdf_paths or [None])[0] if ci.extracto_pdf_paths else None
+            mora_coverage = _mora_coverage_for_event(ci, event)
             item: dict[str, Any] = {
                 "id_pago": group.id_pago,
                 "cliente": group.cliente,
                 "credito": cred or ci.credito,
                 "asiento_pdf_path": asiento_path,
-                "extracto_pdf_path": None,
+                "extracto_pdf_path": extracto_path,
                 "tabla_amortizacion_path": ci.ruta_tabla_amortizacion or None,
                 "event_index": idx,
                 "payment_application": payment_app,
@@ -1781,7 +1924,8 @@ def build_abono_observability_items(
                 "application_status": application_status,
                 "error_code": error_code,
                 "warnings": list(group.warnings),
-                **_abono_observability_base(group=group, schedule=schedule),
+                **_abono_observability_base(group=group, schedule=schedule, policy=ci.policy),
+                **mora_coverage,
             }
             if event:
                 item.update(_abono_payment_date_fields(group, event))

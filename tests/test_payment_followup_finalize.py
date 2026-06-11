@@ -77,7 +77,7 @@ def _dist(estado: str, id_pago: str = "P1", credito: str = "C1") -> dict:
         DistribucionCols.MONTO_BANCO: 100.0,
         DistribucionCols.VALOR_EXTRACTO: 100.0,
         DistribucionCols.APLICAR_A_EXTRACTO: 80.0,
-        DistribucionCols.MORA_A_APLICAR: 10.0,
+        DistribucionCols.ABONO_A_CAPITAL: 10.0,
         DistribucionCols.OTROS_VALORES: 10.0,
         DistribucionCols.TOTAL_APLICADO: 100.0,
         DistribucionCols.SALDO_POR_ASIGNAR: 0.0,

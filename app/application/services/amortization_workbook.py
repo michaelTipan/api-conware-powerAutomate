@@ -45,6 +45,11 @@ AUTOMATION_LOG_HEADERS = (
     "Estado",
     "TipoAplicacion",
     "ValorPagadoCliente",
+    "TipoAplicacionOriginal",
+    "TipoAplicacionCanonica",
+    "SubtipoAplicacion",
+    "RolExtracto",
+    "ActualizaIBR",
 )
 
 _AUTOMATION_LOG_COL = {name: idx + 1 for idx, name in enumerate(AUTOMATION_LOG_HEADERS)}
@@ -1449,6 +1454,11 @@ class AutomationLogRecord:
     tipo_aplicacion: str = ""
     valor_pagado_cliente: str = ""
     accion: str = ""
+    tipo_aplicacion_original: str = ""
+    tipo_aplicacion_canonica: str = ""
+    subtipo_aplicacion: str = ""
+    rol_extracto: str = ""
+    actualiza_ibr: str = ""
 
 
 def _automation_log_header_map(ws: Worksheet) -> dict[str, int]:
@@ -1498,6 +1508,11 @@ def load_automation_log_index(workbook: Workbook) -> dict[str, AutomationLogReco
             tipo_aplicacion=_cell("TipoAplicacion"),
             valor_pagado_cliente=_cell("ValorPagadoCliente"),
             accion=_cell("Accion"),
+            tipo_aplicacion_original=_cell("TipoAplicacionOriginal"),
+            tipo_aplicacion_canonica=_cell("TipoAplicacionCanonica"),
+            subtipo_aplicacion=_cell("SubtipoAplicacion"),
+            rol_extracto=_cell("RolExtracto"),
+            actualiza_ibr=_cell("ActualizaIBR"),
         )
     return index
 
@@ -1511,7 +1526,15 @@ def _ensure_automation_log_extension_columns(ws: Worksheet) -> dict[str, int]:
     """Agrega columnas nuevas al final de hojas de log existentes (backward-compatible)."""
     header_map = _automation_log_header_map(ws)
     next_col = (max(header_map.values()) + 1) if header_map else 1
-    for name in ("TipoAplicacion", "ValorPagadoCliente"):
+    for name in (
+        "TipoAplicacion",
+        "ValorPagadoCliente",
+        "TipoAplicacionOriginal",
+        "TipoAplicacionCanonica",
+        "SubtipoAplicacion",
+        "RolExtracto",
+        "ActualizaIBR",
+    ):
         if name not in header_map:
             ws.cell(1, next_col, value=name)
             header_map[name] = next_col
@@ -1545,6 +1568,17 @@ def append_automation_log(workbook: Workbook, log_entry: dict[str, Any]) -> None
         "Estado": log_entry.get("estado", accion),
         "TipoAplicacion": log_entry.get("tipo_aplicacion", ""),
         "ValorPagadoCliente": vp if vp is not None else "",
+        "TipoAplicacionOriginal": log_entry.get("tipo_aplicacion_original", ""),
+        "TipoAplicacionCanonica": log_entry.get("tipo_aplicacion_canonica", ""),
+        "SubtipoAplicacion": log_entry.get("subtipo_aplicacion", ""),
+        "RolExtracto": log_entry.get("rol_extracto", ""),
+        "ActualizaIBR": (
+            "SI"
+            if log_entry.get("actualiza_ibr") is True
+            else "NO"
+            if log_entry.get("actualiza_ibr") is False
+            else str(log_entry.get("actualiza_ibr") or "")
+        ),
     }
     for name, col in header_map.items():
         if name in values:

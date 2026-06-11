@@ -27,6 +27,9 @@ from app.application.services.payment_helpers import (
     parse_statement_name,
 )
 from app.application.services.review_schema import (
+    APPLICATION_TYPES_SUPPORTED,
+    ApplicationPolicy,
+    ApplicationSubtype,
     CasosPagoCols,
     ControlCols,
     DISTRIBUCION_ABONOS_TECHNICAL_HIDDEN_COLUMNS,
@@ -35,12 +38,17 @@ from app.application.services.review_schema import (
     DistribucionCols,
     ErroresCols,
     EstadoPago,
+    ExtractRole,
     ReviewSheets,
+    SUPPORT_NOT_APPLICABLE,
     TipoAplicacion,
+    TipoAplicacionVisible,
     ValidarAbono,
     ValidarPago,
+    apply_policy_to_abonos_row,
+    apply_policy_to_pagos_row,
     normalize_credito_digits,
-    normalize_tipo_aplicacion,
+    parse_bank_tipo_aplicacion,
 )
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.domain.ports.graph import GraphApiPort
@@ -194,10 +202,10 @@ def _validate_bank_rows_tipo_aplicacion(
                 transaccion=transaccion,
             )
         try:
-            tipo = normalize_tipo_aplicacion(tipo_raw)
+            policy = parse_bank_tipo_aplicacion(tipo_raw)
         except ValueError as exc:
             code = str(exc)
-            if code == "tipo_aplicacion_invalid":
+            if code in ("tipo_aplicacion_invalid", "generic_abono_not_supported"):
                 _raise_generate_fail_fast(
                     code,
                     excel_row=row_index,
@@ -213,7 +221,8 @@ def _validate_bank_rows_tipo_aplicacion(
             {
                 "row_index": row_index,
                 "row": row,
-                "tipo_aplicacion": tipo,
+                "policy": policy,
+                "tipo_aplicacion": policy.canonical_enum,
                 "concepto": concepto,
                 "transaccion": transaccion,
             }
@@ -919,7 +928,12 @@ def _is_close(left: float | None, right: float | None) -> bool:
     return abs(float(left) - float(right)) < 0.01
 
 
-def _build_distribution_rows(payment: dict[str, Any], candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_distribution_rows(
+    payment: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    policy: ApplicationPolicy | None = None,
+) -> list[dict[str, Any]]:
     rows = []
     for candidate in candidates:
         due_date = candidate.get("fecha_limite")
@@ -951,6 +965,8 @@ def _build_distribution_rows(payment: dict[str, Any], candidates: list[dict[str,
         }
 
         def finalize_line(row: dict[str, Any]) -> None:
+            if policy is not None:
+                apply_policy_to_pagos_row(row, policy)
             obs_extra = candidate.get("observacion_extra")
             if obs_extra:
                 cur = row.get(DistribucionCols.OBSERVACION) or ""
@@ -1006,30 +1022,40 @@ def _build_case_row(payment: dict[str, Any], distribution_rows: list[dict[str, A
 
 
 def _build_abono_distribution_rows(
-    payment: dict[str, Any], candidates: list[dict[str, Any]]
+    payment: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    policy: ApplicationPolicy,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
         obs_extra = candidate.get("observacion_extra")
-        rows.append(
-            {
-                DistribucionAbonosCols.ID_PAGO: payment["id_pago"],
-                DistribucionAbonosCols.CLIENTE: payment["cliente"],
-                DistribucionAbonosCols.CREDITO: candidate["credito"],
-                DistribucionAbonosCols.MONTO_BANCO: payment["monto_banco"],
-                DistribucionAbonosCols.FECHA_BANCO: payment["fecha_banco"].isoformat(),
-                DistribucionAbonosCols.VALIDAR_ABONO: ValidarAbono.NO,
-                DistribucionAbonosCols.OBSERVACION: obs_extra or "",
-                DistribucionAbonosCols.LINK_TABLA: candidate.get("link_tabla", ""),
-                DistribucionAbonosCols.LINK_CARPETA_CREDITO: candidate.get("link_carpeta_credito", ""),
-                DistribucionAbonosCols.ORIGEN_CREDITO: candidate.get("origen_credito", ""),
-                DistribucionAbonosCols.RUTA_UNIDAD_CREDITO: candidate.get("ruta_unidad_credito") or "",
-                DistribucionAbonosCols.RUTA_TABLA_AMORTIZACION: candidate.get("ruta_tabla_amortizacion") or "",
-                DistribucionAbonosCols.CREDITO_NORMALIZADO: candidate.get("credito_normalizado") or "",
-                DistribucionAbonosCols.TIPO_APLICACION: TipoAplicacion.ABONO.value,
-                DistribucionAbonosCols.REQUIERE_EXTRACTO: "NO",
-            }
-        )
+        due_date = candidate.get("fecha_limite")
+        row: dict[str, Any] = {
+            DistribucionAbonosCols.ID_PAGO: payment["id_pago"],
+            DistribucionAbonosCols.CLIENTE: payment["cliente"],
+            DistribucionAbonosCols.CREDITO: candidate["credito"],
+            DistribucionAbonosCols.MONTO_BANCO: payment["monto_banco"],
+            DistribucionAbonosCols.FECHA_BANCO: payment["fecha_banco"].isoformat(),
+            DistribucionAbonosCols.VALIDAR_ABONO: ValidarAbono.NO,
+            DistribucionAbonosCols.OBSERVACION: obs_extra or "",
+            DistribucionAbonosCols.LINK_TABLA: candidate.get("link_tabla", ""),
+            DistribucionAbonosCols.LINK_CARPETA_CREDITO: candidate.get("link_carpeta_credito", ""),
+            DistribucionAbonosCols.ORIGEN_CREDITO: candidate.get("origen_credito", ""),
+            DistribucionAbonosCols.RUTA_UNIDAD_CREDITO: candidate.get("ruta_unidad_credito") or "",
+            DistribucionAbonosCols.RUTA_TABLA_AMORTIZACION: candidate.get("ruta_tabla_amortizacion") or "",
+            DistribucionAbonosCols.CREDITO_NORMALIZADO: candidate.get("credito_normalizado") or "",
+        }
+        if policy.subtipo_aplicacion == ApplicationSubtype.CAPITAL:
+            row[DistribucionAbonosCols.LINK_EXTRACTO] = SUPPORT_NOT_APPLICABLE
+            row[DistribucionAbonosCols.RUTA_EXTRACTO] = SUPPORT_NOT_APPLICABLE
+            row[DistribucionAbonosCols.FECHA_LIMITE] = SUPPORT_NOT_APPLICABLE
+        elif policy.subtipo_aplicacion == ApplicationSubtype.MORA:
+            row[DistribucionAbonosCols.LINK_EXTRACTO] = candidate.get("link_extracto", "")
+            row[DistribucionAbonosCols.RUTA_EXTRACTO] = candidate.get("ruta_extracto_pdf") or ""
+            row[DistribucionAbonosCols.FECHA_LIMITE] = due_date.isoformat() if due_date else ""
+        apply_policy_to_abonos_row(row, policy)
+        rows.append(row)
     return rows
 
 
@@ -1078,7 +1104,7 @@ RESUMEN_SUBTITLE = "Vista ejecutiva del lote de validación"
 RESUMEN_SECTION = "MÉTRICAS GENERALES"
 DISTRIB_TITLE = "DISTRIBUCIÓN DE PAGOS — HOJA PRINCIPAL"
 DISTRIB_HELP = (
-    "Complete únicamente las celdas editables: Aplicar a extracto, Mora a aplicar, Otros valores, "
+    "Complete únicamente las celdas editables: Aplicar a extracto, Abono a capital, Otros valores, "
     "Estado Pago y Validar Pago. "
     "Revise los links si necesita validar documentos. Al terminar, vaya a Control y cambie Procesar a SI."
 )
@@ -1169,6 +1195,26 @@ _ERRORES_GUIDE_BY_CODE: dict[str, tuple[str, str, str, str]] = {
         "El crédito no tiene una tabla de amortización válida para ofrecerlo como candidato de abono.",
         "Cargue o corrija la tabla de amortización en la carpeta del crédito y vuelva a generar.",
         "SI, si persiste",
+    ),
+    "generic_abono_not_supported": (
+        "Tipo Aplicación",
+        "El valor «ABONO» genérico ya no se acepta en el Excel del banco.",
+        "Use «ABONO CAPITAL» o «ABONO MORA» según corresponda y vuelva a ejecutar la generación.",
+        "NO",
+    ),
+    "abono_mora_extract_missing": (
+        "Abono mora",
+        "No se encontró un extracto de referencia para aplicar el abono a mora en este crédito.",
+        "Cargue el extracto correspondiente en la carpeta EXTRACTOS del crédito "
+        "y vuelva a ejecutar la generación.",
+        "NO",
+    ),
+    "abono_mora_extract_ambiguous": (
+        "Abono mora",
+        "Hay más de un extracto candidato con la misma fecha límite máxima y no se puede elegir uno.",
+        "Revise los extractos del crédito y deje únicamente el extracto de referencia correcto. "
+        "Luego vuelva a ejecutar la generación.",
+        "NO",
     ),
 }
 
@@ -1309,7 +1355,7 @@ def _apply_tab_colors(workbook: Any) -> None:
         ReviewSheets.CONTROL: _TAB_COLOR_CONTROL,
         ReviewSheets.RESUMEN: _TAB_COLOR_RESUMEN,
         ReviewSheets.CASOS_PAGO: _TAB_COLOR_CASOS,
-        ReviewSheets.DISTRIBUCION: _TAB_COLOR_DISTRIB,
+        ReviewSheets.DISTRIBUCION_PAGOS: _TAB_COLOR_DISTRIB,
         ReviewSheets.DISTRIBUCION_ABONOS: _TAB_COLOR_ABONOS,
         ReviewSheets.ERRORES: _TAB_COLOR_ERRORES,
         ReviewSheets.LISTAS: _TAB_COLOR_LISTAS,
@@ -1527,7 +1573,7 @@ def _protect_distribution_sheet(ws_distribution: Any, first_data_row: int) -> No
 
     editable_names = {
         DistribucionCols.APLICAR_A_EXTRACTO,
-        DistribucionCols.MORA_A_APLICAR,
+        DistribucionCols.ABONO_A_CAPITAL,
         DistribucionCols.OTROS_VALORES,
         DistribucionCols.ESTADO_PAGO,
         DistribucionCols.VALIDAR_PAGO,
@@ -1872,7 +1918,7 @@ def _apply_distribution_formulas(ws_distribution: Any, first_data_row: int) -> N
     col_id = get_column_letter(ix(DistribucionCols.ID_PAGO) + 1)
     col_c = get_column_letter(ix(DistribucionCols.MONTO_BANCO) + 1)
     col_i = get_column_letter(ix(DistribucionCols.APLICAR_A_EXTRACTO) + 1)
-    col_j = get_column_letter(ix(DistribucionCols.MORA_A_APLICAR) + 1)
+    col_j = get_column_letter(ix(DistribucionCols.ABONO_A_CAPITAL) + 1)
     col_k = get_column_letter(ix(DistribucionCols.OTROS_VALORES) + 1)
     col_l = get_column_letter(ix(DistribucionCols.TOTAL_APLICADO) + 1)
     col_m = get_column_letter(ix(DistribucionCols.SALDO_POR_ASIGNAR) + 1)
@@ -2038,14 +2084,14 @@ def _style_distrib_sheet(ws_distribution: Any, header_row: int, first_data_row: 
         DistribucionCols.HEADERS.index(DistribucionCols.MONTO_BANCO) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.VALOR_EXTRACTO) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.APLICAR_A_EXTRACTO) + 1,
-        DistribucionCols.HEADERS.index(DistribucionCols.MORA_A_APLICAR) + 1,
+        DistribucionCols.HEADERS.index(DistribucionCols.ABONO_A_CAPITAL) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.OTROS_VALORES) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.TOTAL_APLICADO) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.SALDO_POR_ASIGNAR) + 1,
     }
     money_editable_cols = {
         DistribucionCols.HEADERS.index(DistribucionCols.APLICAR_A_EXTRACTO) + 1,
-        DistribucionCols.HEADERS.index(DistribucionCols.MORA_A_APLICAR) + 1,
+        DistribucionCols.HEADERS.index(DistribucionCols.ABONO_A_CAPITAL) + 1,
         DistribucionCols.HEADERS.index(DistribucionCols.OTROS_VALORES) + 1,
     }
     date_cols = {
@@ -2114,7 +2160,7 @@ def _style_distrib_sheet(ws_distribution: Any, header_row: int, first_data_row: 
             _dc(DistribucionCols.DIAS_MORA) + 1: 10,
             _dc(DistribucionCols.VALOR_EXTRACTO) + 1: 14,
             _dc(DistribucionCols.APLICAR_A_EXTRACTO) + 1: int(DIST_MONEY_COL_WIDTH),
-            _dc(DistribucionCols.MORA_A_APLICAR) + 1: int(DIST_MONEY_COL_WIDTH),
+            _dc(DistribucionCols.ABONO_A_CAPITAL) + 1: int(DIST_MONEY_COL_WIDTH),
             _dc(DistribucionCols.OTROS_VALORES) + 1: int(DIST_MONEY_COL_WIDTH),
             _dc(DistribucionCols.TOTAL_APLICADO) + 1: int(DIST_MONEY_COL_WIDTH),
             _dc(DistribucionCols.SALDO_POR_ASIGNAR) + 1: int(DIST_MONEY_COL_WIDTH),
@@ -2790,6 +2836,237 @@ async def _load_credit_candidates_for_abono(
     return candidates, credit_issues
 
 
+async def _load_credit_candidates_for_abono_mora(
+    client: GraphApiPort,
+    site_search: str,
+    drive_name: str,
+    clients_path: str,
+    cliente_folder: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Candidatos de abono mora: exige tabla de amortización y extracto de referencia."""
+    clients_info = await resolve_sharepoint_path(client, site_search, drive_name, clients_path)
+    cliente_folder_path = f"{clients_path}/{cliente_folder}"
+    cliente_folder_encoded = encode_graph_drive_path(cliente_folder_path)
+    credit_children = await client.get(
+        f"/sites/{clients_info['site_id']}/drives/{clients_info['drive_id']}/root:/{cliente_folder_encoded}:/children"
+    )
+    all_items: list[dict[str, Any]] = list(credit_children.get("value", []))
+
+    candidates: list[dict[str, Any]] = []
+    credit_issues: list[dict[str, Any]] = []
+    site_id = clients_info["site_id"]
+    drive_id = clients_info["drive_id"]
+    client_folder_web_url = await _resolve_client_folder_web_url(
+        client, site_id, drive_id, clients_path, cliente_folder
+    )
+
+    async def process_credit_unit_abono_mora(
+        credit_name: str,
+        credit_path: str,
+        items: list[dict[str, Any]],
+        credit_folder_drive_item: dict[str, Any] | None = None,
+        *,
+        is_flat_unit: bool = False,
+        is_root_unit: bool = False,
+    ) -> None:
+        carpeta_link_url = _carpeta_link_url_for_errores(
+            credit_folder_drive_item,
+            credit_path,
+            client_folder_web_url=client_folder_web_url,
+            is_flat_unit=is_flat_unit,
+            is_root_unit=is_root_unit,
+        )
+        file_names = [item.get("name", "") for item in items if item.get("name")]
+        excel_only = filter_amortization_excel_filenames(file_names)
+
+        try:
+            table_name = find_best_amortization_table(excel_only, cliente_folder, credit_name)
+        except ValueError as exc:
+            code = str(exc)
+            if code in ("amortization_table_not_found", "amortization_table_ambiguous"):
+                credit_issues.append(
+                    {
+                        "code": "abono_credit_without_amortization_table",
+                        "unidad_credito": credit_name,
+                        "link_extracto_url": "",
+                        "link_carpeta_credito_url": carpeta_link_url,
+                    }
+                )
+            return
+
+        table_item = next((item for item in items if item.get("name") == table_name), None)
+        table_path = f"{credit_path}/{table_name}"
+
+        pool, extract_base_path = await _resolve_extract_pdf_pool(
+            client, site_id, drive_id, credit_path, items
+        )
+        if not pool:
+            credit_issues.append(
+                {
+                    "code": "abono_mora_extract_missing",
+                    "unidad_credito": credit_name,
+                    "link_extracto_url": "",
+                    "link_carpeta_credito_url": carpeta_link_url,
+                }
+            )
+            return
+
+        statement_item, _statement_bytes, fecha_limite_pdf, sel_err = (
+            await _select_extract_by_max_fecha_limite_v2(
+                client, site_id, drive_id, extract_base_path, pool
+            )
+        )
+        if sel_err == "extract_tie_max_fecha_limite":
+            credit_issues.append(
+                {
+                    "code": "abono_mora_extract_ambiguous",
+                    "unidad_credito": credit_name,
+                    "link_extracto_url": "",
+                    "link_carpeta_credito_url": carpeta_link_url,
+                }
+            )
+            return
+        if (
+            sel_err
+            or statement_item is None
+            or fecha_limite_pdf is None
+        ):
+            issue_code = sel_err or "abono_mora_extract_missing"
+            link_extracto_url = ""
+            if pool and issue_code == "fecha_limite_extracto_not_readable":
+                first_it = pool[0]
+                link_extracto_url = _item_link_url(
+                    first_it, f"{extract_base_path}/{first_it.get('name', '')}"
+                )
+                issue_code = "fecha_limite_extracto_not_readable"
+            elif issue_code == "abono_mora_extract_missing":
+                pass
+            else:
+                issue_code = sel_err or "abono_mora_extract_missing"
+            credit_issues.append(
+                {
+                    "code": issue_code,
+                    "unidad_credito": credit_name,
+                    "link_extracto_url": link_extracto_url,
+                    "link_carpeta_credito_url": carpeta_link_url,
+                }
+            )
+            return
+
+        statement_path = f"{extract_base_path}/{statement_item.get('name', '')}"
+        has_extracto = True
+        has_carpeta = bool(carpeta_link_url or credit_path)
+        has_tabla = bool(table_path and table_item is not None)
+
+        is_non_standard = (
+            not is_flat_unit
+            and not is_root_unit
+            and not _looks_like_standard_credit_folder(credit_name)
+        )
+        if is_flat_unit or is_root_unit:
+            credit_id = cliente_folder
+        elif is_non_standard:
+            credit_id = credit_name
+        else:
+            credit_id = credit_name
+
+        obs_parts: list[str] = []
+        if is_root_unit:
+            obs_parts.append(_OBS_ROOT_UNIT)
+        if is_non_standard:
+            obs_parts.append(_OBS_NON_STANDARD_FOLDER)
+        obs_ter = _possibly_finalized_observation(credit_name)
+        if obs_ter:
+            obs_parts.append(obs_ter)
+        obs_extra = " | ".join(obs_parts) if obs_parts else None
+
+        cred_norm = normalize_credito_digits(credit_id) or str(credit_id)
+        ruta_tabla = table_path.replace("\\", "/").strip("/") if table_path else ""
+        candidates.append(
+            {
+                "credito": str(credit_id),
+                "credito_normalizado": cred_norm,
+                "fecha_limite": fecha_limite_pdf,
+                "link_extracto": _item_link(statement_item, statement_path),
+                "link_tabla": _item_link(table_item or {}, table_path) if table_item else "",
+                "link_carpeta_credito": carpeta_link_url,
+                "ruta_extracto_pdf": statement_path.replace("\\", "/"),
+                "ruta_unidad_credito": credit_path.replace("\\", "/"),
+                "ruta_tabla_amortizacion": ruta_tabla,
+                "origen_credito": _resolve_origen_credito(
+                    has_carpeta=has_carpeta,
+                    has_tabla=has_tabla,
+                    has_extracto=has_extracto,
+                ),
+                **({"observacion_extra": obs_extra} if obs_extra else {}),
+            }
+        )
+
+    subfolder_items = [it for it in all_items if "folder" in it]
+    root_file_items = [it for it in all_items if "folder" not in it]
+    operational_units: list[
+        tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]
+    ] = []
+
+    for credit_folder in subfolder_items:
+        credit_name = str(credit_folder.get("name", "") or "").strip()
+        if not credit_name or _is_infra_folder(credit_name):
+            continue
+        credit_path = f"{cliente_folder_path}/{credit_name}"
+        credit_encoded = encode_graph_drive_path(credit_path)
+        files_resp = await client.get(
+            f"/sites/{site_id}/drives/{drive_id}/root:/{credit_encoded}:/children"
+        )
+        children = list(files_resp.get("value", []))
+        is_standard = _looks_like_standard_credit_folder(credit_name)
+        if is_standard or await _items_have_operational_signal(
+            client,
+            site_id,
+            drive_id,
+            credit_path,
+            children,
+            cliente_folder,
+            credit_name,
+        ):
+            operational_units.append((credit_name, credit_path, children, credit_folder))
+
+    if operational_units:
+        for credit_name, credit_path, children, folder_item in operational_units:
+            await process_credit_unit_abono_mora(
+                credit_name,
+                credit_path,
+                children,
+                credit_folder_drive_item=folder_item,
+                is_flat_unit=False,
+                is_root_unit=False,
+            )
+        if _root_has_strict_extract_pdfs(root_file_items):
+            await process_credit_unit_abono_mora(
+                cliente_folder,
+                cliente_folder_path,
+                root_file_items,
+                credit_folder_drive_item=None,
+                is_flat_unit=False,
+                is_root_unit=True,
+            )
+    else:
+        await process_credit_unit_abono_mora(
+            cliente_folder,
+            cliente_folder_path,
+            all_items,
+            credit_folder_drive_item=None,
+            is_flat_unit=True,
+            is_root_unit=False,
+        )
+
+    candidates = _dedupe_credit_candidates(candidates)
+
+    if not candidates and not credit_issues:
+        raise ValueError("credit_folder_not_found")
+
+    return candidates, credit_issues
+
+
 async def generate_payment_validation(
     client: GraphApiPort,
     process_date: date,
@@ -2904,9 +3181,26 @@ async def generate_payment_validation(
     )
     transacciones_banco = len(processable_bank_rows)
     pagos_detectados = sum(
-        1 for entry in processable_bank_rows if entry["tipo_aplicacion"] == TipoAplicacion.PAGO
+        1
+        for entry in processable_bank_rows
+        if entry["policy"].canonical_enum == TipoAplicacion.PAGO
     )
-    abonos_detectados = transacciones_banco - pagos_detectados
+    pagos_con_abono_capital_detectados = sum(
+        1
+        for entry in processable_bank_rows
+        if entry["policy"].subtipo_aplicacion == ApplicationSubtype.CUOTA_MAS_CAPITAL
+    )
+    abonos_capital_detectados = sum(
+        1
+        for entry in processable_bank_rows
+        if entry["policy"].subtipo_aplicacion == ApplicationSubtype.CAPITAL
+    )
+    abonos_mora_detectados = sum(
+        1
+        for entry in processable_bank_rows
+        if entry["policy"].subtipo_aplicacion == ApplicationSubtype.MORA
+    )
+    abonos_detectados = abonos_capital_detectados + abonos_mora_detectados
 
     clients_info = await resolve_sharepoint_path(client, site_search, drive_name, clients_path)
     client_children = await client.get(
@@ -2922,7 +3216,7 @@ async def generate_payment_validation(
 
     for entry in processable_bank_rows:
         row = entry["row"]
-        tipo_aplicacion: TipoAplicacion = entry["tipo_aplicacion"]
+        policy: ApplicationPolicy = entry["policy"]
         payment_id = str(uuid.uuid4())[:8]
         concepto = entry["concepto"]
         transaccion = entry["transaccion"]
@@ -2954,10 +3248,10 @@ async def generate_payment_validation(
                 "cliente": cliente_folder,
                 "concepto": concepto,
                 "transaccion": transaccion,
-                "tipo_aplicacion": tipo_aplicacion.value,
+                "tipo_aplicacion": policy.tipo_aplicacion_original,
             }
 
-            if tipo_aplicacion == TipoAplicacion.PAGO:
+            if policy.canonical_enum == TipoAplicacion.PAGO:
                 credit_candidates, credit_issues = await _load_credit_candidates(
                     client, site_search, drive_name, clients_path, cliente_folder
                 )
@@ -2980,13 +3274,20 @@ async def generate_payment_validation(
                 if not credit_candidates:
                     continue
 
-                payment_distribution_rows = _build_distribution_rows(payment, credit_candidates)
+                payment_distribution_rows = _build_distribution_rows(
+                    payment, credit_candidates, policy=policy
+                )
                 distribution_rows.extend(payment_distribution_rows)
                 payment_cases.append(_build_case_row(payment, payment_distribution_rows))
             else:
-                credit_candidates, credit_issues = await _load_credit_candidates_for_abono(
-                    client, site_search, drive_name, clients_path, cliente_folder
-                )
+                if policy.subtipo_aplicacion == ApplicationSubtype.MORA:
+                    credit_candidates, credit_issues = await _load_credit_candidates_for_abono_mora(
+                        client, site_search, drive_name, clients_path, cliente_folder
+                    )
+                else:
+                    credit_candidates, credit_issues = await _load_credit_candidates_for_abono(
+                        client, site_search, drive_name, clients_path, cliente_folder
+                    )
                 for ci in credit_issues:
                     error_records.append(
                         {
@@ -3016,7 +3317,9 @@ async def generate_payment_validation(
                     )
                     continue
 
-                payment_abono_rows = _build_abono_distribution_rows(payment, credit_candidates)
+                payment_abono_rows = _build_abono_distribution_rows(
+                    payment, credit_candidates, policy=policy
+                )
                 abono_distribution_rows.extend(payment_abono_rows)
                 payment_cases.append(_build_abono_case_row(payment, payment_abono_rows))
         except Exception as exc:
@@ -3074,7 +3377,7 @@ async def generate_payment_validation(
         ws_cases.append([row.get(header) for header in CasosPagoCols.HEADERS])
     _style_casos_sheet(ws_cases, hr, dr)
 
-    ws_distribution = workbook.create_sheet(ReviewSheets.DISTRIBUCION)
+    ws_distribution = workbook.create_sheet(ReviewSheets.DISTRIBUCION_PAGOS)
     _apply_distrib_top_banner(ws_distribution)
     _apply_table_header_row(ws_distribution, hr, list(DistribucionCols.HEADERS), strong=True)
     _apply_distrib_monto_only_leading_rows(distribution_rows)
@@ -3168,15 +3471,21 @@ async def generate_payment_validation(
         "validation_file": file_name,
         "validation_file_path": upload_path,
         "validation_file_url": validation_file_url,
-        "application_types_supported": [TipoAplicacion.PAGO.value, TipoAplicacion.ABONO.value],
+        "application_types_supported": list(APPLICATION_TYPES_SUPPORTED),
         "pagos_detectados": pagos_detectados,
+        "pagos_con_abono_capital_detectados": pagos_con_abono_capital_detectados,
+        "abonos_capital_detectados": abonos_capital_detectados,
+        "abonos_mora_detectados": abonos_mora_detectados,
         "abonos_detectados": abonos_detectados,
-        "distribution_payments_sheet": ReviewSheets.DISTRIBUCION,
+        "distribution_payments_sheet": ReviewSheets.DISTRIBUCION_PAGOS,
         "distribution_abonos_sheet": ReviewSheets.DISTRIBUCION_ABONOS,
         "summary": {
             "pagos_banco": transacciones_banco,
             "transacciones_banco": transacciones_banco,
             "pagos_detectados": pagos_detectados,
+            "pagos_con_abono_capital_detectados": pagos_con_abono_capital_detectados,
+            "abonos_capital_detectados": abonos_capital_detectados,
+            "abonos_mora_detectados": abonos_mora_detectados,
             "abonos_detectados": abonos_detectados,
             "filas_distribucion_pagos": len(distribution_rows),
             "filas_distribucion_abonos": len(abono_distribution_rows),
@@ -3196,11 +3505,11 @@ async def generate_payment_validation(
     if abonos_detectados > 0:
         result_payload["user_message"] = (
             "Se creó el archivo de revisión con pagos y abonos. "
-            "Revise la hoja Distribucion para los pagos y Distribucion_Abonos para seleccionar "
+            "Revise la hoja Distribucion_Pagos para los pagos y Distribucion_Abonos para seleccionar "
             "los créditos de los abonos."
         )
         result_payload["next_action"] = (
-            "Abra el Excel en 01 REVISION. Complete Distribucion (pagos) y marque Validar Abono en "
+            "Abra el Excel en 01 REVISION. Complete Distribucion_Pagos (pagos) y marque Validar Abono en "
             "Distribucion_Abonos. En Control ponga Procesar = SI cuando termine."
         )
     return result_payload

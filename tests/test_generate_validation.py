@@ -457,7 +457,7 @@ def test_generate_multiple_credits_per_payment():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws_dist = workbook[ReviewSheets.DISTRIBUCION]
+    ws_dist = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
     ws_cp = workbook[ReviewSheets.CASOS_PAGO]
     dist_rows = sheet_to_dicts(ws_dist)
     case_rows = sheet_to_dicts(ws_cp)
@@ -480,7 +480,7 @@ def test_generate_mora_fields_are_empty():
         [[datetime(2025, 12, 30), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 30),
     )
-    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])[0]
+    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])[0]
 
     fl = row[DistribucionCols.FECHA_LIMITE]
     assert fl == "2025-12-23" or (hasattr(fl, "isoformat") and fl.isoformat()[:10] == "2025-12-23")
@@ -496,7 +496,7 @@ def test_generate_does_not_calculate_mora():
         [[datetime(2025, 12, 30), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 30),
     )
-    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])[0]
+    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])[0]
 
     assert row[DistribucionCols.VALOR_EXTRACTO] == 6500739.0  # viene del PDF, no de la tabla
     assert row[DistribucionCols.VALOR_INTERESES] in (None, "")
@@ -511,7 +511,7 @@ def test_generate_reprogramar_fields():
         [[datetime(2025, 12, 20), 5000000, "EQUINORTE", ""]],
         date(2025, 12, 20),
     )
-    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])[0]
+    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])[0]
 
     assert row[DistribucionCols.ESTADO_LINEA] == EstadoPago.ADELANTADO
     assert isinstance(row[DistribucionCols.TOTAL_APLICADO], str)
@@ -525,7 +525,7 @@ def test_generate_schema_alignment():
         date(2025, 12, 23),
     )
     ws_cp = workbook[ReviewSheets.CASOS_PAGO]
-    ws_dist = workbook[ReviewSheets.DISTRIBUCION]
+    ws_dist = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
     cp_hr = _header_row_index(ws_cp, CasosPagoCols.ID_PAGO)
     dist_hr = _header_row_index(ws_dist, DistribucionCols.ID_PAGO)
     cp_headers = [cell.value for cell in ws_cp[cp_hr]]
@@ -546,7 +546,7 @@ def test_distribucion_estado_linea_column():
         [[datetime(2025, 12, 30), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 30),
     )
-    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])[0]
+    row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])[0]
 
     assert row[DistribucionCols.ESTADO_LINEA] == EstadoPago.ATRASADO
     assert row[DistribucionCols.TOTAL_APLICADO] not in {
@@ -561,7 +561,7 @@ def test_generate_uses_weburl():
         date(2025, 12, 23),
         include_web_urls=True,
     )
-    ws = workbook[ReviewSheets.DISTRIBUCION]
+    ws = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     c_cred = DistribucionCols.HEADERS.index(DistribucionCols.CREDITO) + 1
     credito = ws.cell(row=dr, column=c_cred).value
@@ -585,7 +585,7 @@ def test_generate_output_is_secretary_usable_minimum():
         date(2025, 12, 23),
     )
     case_rows = sheet_to_dicts(workbook[ReviewSheets.CASOS_PAGO])
-    dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])
+    dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])
 
     assert result["summary"]["errores"] == 0
     assert len(case_rows) == 2
@@ -623,13 +623,13 @@ def test_generate_workbook_headers_compatible_with_finalize():
 
         assert ReviewSheets.CONTROL in workbook.sheetnames
         assert ReviewSheets.CASOS_PAGO in workbook.sheetnames
-        assert ReviewSheets.DISTRIBUCION in workbook.sheetnames
+        assert ReviewSheets.DISTRIBUCION_PAGOS in workbook.sheetnames
         assert ReviewSheets.LISTAS in workbook.sheetnames
         assert ReviewSheets.ERRORES in workbook.sheetnames
         assert "Adelantados" not in workbook.sheetnames
 
         ws_cp = workbook[ReviewSheets.CASOS_PAGO]
-        ws_dist = workbook[ReviewSheets.DISTRIBUCION]
+        ws_dist = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
         cp_hr = _header_row_index(ws_cp, CasosPagoCols.ID_PAGO)
         dist_hr = _header_row_index(ws_dist, DistribucionCols.ID_PAGO)
         cp_headers = [cell.value for cell in ws_cp[cp_hr]]
@@ -748,7 +748,7 @@ def test_generate_proposes_all_pending_installments_geoexcon():
             res = await generate_payment_validation(client, date(2026, 1, 1))
         
         wb = load_generated_workbook(client)
-        ws_dist = wb[ReviewSheets.DISTRIBUCION]
+        ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dist_dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
         dist_rows = list(ws_dist.iter_rows(min_row=dist_dr, values_only=True))
         ws_errores = wb[ReviewSheets.ERRORES]
@@ -818,7 +818,7 @@ def test_generate_proposes_all_future_installments_equinorte():
             res = await generate_payment_validation(client, date(2026, 1, 1))
         
         wb = load_generated_workbook(client)
-        ws_dist = wb[ReviewSheets.DISTRIBUCION]
+        ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dist_dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
         dist_rows = list(ws_dist.iter_rows(min_row=dist_dr, values_only=True))
         ws_errores = wb[ReviewSheets.ERRORES]
@@ -854,7 +854,7 @@ def test_generate_does_not_filter_by_amount_or_date():
             result = await generate_payment_validation(client, date(2026, 1, 1))
 
         workbook = load_generated_workbook(client)
-        dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])
+        dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])
         err_dr = _first_data_row(workbook[ReviewSheets.ERRORES])
         error_rows = list(workbook[ReviewSheets.ERRORES].iter_rows(min_row=err_dr, values_only=True))
 
@@ -897,7 +897,7 @@ def test_generate_no_pending_installment_error_for_realistic_hbi_table():
             result = await generate_payment_validation(client, date(2026, 1, 1))
 
         workbook = load_generated_workbook(client)
-        dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])
+        dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])
         err_dr = _first_data_row(workbook[ReviewSheets.ERRORES])
         error_rows = list(workbook[ReviewSheets.ERRORES].iter_rows(min_row=err_dr, values_only=True))
 
@@ -928,7 +928,7 @@ def test_generate_does_not_use_mora_from_amortization_table():
             await generate_payment_validation(client, date(2026, 1, 1))
 
         workbook = load_generated_workbook(client)
-        row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION])[0]
+        row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])[0]
 
         assert row[DistribucionCols.VALOR_EXTRACTO] == 15000.0
         assert row[DistribucionCols.INTERESES_MORA] in (None, "")
@@ -994,7 +994,7 @@ def _run_with_pdf_mock(client):
 
 
 def _get_dist_col_idx(wb, col_name: str) -> int:
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     hr = _header_row_index(ws, DistribucionCols.ID_PAGO)
     headers = [c.value for c in ws[hr]]
     return headers.index(col_name)
@@ -1010,7 +1010,7 @@ def test_generate_extract_value_from_pdf_total_a_pagar_credit_231():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws_d = wb[ReviewSheets.DISTRIBUCION]
+        ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
         rows = list(ws_d.iter_rows(min_row=dr, values_only=True))
         assert len(rows) == 1, f"Expected 1 row, got {len(rows)}"
@@ -1029,7 +1029,7 @@ def test_generate_extract_value_from_pdf_total_a_pagar_credit_254():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws_d = wb[ReviewSheets.DISTRIBUCION]
+        ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
         rows = list(ws_d.iter_rows(min_row=dr, values_only=True))
         assert len(rows) == 1
@@ -1048,7 +1048,7 @@ def test_generate_pdf_amount_overrides_table_amount():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws_d = wb[ReviewSheets.DISTRIBUCION]
+        ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
         rows = list(ws_d.iter_rows(min_row=dr, values_only=True))
         assert len(rows) == 1
@@ -1068,7 +1068,7 @@ def test_generate_no_table_amount_fallback_when_pdf_amount_missing():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws_d = wb[ReviewSheets.DISTRIBUCION]
+        ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr_d = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
         dist_rows = list(ws_d.iter_rows(min_row=dr_d, values_only=True))
         assert len(dist_rows) == 0, "Sin TOTAL A PAGAR en PDF no debe haber línea en Distribucion"
@@ -1095,7 +1095,7 @@ def test_generate_extract_not_found_when_pdf_missing():
         # Este test no necesita mock de PDF porque no hay PDF — testea extract_not_found
         await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws_d = wb[ReviewSheets.DISTRIBUCION]
+        ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr_d = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
         dist_rows = list(ws_d.iter_rows(min_row=dr_d, values_only=True))
         assert len(dist_rows) == 0, "Sin PDF no debe haber línea en Distribucion"
@@ -1158,10 +1158,10 @@ def test_phase1_extractos_subfolder_priority_over_parent_pdf():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.VALOR_EXTRACTO] == 8888888.0
-        ws = wb[ReviewSheets.DISTRIBUCION]
+        ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         hdr = _header_row_index(ws, DistribucionCols.ID_PAGO)
         dr = hdr + 1
         c_ruta = DistribucionCols.HEADERS.index(DistribucionCols.RUTA) + 1
@@ -1202,10 +1202,10 @@ def test_phase1_empty_extractos_fallback_to_credit_folder():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.VALOR_EXTRACTO] == 3333333.0
-        ws = wb[ReviewSheets.DISTRIBUCION]
+        ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         hdr = _header_row_index(ws, DistribucionCols.ID_PAGO)
         dr = hdr + 1
         c_ruta = DistribucionCols.HEADERS.index(DistribucionCols.RUTA) + 1
@@ -1239,11 +1239,11 @@ def test_generate_flat_acimor_style_writes_ruta_for_root_extract():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        hdr = _header_row_index(wb[ReviewSheets.DISTRIBUCION], DistribucionCols.ID_PAGO)
+        hdr = _header_row_index(wb[ReviewSheets.DISTRIBUCION_PAGOS], DistribucionCols.ID_PAGO)
         dr = hdr + 1
         c_ruta = DistribucionCols.HEADERS.index(DistribucionCols.RUTA) + 1
         exp = "clientes/ACIMRU/Extracto 2026-04-01 CREDITO # 801.pdf".replace("\\", "/")
-        assert wb[ReviewSheets.DISTRIBUCION].cell(dr, c_ruta).value.replace("\\", "/") == exp
+        assert wb[ReviewSheets.DISTRIBUCION_PAGOS].cell(dr, c_ruta).value.replace("\\", "/") == exp
 
     asyncio.run(run_test())
 
@@ -1271,7 +1271,7 @@ def test_phase1_strict_name_rejects_pdf_without_extracto_in_name():
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
         err_rows = sheet_to_dicts(wb[ReviewSheets.ERRORES])
-        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert any(
             "extract_not_found" in str(r.get(ErroresCols.CODIGO_TECNICO, "")) for r in err_rows
         )
@@ -1308,7 +1308,7 @@ def test_phase1_selects_extract_with_max_fecha_limite():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.VALOR_EXTRACTO] == 9999.0
 
@@ -1351,7 +1351,7 @@ def test_phase1_no_selection_when_fecha_limite_unreadable():
         ):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err_rows = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert any(
             "fecha_limite_extracto_not_readable"
@@ -1392,7 +1392,7 @@ def test_phase1_tie_max_fecha_limite_does_not_pick_silently():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err_rows = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert any(
             "extract_tie_max_fecha_limite" in str(r.get(ErroresCols.CODIGO_TECNICO, "")) for r in err_rows
@@ -1427,7 +1427,7 @@ def test_phase1_possibly_finalized_observation_on_folder_name():
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
         assert "Revisión" not in wb.sheetnames
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
         assert "TERMINADO/FINALIZADO/CANCELADO/PAGADO/LIQUIDADO" in obs
@@ -1462,7 +1462,7 @@ def test_phase11_flat_client_without_credit_subfolders_acimor_style():
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
         assert "Revisión" not in wb.sheetnames
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert not any(
             "credit_folder_not_found" in str(r.get(ErroresCols.CODIGO_TECNICO, "")) for r in err
@@ -1502,7 +1502,7 @@ def test_phase11_mixed_candidates_one_illegible_fecha_still_selects_max():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.VALOR_EXTRACTO] == 123.0
@@ -1542,7 +1542,7 @@ def test_phase11_fecha_limite_unreadable_in_errores_includes_payment_context():
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
         assert "Revisión" not in wb.sheetnames
-        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         errs = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert errs
         row = errs[0]
@@ -1810,7 +1810,7 @@ def test_phase12_v2_fecha_limite_column_comes_from_pdf_not_amortization_table():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         fl = dist[0][DistribucionCols.FECHA_LIMITE]
         assert fl == "2026-08-10" or (hasattr(fl, "isoformat") and fl.isoformat()[:10] == "2026-08-10")
@@ -1846,7 +1846,7 @@ def test_phase12_valid_extract_ambiguous_excel_tables_still_distrib_and_warns():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert len(dist) == 1
         assert "tabla ambigua" in str(dist[0].get(DistribucionCols.OBSERVACION, "")).lower()
@@ -1878,7 +1878,7 @@ def test_phase12_valid_extract_without_excel_table_still_distrib_and_warns():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert "tabla no encontrada" in str(dist[0].get(DistribucionCols.OBSERVACION, "")).lower()
 
@@ -1911,7 +1911,7 @@ def test_phase12_acimor_pdf_informativo_no_interfiere_con_tabla_xlsx():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.CREDITO] == "901"
 
@@ -1945,7 +1945,7 @@ def test_phase12_flat_client_ambiguous_tables_valid_extract_distrib():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert "tabla ambigua" in str(dist[0].get(DistribucionCols.OBSERVACION, "")).lower()
 
@@ -1977,7 +1977,7 @@ def test_phase12_flat_infer_credito_from_pdf_obligacion_gb():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.CREDITO] == "82"
 
@@ -2014,7 +2014,7 @@ def test_phase12_auxiliary_compare_fecha_limite_vs_last_fecha_pago_observations(
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
         assert "coincide con la última fecha de pago" in obs.lower()
@@ -2051,7 +2051,7 @@ def test_phase12_auxiliary_compare_extract_fecha_before_last_pay_warns():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
         assert "anterior a la última fecha de pago" in obs.lower()
         fl = dist[0][DistribucionCols.FECHA_LIMITE]
@@ -2087,7 +2087,7 @@ def test_phase12_auxiliary_compare_when_extract_after_last_pay_no_compare_warnin
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
         assert "coincide con la última fecha de pago" not in obs.lower()
         assert "anterior a la última fecha de pago" not in obs.lower()
@@ -2116,7 +2116,7 @@ def test_phase1_feature_flag_v2_false_still_generates():
             with _run_with_pdf_mock(client):
                 await generate_payment_validation(client, date(2026, 1, 1))
             wb = load_generated_workbook(client)
-            assert len(sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])) == 1
+            assert len(sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])) == 1
         finally:
             if old is None:
                 os.environ.pop("GENERATE_EXTRACT_SELECTION_V2", None)
@@ -2136,7 +2136,7 @@ def test_generate_does_not_use_intereses_mora_column():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws_d = wb[ReviewSheets.DISTRIBUCION]
+        ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
         rows = list(ws_d.iter_rows(min_row=dr, values_only=True))
         assert len(rows) == 1
@@ -2184,7 +2184,7 @@ def test_generate_adds_visual_formulas_dropdowns_and_hidden_lists_sheet():
     assert dist_statuses == list(EstadoPago.OPTIONS_ORDERED)
     assert validar_vals == [ValidarPago.SI, ValidarPago.NO]
 
-    ws_dist = workbook[ReviewSheets.DISTRIBUCION]
+    ws_dist = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
     assert ws_dist[f"L{dr}"].value.startswith("=")
     assert "SUMIF" in ws_dist[f"M{dr}"].value.upper()
@@ -2217,7 +2217,7 @@ def test_generate_pendiente_mora_keeps_total_blank_and_saldo_formula():
             await generate_payment_validation(client, date(2026, 1, 1))
 
         workbook = load_generated_workbook(client)
-        ws = workbook[ReviewSheets.DISTRIBUCION]
+        ws = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
 
         assert ws[f"N{dr}"].value == EstadoPago.ATRASADO
@@ -2241,7 +2241,7 @@ def test_generate_pendiente_mora_still_blank_mora_total():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws = wb[ReviewSheets.DISTRIBUCION]
+        ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
         rows = list(ws.iter_rows(min_row=dr, values_only=True))
         assert len(rows) == 1
@@ -2263,7 +2263,7 @@ def test_generate_visual_distribucion_freeze_autofilter_headers_widths():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     hr = _header_row_index(ws, DistribucionCols.ID_PAGO)
     assert ws.freeze_panes == _distrib_freeze_panes_cell(dr)
@@ -2282,7 +2282,7 @@ def test_generate_visual_distribucion_freeze_autofilter_headers_widths():
         DistribucionCols.MONTO_BANCO,
         DistribucionCols.VALOR_EXTRACTO,
         DistribucionCols.APLICAR_A_EXTRACTO,
-        DistribucionCols.MORA_A_APLICAR,
+        DistribucionCols.ABONO_A_CAPITAL,
         DistribucionCols.OTROS_VALORES,
         DistribucionCols.TOTAL_APLICADO,
         DistribucionCols.SALDO_POR_ASIGNAR,
@@ -2298,7 +2298,7 @@ def test_generate_visual_distribucion_hyperlinks_currency_date_formats():
         date(2025, 12, 23),
         include_web_urls=True,
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
 
     def ci(name: str) -> int:
@@ -2343,7 +2343,7 @@ def test_generate_visual_control_resumen_listas_adelantados():
     assert wb[ReviewSheets.LISTAS].sheet_state == "hidden"
     assert "Adelantados" not in wb.sheetnames
 
-    ws_dist = wb[ReviewSheets.DISTRIBUCION]
+    ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dist_dvs = [dv.formula1 for dv in ws_dist.data_validations.dataValidation]
     assert any("=_Listas!$C$1:$C$4" in f for f in dist_dvs)
     assert any("=_Listas!$D$1:$D$2" in f for f in dist_dvs)
@@ -2372,7 +2372,7 @@ def test_generate_sheet_protection_and_editable_cells():
     assert c_proc.protection.locked is False
     assert c_est.protection.locked is True
 
-    ws_dist = wb[ReviewSheets.DISTRIBUCION]
+    ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     assert ws_dist.protection.sheet is True
     dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
     editable = {
@@ -2415,7 +2415,7 @@ def test_protection_uses_web_safe_minimal_profile():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     p = ws.protection
     assert p.sheet is True
     # Perfil web-safe mínimo: sin password ni flags extras forzados.
@@ -2429,7 +2429,7 @@ def test_distribution_editable_columns_unlocked_all_data_rows():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws_dist = wb[ReviewSheets.DISTRIBUCION]
+    ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
     editable = (
         DistribucionCols.VALOR_INTERESES,
@@ -2451,7 +2451,7 @@ def test_distribution_locked_columns_locked_all_data_rows():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws_dist = wb[ReviewSheets.DISTRIBUCION]
+    ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
     locked = (
         DistribucionCols.ID_PAGO,
@@ -2494,7 +2494,7 @@ def test_distribucion_monto_banco_only_first_row_per_payment():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     c_monto = _dist_col(DistribucionCols.MONTO_BANCO)
     pid0 = ws.cell(dr, _dist_col(DistribucionCols.ID_PAGO)).value
@@ -2510,7 +2510,7 @@ def test_distribucion_saldo_por_asignar_only_first_row_per_payment():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     c_saldo = _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)
     r2 = dr + 1
@@ -2525,7 +2525,7 @@ def test_saldo_por_asignar_formula_uses_group_assignments():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     f = ws.cell(dr, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value
     assert isinstance(f, str) and f.startswith("=")
@@ -2551,7 +2551,7 @@ def test_saldo_por_asignar_updates_for_multi_credit_payment():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     last_row = ws.max_row
     f = ws.cell(dr, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value
@@ -2569,7 +2569,7 @@ def test_total_aplicado_only_first_row_per_payment():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     c_total = _dist_col(DistribucionCols.TOTAL_APLICADO)
     assert isinstance(ws.cell(dr, c_total).value, str)
@@ -2582,7 +2582,7 @@ def test_total_aplicado_formula_uses_group_assignments():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     f = ws.cell(dr, _dist_col(DistribucionCols.TOTAL_APLICADO)).value
     assert isinstance(f, str) and f.startswith("=")
@@ -2605,7 +2605,7 @@ def test_saldo_por_asignar_still_uses_group_assignments():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     f = ws.cell(dr, _dist_col(DistribucionCols.SALDO_POR_ASIGNAR)).value
     assert isinstance(f, str) and f.startswith("=")
@@ -2658,7 +2658,7 @@ def test_distribucion_client_separator_border_on_client_change():
         ],
         date(2025, 12, 24),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     cliente_col = _dist_col(DistribucionCols.CLIENTE)
     ncols = len(DistribucionCols.HEADERS)
@@ -2687,7 +2687,7 @@ def test_distribucion_client_bottom_border_on_each_block_end():
         ],
         date(2025, 12, 24),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     ncols = len(DistribucionCols.HEADERS)
     rows = _distrib_rows_by_cliente(ws, dr)
@@ -2711,7 +2711,7 @@ def test_distribucion_last_client_has_bottom_border():
         ],
         date(2025, 12, 24),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     rows = _distrib_rows_by_cliente(ws, dr)
     last_row, _ = rows[-1]
@@ -2723,7 +2723,7 @@ def test_distribucion_no_client_separator_on_first_data_row():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     for c in range(1, len(DistribucionCols.HEADERS) + 1):
         assert _top_border_style(ws.cell(row=dr, column=c)) == "thin"
@@ -2740,7 +2740,7 @@ def test_estado_linea_colored_only_in_estado_column():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     estado_col = _dist_col(DistribucionCols.ESTADO_LINEA)
     ref_col = _dist_col(DistribucionCols.MONTO_BANCO)
@@ -2756,7 +2756,7 @@ def test_estado_linea_has_state_colors():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     rules = []
     for cf in ws.conditional_formatting._cf_rules.values():
         rules.extend(cf)
@@ -2782,7 +2782,7 @@ def test_distribution_rows_grouped_by_cliente_have_alternating_fill():
         ],
         date(2025, 12, 24),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     cliente_col = _dist_col(DistribucionCols.CLIENTE)
     band_col = _dist_col(DistribucionCols.MONTO_BANCO)
@@ -2807,11 +2807,11 @@ def test_editable_columns_have_distinct_fill():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     editable_names = (
         DistribucionCols.APLICAR_A_EXTRACTO,
-        DistribucionCols.MORA_A_APLICAR,
+        DistribucionCols.ABONO_A_CAPITAL,
         DistribucionCols.OTROS_VALORES,
         DistribucionCols.ESTADO_LINEA,
     )
@@ -2836,7 +2836,7 @@ def test_validar_pago_column_matches_control_procesar_fill():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     vp_rgb = _fill_rgb(ws.cell(row=dr, column=_dist_col(DistribucionCols.VALIDAR_PAGO)))
     assert vp_rgb == _FILL_PROCESAR_SI.fgColor.rgb
@@ -2847,7 +2847,7 @@ def test_editable_columns_remain_unlocked():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws_dist = wb[ReviewSheets.DISTRIBUCION]
+    ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
     editable = (
         DistribucionCols.VALOR_INTERESES,
@@ -2869,7 +2869,7 @@ def test_non_editable_columns_remain_locked():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws_dist = wb[ReviewSheets.DISTRIBUCION]
+    ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws_dist, DistribucionCols.ID_PAGO)
     locked = (
         DistribucionCols.ID_PAGO,
@@ -2898,7 +2898,7 @@ def test_distribucion_headers_do_not_include_legacy_names():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     hr = _header_row_index(ws, DistribucionCols.ID_PAGO)
     headers = [c.value for c in ws[hr]]
 
@@ -2907,7 +2907,8 @@ def test_distribucion_headers_do_not_include_legacy_names():
     assert "Abono a K" not in headers
     assert "Intereses de mora" not in headers
     assert DistribucionCols.APLICAR_A_EXTRACTO in headers
-    assert DistribucionCols.MORA_A_APLICAR in headers
+    assert DistribucionCols.ABONO_A_CAPITAL in headers
+    assert DistribucionCols.MORA_A_APLICAR not in headers
     assert DistribucionCols.OTROS_VALORES in headers
     assert DistribucionCols.ESTADO_PAGO in headers
     assert DistribucionCols.VALIDAR_PAGO in headers
@@ -3003,7 +3004,7 @@ def test_credit_unit_inversiones_empty_credit_root_extract():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.CREDITO] == "801"
@@ -3048,7 +3049,7 @@ def test_credit_unit_agrecar_root_and_credit_folders():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 2
         assert any("raíz del cliente" in str(r.get(DistribucionCols.OBSERVACION, "")) for r in dist)
 
@@ -3081,7 +3082,7 @@ def test_credit_unit_ericcol_non_standard_folder_infers_credit():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
         assert dist[0][DistribucionCols.CREDITO] == "555"
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
@@ -3148,7 +3149,7 @@ def test_credit_folder_vigente_no_terminal_observation():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
         assert "PAGADO/LIQUIDADO" not in obs
 
@@ -3178,7 +3179,7 @@ def test_credit_folder_pagado_terminal_observation():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])
+        dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
         assert "PAGADO/LIQUIDADO" in obs
 
@@ -3236,7 +3237,7 @@ def test_distrib_observacion_cells_use_editable_green_pastel_fill():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     obs_c = DistribucionCols.HEADERS.index(DistribucionCols.OBSERVACION) + 1
     obs_rgb = _fill_rgb(ws.cell(row=dr, column=obs_c))
@@ -3274,7 +3275,7 @@ def test_distrib_observation_warning_fill_only_on_observation_cell():
         with _run_with_pdf_mock(client):
             await generate_payment_validation(client, date(2026, 1, 1))
         wb = load_generated_workbook(client)
-        ws = wb[ReviewSheets.DISTRIBUCION]
+        ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws)
         obs_c = DistribucionCols.HEADERS.index(DistribucionCols.OBSERVACION) + 1
         estado_c = DistribucionCols.HEADERS.index(DistribucionCols.ESTADO_LINEA) + 1
@@ -3311,7 +3312,7 @@ def test_distribucion_freeze_panes_after_credito():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     col_credito = DistribucionCols.HEADERS.index(DistribucionCols.CREDITO) + 1
     assert ws.freeze_panes == f"{get_column_letter(col_credito + 1)}{dr}"
@@ -3334,7 +3335,7 @@ def test_distribucion_link_visible_text_includes_credito_preserves_hyperlink():
         date(2025, 12, 23),
         include_web_urls=True,
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
 
     def ci(name: str) -> int:
@@ -3358,7 +3359,7 @@ def test_distribucion_sin_url_no_texto_link_falso():
         date(2025, 12, 23),
         include_web_urls=False,
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
 
     def ci(name: str) -> int:
@@ -3389,7 +3390,7 @@ def test_distribucion_link_carpeta_credito_column_position_and_ruta_hidden():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     for col_name in (
         DistribucionCols.RUTA_TABLA_AMORTIZACION,
@@ -3412,7 +3413,7 @@ def test_distribucion_link_carpeta_credito_with_url_descriptive_text_and_hyperli
         date(2025, 12, 23),
         include_web_urls=True,
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     col_fold = DistribucionCols.HEADERS.index(DistribucionCols.LINK_CARPETA_CREDITO) + 1
     col_cred = DistribucionCols.HEADERS.index(DistribucionCols.CREDITO) + 1
@@ -3462,11 +3463,13 @@ def test_distribucion_headers_order_and_link_carpeta_before_ruta():
     assert DistribucionCols.HEADERS[3] == DistribucionCols.MONTO_BANCO
     assert DistribucionCols.RUTA in DistribucionCols.HEADERS
     assert DistribucionCols.LINK_CARPETA_CREDITO in DistribucionCols.HEADERS
-    assert DistribucionCols.HEADERS[-1] == DistribucionCols.CREDITO_NORMALIZADO
-    assert DistribucionCols.HEADERS[-2] == DistribucionCols.RUTA_TABLA_AMORTIZACION
-    assert DistribucionCols.HEADERS[-3] == DistribucionCols.RUTA_UNIDAD_CREDITO
-    assert DistribucionCols.HEADERS[-4] == DistribucionCols.RUTA
-    assert DistribucionCols.HEADERS[-5] == DistribucionCols.LINK_CARPETA_CREDITO
+    assert DistribucionCols.CREDITO_NORMALIZADO in DistribucionCols.HEADERS
+    assert DistribucionCols.RUTA_TABLA_AMORTIZACION in DistribucionCols.HEADERS
+    assert DistribucionCols.TIPO_APLICACION_ORIGINAL in DistribucionCols.HEADERS
+    assert DistribucionCols.ACTUALIZA_IBR in DistribucionCols.HEADERS
+    ruta_idx = DistribucionCols.HEADERS.index(DistribucionCols.RUTA)
+    carpeta_idx = DistribucionCols.HEADERS.index(DistribucionCols.LINK_CARPETA_CREDITO)
+    assert carpeta_idx < ruta_idx
 
 
 def _medium_border_color(cell, side: str = "top") -> str | None:
@@ -3488,7 +3491,7 @@ def test_distribucion_client_separator_borders_are_navy_blue():
         ],
         date(2025, 12, 24),
     )
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
     rows = _distrib_rows_by_cliente(ws, dr)
     sep_row = next(
@@ -3532,7 +3535,7 @@ def test_sheet_row2_instructions_visible_and_updated():
         date(2025, 12, 24),
     )
     ws_c = wb[ReviewSheets.CASOS_PAGO]
-    ws_d = wb[ReviewSheets.DISTRIBUCION]
+    ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     ws_e = wb[ReviewSheets.ERRORES]
     c2 = ws_c.cell(2, 1)
     d2 = ws_d.cell(2, 1)

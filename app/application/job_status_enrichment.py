@@ -72,8 +72,13 @@ _GENERATE_MESSAGES: dict[str, tuple[str, str]] = {
         "Complete Tipo Aplicación en todas las filas del reporte del banco y vuelva a ejecutar Generate.",
     ),
     "tipo_aplicacion_invalid": (
-        "Hay una transacción bancaria con un Tipo Aplicación no válido (solo se acepta PAGO o ABONO).",
-        "Corrija el valor en el Excel del banco (PAGO o ABONO) y vuelva a ejecutar Generate.",
+        "Hay una transacción bancaria con un Tipo Aplicación no válido.",
+        "Use solo los valores visibles del banco: PAGO, PAGO Y ABONO CAPITAL, ABONO CAPITAL o ABONO MORA. "
+        "Vuelva a ejecutar Generate.",
+    ),
+    "generic_abono_not_supported": (
+        "El reporte del banco tiene un Tipo Aplicación ABONO genérico, que ya no se acepta.",
+        "Clasifique cada movimiento como ABONO CAPITAL o ABONO MORA en el Excel del banco y vuelva a ejecutar Generate.",
     ),
     "customer_not_found": (
         "En el reporte del banco hay un pago cuyo Concepto no coincide con ninguna carpeta de cliente en SharePoint.",
@@ -154,8 +159,8 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
         "Guarde y vuelva a finalizar.",
     ),
     "missing_abono_k": (
-        "Falta Mora a aplicar en una fila con Validar Pago = SI.",
-        "Complete Mora a aplicar (o 0). Guarde y vuelva a finalizar.",
+        "Falta Abono a capital en una fila con Validar Pago = SI.",
+        "Complete Abono a capital (o 0). Guarde y vuelva a finalizar.",
     ),
     "missing_mora": (
         "Faltan Otros valores en una fila con Validar Pago = SI.",
@@ -163,7 +168,7 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "amount_mismatch": (
         "Los importes que la secretaría repartió no suman el monto del banco para ese ID de pago.",
-        "En Distribución, para ese pago revise Aplicar a extracto, Mora a aplicar y Otros valores "
+        "En Distribución, para ese pago revise Aplicar a extracto, Abono a capital y Otros valores "
         "hasta que Saldo por asignar sea 0. Guarde y vuelva a finalizar.",
     ),
     "missing_extract_route": (
@@ -232,6 +237,34 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
     "abono_invalid_application_type": (
         "Una fila de Distribucion_Abonos no está marcada correctamente como ABONO.",
         "Ejecute Generate de nuevo; no edite a mano las columnas técnicas TipoAplicacion o RequiereExtracto.",
+    ),
+    "abono_mora_missing_reference_extract": (
+        "Un ABONO MORA seleccionado no tiene extracto de referencia.",
+        "Revise Distribucion_Abonos: cada crédito ABONO MORA con Validar Abono = SI debe tener link o ruta de extracto. "
+        "Guarde y vuelva a finalizar.",
+    ),
+    "abono_mora_missing_reference_date": (
+        "Un ABONO MORA seleccionado no tiene fecha límite de referencia.",
+        "Complete Fecha límite en Distribucion_Abonos para cada crédito ABONO MORA validado y vuelva a finalizar.",
+    ),
+    "missing_reference_extract_route": (
+        "Un ABONO MORA validado no tiene ruta resoluble al extracto de referencia en SharePoint.",
+        "Verifique el link de extracto en Distribucion_Abonos y que el PDF exista en la carpeta del crédito. "
+        "Guarde y vuelva a finalizar.",
+    ),
+    "pago_y_abono_capital_missing_parte_cuota": (
+        "Un PAGO Y ABONO CAPITAL validado no tiene parte de cuota (Aplicar a extracto) mayor que cero.",
+        "Complete Aplicar a extracto en Distribución y vuelva a finalizar.",
+    ),
+    "pago_y_abono_capital_missing_capital": (
+        "Un PAGO Y ABONO CAPITAL validado no tiene abono a capital mayor que cero "
+        "(columna «Abono a capital» en Distribucion_Pagos).",
+        "Complete Abono a capital en Distribución y vuelva a finalizar.",
+    ),
+    "pago_y_abono_capital_saldo_must_be_zero": (
+        "Un PAGO Y ABONO CAPITAL validado no tiene Saldo por asignar en cero.",
+        "Revise Aplicar a extracto, Abono a capital y Otros valores hasta que Saldo por asignar sea 0. "
+        "Guarde y vuelva a finalizar.",
     ),
     "missing_control_sheet": (
         "El archivo de revisión no tiene la hoja Control.",

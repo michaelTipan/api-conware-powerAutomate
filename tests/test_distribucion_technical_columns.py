@@ -16,6 +16,7 @@ from app.application.services.review_schema import (
     EstadoPago,
     ReviewSheets,
     ValidarPago,
+    find_distribucion_pagos_sheet,
     normalize_credito_digits,
 )
 from app.application.use_cases.amortization_fill_dry_run import (
@@ -68,13 +69,13 @@ def test_generate_writes_ruta_tabla_and_credito_normalizado():
         [[datetime(2025, 12, 23), 25443565, "GEOEXCON", ""]],
         date(2025, 12, 23),
     )
-    row = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION])[0]
+    row = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])[0]
     assert (
         row[DistribucionCols.RUTA_TABLA_AMORTIZACION]
         == "clientes/GEOEXCON/254/Tabla amortizacion GEOEXCON 254.xlsx"
     )
     assert row[DistribucionCols.CREDITO_NORMALIZADO] == "254"
-    ws = wb[ReviewSheets.DISTRIBUCION]
+    ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
     for col_name in DISTRIBUCION_TECHNICAL_HIDDEN_COLUMNS:
         cidx = DistribucionCols.HEADERS.index(col_name) + 1
         assert ws.column_dimensions[get_column_letter(cidx)].hidden is True
@@ -278,7 +279,7 @@ def test_finalize_preserves_ruta_tabla_amortizacion_in_historical():
         await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
         hist_key = next(k for k in client.uploaded_files if "cartera_validada_" in k)
         wb = openpyxl.load_workbook(io.BytesIO(client.uploaded_files[hist_key]))
-        ws = wb[ReviewSheets.DISTRIBUCION]
+        ws = find_distribucion_pagos_sheet(wb)
         cmap = {
             str(ws.cell(1, c).value or "").strip(): c
             for c in range(1, ws.max_column + 1)

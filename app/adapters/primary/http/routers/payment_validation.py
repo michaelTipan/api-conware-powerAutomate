@@ -605,8 +605,8 @@ async def post_setup_payment_followup_workbooks(
     body: PaymentFollowupSetupRequest | None = None,
 ) -> dict[str, Any]:
     """
-    Crea bandejas operativas ``pagos_adelantados.xlsx`` y ``pagos_incompletos.xlsx``
-    (hojas Pendientes + Historico). Por defecto no sobrescribe; ``force_recreate`` reemplaza.
+    Crea la bandeja operativa ``pagos_adelantados.xlsx`` (hojas Pendientes + Historico).
+    Por defecto no sobrescribe; ``force_recreate`` reemplaza.
     """
     payload = body or PaymentFollowupSetupRequest()
     try:

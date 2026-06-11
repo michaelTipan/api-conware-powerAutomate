@@ -1,5 +1,5 @@
 """
-Setup idempotente de bandejas operativas pagos_adelantados / pagos_incompletos (Pendientes + Historico).
+Setup idempotente de bandeja operativa pagos_adelantados (Pendientes + Historico).
 
 Estructura simple sin Table/ListObject para compatibilidad con Excel Online.
 Hojas totalmente protegidas (solo la API escribe vía backend).
@@ -22,7 +22,6 @@ from app.application.services.workbook_setup_helpers import (
 from app.application.sharepoint_resolution import encode_graph_drive_path, resolve_sharepoint_path
 from app.application.config.payment_validation_settings import (
     DEFAULT_FOLLOWUP_ADELANTADOS,
-    DEFAULT_FOLLOWUP_INCOMPLETOS,
     resolve_followup_workbook_path,
     resolve_payment_validation_folder,
     PaymentValidationFolderName,
@@ -40,7 +39,6 @@ SHEET_PENDIENTES = "Pendientes"
 SHEET_HISTORICO = "Historico"
 
 FILENAME_ADELANTADOS = DEFAULT_FOLLOWUP_ADELANTADOS
-FILENAME_INCOMPLETOS = DEFAULT_FOLLOWUP_INCOMPLETOS
 
 ADELANTADOS_COLUMNS: tuple[str, ...] = (
     "ID Pago",
@@ -68,31 +66,6 @@ ADELANTADOS_COLUMNS: tuple[str, ...] = (
     "EstadoFinal",
     "IBRUsado",
     "FechaCierreIBR",
-    "Observacion",
-    "CreatedAt",
-    "UpdatedAt",
-)
-
-INCOMPLETOS_COLUMNS: tuple[str, ...] = (
-    "ID Pago",
-    "Cliente",
-    "Crédito",
-    "FechaPago",
-    "FechaLimitePago",
-    "MontoBanco",
-    "ValorExtracto",
-    "AplicarAExtracto",
-    "MoraAAplicar",
-    "OtrosValores",
-    "TotalAplicado",
-    "SaldoPorAsignar",
-    "TablaAmortizacionPath",
-    "RutaUnidadCredito",
-    "RutaExtracto",
-    "AsientoPdfPath",
-    "HistoricalFilePath",
-    "EstadoAplicacionPago",
-    "EstadoFinal",
     "Observacion",
     "CreatedAt",
     "UpdatedAt",
@@ -129,10 +102,6 @@ def followup_workbooks_folder_relative_path() -> str:
 
 def adelantados_workbook_relative_path() -> str:
     return resolve_followup_workbook_path(FILENAME_ADELANTADOS)
-
-
-def incompletos_workbook_relative_path() -> str:
-    return resolve_followup_workbook_path(FILENAME_INCOMPLETOS)
 
 
 async def _file_exists(graph: GraphApiPort, site_id: str, drive_id: str, path: str) -> bool:
@@ -280,15 +249,11 @@ async def setup_payment_followup_workbooks(
         ) from exc
 
     path_ad = adelantados_workbook_relative_path()
-    path_in = incompletos_workbook_relative_path()
     global_warnings: list[str] = []
 
     try:
         out_ad = await _ensure_one_followup_workbook(
             graph, site_id, drive_id, path_ad, columns=ADELANTADOS_COLUMNS, force_recreate=force_recreate
-        )
-        out_in = await _ensure_one_followup_workbook(
-            graph, site_id, drive_id, path_in, columns=INCOMPLETOS_COLUMNS, force_recreate=force_recreate
         )
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code if exc.response else 0
@@ -296,19 +261,18 @@ async def setup_payment_followup_workbooks(
         if code == 403:
             raise PaymentFollowupSetupError(
                 http_status=403,
-                user_message="No se pudieron crear las bandejas operativas en SharePoint.",
+                user_message="No se pudo crear la bandeja operativa en SharePoint.",
                 next_action="Verifique permisos de escritura en 00 CONTROL.",
                 technical_message=f"Graph HTTP {code}: {body_txt[:2000]}",
             ) from exc
         raise PaymentFollowupSetupError(
             http_status=502,
-            user_message="Error al subir bandejas operativas a SharePoint.",
+            user_message="Error al subir la bandeja operativa a SharePoint.",
             next_action="Verifique bloqueos (423) o permisos en la biblioteca.",
             technical_message=f"Graph HTTP {code}: {body_txt[:2000]}",
         ) from exc
 
     global_warnings.extend(out_ad.get("warnings") or [])
-    global_warnings.extend(out_in.get("warnings") or [])
 
     return {
         "status": "success",
@@ -320,14 +284,6 @@ async def setup_payment_followup_workbooks(
             "recreated": out_ad["recreated"],
             "file_url": out_ad["file_url"],
             "structure_ok": out_ad["structure_ok"],
-            "sheets": [SHEET_PENDIENTES, SHEET_HISTORICO],
-        },
-        "pagos_incompletos": {
-            "file_path": out_in["file_path"],
-            "created": out_in["created"],
-            "recreated": out_in["recreated"],
-            "file_url": out_in["file_url"],
-            "structure_ok": out_in["structure_ok"],
             "sheets": [SHEET_PENDIENTES, SHEET_HISTORICO],
         },
         "warnings": global_warnings,

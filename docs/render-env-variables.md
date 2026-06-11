@@ -39,8 +39,7 @@ Documentación oficial del proyecto (no usar `.env` ni `.env.local` como referen
 | `GRAPH_PAYMENT_VALIDATION_REVIEW_PATH` | Sí (generate/finalize) | `…/01 REVISION` |
 | `GRAPH_PAYMENT_VALIDATION_HISTORY_PATH` | Sí (finalize/notify) | `…/02 HISTORICO` |
 | `GRAPH_PAYMENT_VALIDATION_LOGS_PATH` | Opcional | `…/04 LOGS` |
-| `GRAPH_FOLLOWUP_PAGOS_ADELANTADOS_PATH` | Opcional | Setup followup |
-| `GRAPH_FOLLOWUP_PAGOS_INCOMPLETOS_PATH` | Opcional | Setup followup |
+| `GRAPH_FOLLOWUP_PAGOS_ADELANTADOS_PATH` | Opcional | Setup followup (pagos adelantados) |
 | `GRAPH_IBR_DIARIO_PATH` | Opcional | Setup IBR |
 
 **Canónicas (nuevas):** componen rutas desde base + subcarpeta.

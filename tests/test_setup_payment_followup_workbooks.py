@@ -1,4 +1,4 @@
-"""Tests setup bandejas operativas pagos_adelantados / pagos_incompletos."""
+"""Tests setup bandeja operativa pagos_adelantados."""
 
 import asyncio
 import io
@@ -14,7 +14,6 @@ from app.application.use_cases import setup_payment_followup_workbooks as spfw
 from app.application.use_cases.setup_payment_followup_workbooks import (
     ADELANTADOS_COLUMNS,
     FILENAME_ADELANTADOS,
-    FILENAME_INCOMPLETOS,
     SHEET_HISTORICO,
     SHEET_PENDIENTES,
     _build_followup_workbook_bytes,
@@ -30,13 +29,13 @@ def _http_error(status: int) -> httpx.HTTPStatusError:
 
 CONTROL_FOLDER = "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/00 CONTROL"
 PATH_AD = f"{CONTROL_FOLDER}/{FILENAME_ADELANTADOS}"
-PATH_IN = f"{CONTROL_FOLDER}/{FILENAME_INCOMPLETOS}"
 
 
 class MockGraphFollowup:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
         self.put_count = 0
+        self.get_bytes_calls: list[str] = []
 
     def _path_key(self, endpoint: str) -> str | None:
         low = endpoint.lower()
@@ -44,14 +43,13 @@ class MockGraphFollowup:
             return None
         if FILENAME_ADELANTADOS.lower() in low:
             return PATH_AD
-        if FILENAME_INCOMPLETOS.lower() in low:
-            return PATH_IN
         return None
 
     async def get(self, endpoint: str, params=None):
         return {"value": []}
 
     async def get_bytes(self, endpoint: str, params=None):
+        self.get_bytes_calls.append(endpoint)
         key = self._path_key(endpoint)
         if key and key in self.files:
             return self.files[key]
@@ -105,13 +103,13 @@ def test_build_workbook_has_pendientes_historico_no_registros_no_tables():
     _assert_sheet_fully_locked(ws_h)
 
 
-def test_setup_creates_both_when_missing(mock_resolve):
+def test_setup_creates_adelantados_when_missing(mock_resolve):
     g = MockGraphFollowup()
     out = asyncio.run(setup_payment_followup_workbooks(g))
     assert out["status"] == "success"
     assert out["pagos_adelantados"]["created"] is True
-    assert out["pagos_incompletos"]["created"] is True
-    assert g.put_count == 2
+    assert "pagos_incompletos" not in out
+    assert g.put_count == 1
 
 
 def test_setup_idempotent_no_overwrite(mock_resolve):
@@ -121,7 +119,6 @@ def test_setup_idempotent_no_overwrite(mock_resolve):
     out2 = asyncio.run(setup_payment_followup_workbooks(g, force_recreate=False))
     assert g.put_count == first_puts
     assert out2["pagos_adelantados"]["created"] is False
-    assert out2["pagos_incompletos"]["created"] is False
 
 
 def test_force_recreate_replaces(mock_resolve):
@@ -129,18 +126,15 @@ def test_force_recreate_replaces(mock_resolve):
     asyncio.run(setup_payment_followup_workbooks(g))
     puts_before = g.put_count
     out = asyncio.run(setup_payment_followup_workbooks(g, force_recreate=True))
-    assert g.put_count == puts_before + 2
+    assert g.put_count == puts_before + 1
     assert out["pagos_adelantados"]["recreated"] is True
-    assert out["pagos_incompletos"]["recreated"] is True
 
 
-def test_incompletos_workbook_structure():
-    from app.application.use_cases.setup_payment_followup_workbooks import INCOMPLETOS_COLUMNS
-
-    raw = _build_followup_workbook_bytes(columns=INCOMPLETOS_COLUMNS)
-    wb = openpyxl.load_workbook(io.BytesIO(raw))
-    assert not wb[SHEET_PENDIENTES].tables
-    assert wb[SHEET_PENDIENTES].cell(1, 1).value == "ID Pago"
+def test_setup_never_touches_pagos_incompletos_path(mock_resolve):
+    g = MockGraphFollowup()
+    asyncio.run(setup_payment_followup_workbooks(g))
+    for call in g.get_bytes_calls:
+        assert "pagos_incompletos" not in call.lower()
 
 
 def test_router_payment_followup_setup(mock_resolve):
@@ -153,6 +147,7 @@ def test_router_payment_followup_setup(mock_resolve):
     r = client.post("/graph/sharepoint/payment-validation/setup/payment-followup-workbooks")
     assert r.status_code == 200
     assert r.json()["pagos_adelantados"]["created"] is True
+    assert "pagos_incompletos" not in r.json()
 
     r2 = client.post(
         "/graph/sharepoint/payment-validation/setup/payment-followup-workbooks",

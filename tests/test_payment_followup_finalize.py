@@ -1,4 +1,4 @@
-"""Tests registro operativo en bandejas Pendientes tras Finalize."""
+"""Tests registro operativo en bandeja Pendientes de pagos_adelantados tras Finalize."""
 
 import asyncio
 import io
@@ -18,8 +18,6 @@ from app.application.services.review_schema import DistribucionCols, EstadoPago,
 from app.application.use_cases.setup_payment_followup_workbooks import (
     ADELANTADOS_COLUMNS,
     FILENAME_ADELANTADOS,
-    FILENAME_INCOMPLETOS,
-    INCOMPLETOS_COLUMNS,
     SHEET_HISTORICO,
     SHEET_PENDIENTES,
     _build_followup_workbook_bytes,
@@ -34,12 +32,12 @@ def _http_error(status: int) -> httpx.HTTPStatusError:
 
 CONTROL_FOLDER = "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS/00 CONTROL"
 PATH_AD = f"{CONTROL_FOLDER}/{FILENAME_ADELANTADOS}"
-PATH_IN = f"{CONTROL_FOLDER}/{FILENAME_INCOMPLETOS}"
 
 
 class MockGraphFollowup:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
+        self.get_bytes_calls: list[str] = []
 
     def _path_key(self, endpoint: str) -> str | None:
         low = endpoint.lower()
@@ -47,11 +45,10 @@ class MockGraphFollowup:
             return None
         if FILENAME_ADELANTADOS.lower() in low:
             return PATH_AD
-        if FILENAME_INCOMPLETOS.lower() in low:
-            return PATH_IN
         return None
 
     async def get_bytes(self, endpoint: str, params=None):
+        self.get_bytes_calls.append(endpoint)
         key = self._path_key(endpoint)
         if key and key in self.files:
             return self.files[key]
@@ -94,9 +91,8 @@ def _dist(estado: str, id_pago: str = "P1", credito: str = "C1") -> dict:
     }
 
 
-def _seed_workbooks(g: MockGraphFollowup) -> None:
+def _seed_workbook(g: MockGraphFollowup) -> None:
     g.files[PATH_AD] = _build_followup_workbook_bytes(columns=ADELANTADOS_COLUMNS)
-    g.files[PATH_IN] = _build_followup_workbook_bytes(columns=INCOMPLETOS_COLUMNS)
 
 
 def _pendientes_rows(path: str, files: dict[str, bytes]) -> list[tuple[str, str]]:
@@ -122,7 +118,7 @@ def _pendientes_rows(path: str, files: dict[str, bytes]) -> list[tuple[str, str]
 
 def test_adelantado_upsert_en_pagos_adelantados(env_paths):
     g = MockGraphFollowup()
-    _seed_workbooks(g)
+    _seed_workbook(g)
     asyncio.run(
         register_payment_followups_after_finalize(
             g,
@@ -145,30 +141,28 @@ def test_adelantado_upsert_en_pagos_adelantados(env_paths):
     assert wb[SHEET_HISTORICO].max_row == 1
 
 
-def test_incompleto_upsert_en_pagos_incompletos(env_paths):
+def test_incompleto_no_append_ni_lectura_pagos_incompletos(env_paths):
     g = MockGraphFollowup()
-    _seed_workbooks(g)
+    _seed_workbook(g)
     asyncio.run(
         register_payment_followups_after_finalize(
             g,
             "site-1",
             "drive-1",
             process_date=date(2026, 5, 10),
-            distributions=[_dist(EstadoPago.INCOMPLETO, id_pago="P2")],
+            distributions=[_dist("INCOMPLETO", id_pago="P2")],
             historical_relative_path="hist/cartera.xlsx",
         )
     )
-    assert ("P2", "C1") in _pendientes_rows(PATH_IN, g.files)
-    wb = openpyxl.load_workbook(io.BytesIO(g.files[PATH_IN]))
-    ws = wb[SHEET_PENDIENTES]
-    headers = [str(ws.cell(1, c).value or "") for c in range(1, ws.max_column + 1)]
-    assert "EstadoIBR" not in headers
-    assert "FechaIBRRequerida" not in headers
+    for call in g.get_bytes_calls:
+        assert "pagos_incompletos" not in call.lower()
+    assert PATH_AD in g.files
+    assert _pendientes_rows(PATH_AD, g.files) == []
 
 
 def test_no_duplica_id_pago_credito(env_paths):
     g = MockGraphFollowup()
-    _seed_workbooks(g)
+    _seed_workbook(g)
     dist = _dist(EstadoPago.ADELANTADO)
     for _ in range(2):
         asyncio.run(
@@ -188,16 +182,16 @@ def test_no_duplica_id_pago_credito(env_paths):
 
 def test_historico_sin_filas_nuevas(env_paths):
     g = MockGraphFollowup()
-    _seed_workbooks(g)
+    _seed_workbook(g)
     asyncio.run(
         register_payment_followups_after_finalize(
             g,
             "site-1",
             "drive-1",
             process_date=date(2026, 5, 10),
-            distributions=[_dist(EstadoPago.INCOMPLETO)],
+            distributions=[_dist(EstadoPago.ADELANTADO)],
             historical_relative_path="hist/cartera.xlsx",
         )
     )
-    wb = openpyxl.load_workbook(io.BytesIO(g.files[PATH_IN]))
+    wb = openpyxl.load_workbook(io.BytesIO(g.files[PATH_AD]))
     assert wb[SHEET_HISTORICO].max_row == 1

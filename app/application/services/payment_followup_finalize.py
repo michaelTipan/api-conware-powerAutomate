@@ -1,5 +1,5 @@
 """
-Registro operativo en bandejas pagos_adelantados / pagos_incompletos tras Finalize (hoja Pendientes).
+Registro operativo en bandeja pagos_adelantados tras Finalize (hoja Pendientes).
 """
 
 from __future__ import annotations
@@ -21,11 +21,9 @@ from app.application.services.review_schema import (
 )
 from app.application.use_cases.setup_payment_followup_workbooks import (
     ADELANTADOS_COLUMNS,
-    INCOMPLETOS_COLUMNS,
     SHEET_HISTORICO,
     SHEET_PENDIENTES,
     adelantados_workbook_relative_path,
-    incompletos_workbook_relative_path,
 )
 from app.domain.ports.graph import GraphApiPort
 
@@ -72,33 +70,6 @@ def _row_adelantados(dist: dict[str, Any], historical_relative_path: str, now_s:
         "EstadoFinal": ESTADO_FINAL_ABIERTO,
         "IBRUsado": "",
         "FechaCierreIBR": "",
-        "Observacion": _s(dist, DistribucionCols.OBSERVACION),
-        "CreatedAt": now_s,
-        "UpdatedAt": now_s,
-    }
-
-
-def _row_incompletos(dist: dict[str, Any], historical_relative_path: str, now_s: str) -> dict[str, Any]:
-    return {
-        "ID Pago": _s(dist, DistribucionCols.ID_PAGO),
-        "Cliente": _s(dist, DistribucionCols.CLIENTE),
-        "Crédito": _s(dist, DistribucionCols.CREDITO),
-        "FechaPago": _s(dist, DistribucionCols.FECHA_BANCO),
-        "FechaLimitePago": _s(dist, DistribucionCols.FECHA_LIMITE),
-        "MontoBanco": dist.get(DistribucionCols.MONTO_BANCO),
-        "ValorExtracto": dist.get(DistribucionCols.VALOR_EXTRACTO),
-        "AplicarAExtracto": dist.get(DistribucionCols.APLICAR_A_EXTRACTO),
-        "MoraAAplicar": dist.get(DistribucionCols.MORA_A_APLICAR),
-        "OtrosValores": dist.get(DistribucionCols.OTROS_VALORES),
-        "TotalAplicado": dist.get(DistribucionCols.TOTAL_APLICADO),
-        "SaldoPorAsignar": dist.get(DistribucionCols.SALDO_POR_ASIGNAR),
-        "TablaAmortizacionPath": _s(dist, DistribucionCols.LINK_TABLA),
-        "RutaUnidadCredito": _s(dist, DistribucionCols.RUTA_UNIDAD_CREDITO),
-        "RutaExtracto": _s(dist, DistribucionCols.RUTA) or _s(dist, DistribucionCols.LINK_EXTRACTO),
-        "AsientoPdfPath": _s(dist, DistribucionCols.RUTA_ASIENTOS_CONTABLES),
-        "HistoricalFilePath": historical_relative_path.strip().strip("/"),
-        "EstadoAplicacionPago": ESTADO_APLICACION_PENDIENTE_TABLA,
-        "EstadoFinal": ESTADO_FINAL_ABIERTO,
         "Observacion": _s(dist, DistribucionCols.OBSERVACION),
         "CreatedAt": now_s,
         "UpdatedAt": now_s,
@@ -216,12 +187,11 @@ async def register_payment_followups_after_finalize(
     distributions: list[dict[str, Any]],
     historical_relative_path: str,
 ) -> list[str]:
-    """Upsert en Pendientes; no modifica Historico."""
+    """Upsert en Pendientes de pagos_adelantados; no modifica Historico."""
     _ = process_date  # reservado para fases posteriores
     warnings: list[str] = []
     now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     adel_maps: list[dict[str, Any]] = []
-    inc_maps: list[dict[str, Any]] = []
 
     for dist in distributions:
         if not is_validar_pago_si(dist):
@@ -229,11 +199,8 @@ async def register_payment_followups_after_finalize(
         ep = str(dist.get(DistribucionCols.ESTADO_PAGO, "")).strip().upper()
         if ep == EstadoPago.ADELANTADO:
             adel_maps.append(_row_adelantados(dist, historical_relative_path, now_s))
-        elif ep == EstadoPago.INCOMPLETO:
-            inc_maps.append(_row_incompletos(dist, historical_relative_path, now_s))
 
     path_ad = adelantados_workbook_relative_path()
-    path_in = incompletos_workbook_relative_path()
 
     if adel_maps:
         ok = await _upsert_pendientes(
@@ -246,17 +213,5 @@ async def register_payment_followups_after_finalize(
         )
         if not ok:
             warnings.append(f"payment_followup_failed:{path_ad}")
-
-    if inc_maps:
-        ok = await _upsert_pendientes(
-            client,
-            site_id,
-            drive_id,
-            path_in,
-            INCOMPLETOS_COLUMNS,
-            inc_maps,
-        )
-        if not ok:
-            warnings.append(f"payment_followup_failed:{path_in}")
 
     return warnings

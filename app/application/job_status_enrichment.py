@@ -127,13 +127,17 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "empty_estado_pago": (
         "En Distribución hay filas con datos pero Estado Pago está vacío.",
-        "En cada fila con pago, elija un valor de la lista: ADELANTADO, ATRASADO, INCOMPLETO, NORMAL o REVISIÓN MANUAL. "
+        "En cada fila con pago, elija un valor de la lista: ADELANTADO, ATRASADO, NORMAL o REVISIÓN MANUAL. "
         "Guarde y vuelva a finalizar.",
     ),
     "invalid_estado_pago": (
         "Hay un Estado Pago escrito a mano o un valor que no está en la lista permitida.",
-        "Use solo la lista desplegable: ADELANTADO, ATRASADO, INCOMPLETO, NORMAL, REVISIÓN MANUAL. "
+        "Use solo la lista desplegable: ADELANTADO, ATRASADO, NORMAL, REVISIÓN MANUAL. "
         "No escriba texto libre. Guarde y vuelva a finalizar.",
+    ),
+    "INCOMPLETO_NOT_SUPPORTED": (
+        "El estado INCOMPLETO ya no forma parte del flujo operativo.",
+        "Clasifique el movimiento como PAGO si cierra el extracto o como ABONO si corresponde a una aplicación parcial.",
     ),
     "estado_pago_no_finalizable": (
         "Quedan filas en REVISIÓN MANUAL sin resolver; no se puede cerrar el día.",
@@ -141,7 +145,7 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
         "Guarde y vuelva a finalizar.",
     ),
     "no_validar_requires_observation": (
-        "Marcó Validar Pago = NO en una fila NORMAL o INCOMPLETO pero no puso observación.",
+        "Marcó Validar Pago = NO en una fila NORMAL pero no puso observación.",
         "En esa fila, escriba en Observación el motivo (por qué no se valida). Guarde y vuelva a finalizar.",
     ),
     "missing_valor_intereses": (
@@ -251,7 +255,7 @@ _FINALIZE_MESSAGES: dict[str, tuple[str, str]] = {
         "Deje una sola carpeta por crédito (nombres únicos en SharePoint). Vuelva a finalizar.",
     ),
     "validar_requires_positive_total": (
-        "Marcó Validar Pago = SI pero el total aplicado es cero o negativo (NORMAL, INCOMPLETO o ATRASADO).",
+        "Marcó Validar Pago = SI pero el total aplicado es cero o negativo (NORMAL o ATRASADO).",
         "Ingrese los montos a aplicar o cambie Validar Pago a NO con observación. Guarde y vuelva a finalizar.",
     ),
     "invalid_bank_code": (

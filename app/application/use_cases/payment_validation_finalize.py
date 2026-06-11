@@ -1709,6 +1709,8 @@ async def finalize_payment_validation(
         estado = str(dist.get(DistribucionCols.ESTADO_PAGO, "")).strip().upper()
         if not estado or estado == "NONE":
             raise ValueError("empty_estado_pago")
+        if estado == "INCOMPLETO":
+            raise ValueError("INCOMPLETO_NOT_SUPPORTED")
         if estado not in EstadoPago.ALLOWED:
             raise ValueError("invalid_estado_pago")
         if estado in EstadoPago.FINALIZE_FORBIDDEN:
@@ -1739,7 +1741,7 @@ async def finalize_payment_validation(
         if id_pago not in monto_casos:
             monto_casos[id_pago] = safe_float(dist.get(DistribucionCols.MONTO_BANCO))
 
-        if estado in (EstadoPago.NORMAL, EstadoPago.INCOMPLETO) and not vp_si:
+        if estado == EstadoPago.NORMAL and not vp_si:
             if not obs or str(obs).strip() == "":
                 raise ValueError("no_validar_requires_observation")
         elif estado in EstadoPago.COUNTERS_POSITIVE_TOTAL and vp_si:

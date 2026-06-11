@@ -105,7 +105,6 @@ class EstadoPago:
 
     ADELANTADO = "ADELANTADO"
     ATRASADO = "ATRASADO"
-    INCOMPLETO = "INCOMPLETO"
     NORMAL = "NORMAL"
     REVISION_MANUAL = "REVISION_MANUAL"
 
@@ -113,7 +112,6 @@ class EstadoPago:
         {
             ADELANTADO,
             ATRASADO,
-            INCOMPLETO,
             NORMAL,
             REVISION_MANUAL,
         }
@@ -122,7 +120,6 @@ class EstadoPago:
     OPTIONS_ORDERED = [
         ADELANTADO,
         ATRASADO,
-        INCOMPLETO,
         NORMAL,
         REVISION_MANUAL,
     ]
@@ -132,12 +129,12 @@ class EstadoPago:
 
     # Suma aplicada / filas que consolidan en histórico y tabla de amortización
     # (incluye ATRASADO y ADELANTADO: adelanto sigue requiriendo seguimiento operativo)
-    COUNTERS_POSITIVE_TOTAL = frozenset({NORMAL, INCOMPLETO, ATRASADO, ADELANTADO})
+    COUNTERS_POSITIVE_TOTAL = frozenset({NORMAL, ATRASADO, ADELANTADO})
 
     # Rutas extracto / soporte secretaría (antes «VALIDAR»)
-    SECRETARY_AND_RUTA = frozenset({NORMAL, INCOMPLETO, ATRASADO, ADELANTADO})
+    SECRETARY_AND_RUTA = frozenset({NORMAL, ATRASADO, ADELANTADO})
 
-    # Estados con seguimiento operativo positivo (pagos_adelantados / pagos_incompletos vía followup)
+    # Estados con seguimiento operativo positivo (pagos_adelantados vía followup)
     CLEARS_PENDING = COUNTERS_POSITIVE_TOTAL
 
 
@@ -335,14 +332,12 @@ class EstadoLinea:
     """Tokens legacy en columna «Estado» antes de Estado Pago + Validar Pago (solo migración)."""
 
     VALIDAR = "VALIDAR"
-    VALIDAR_PARCIAL = "VALIDAR_PARCIAL"
     REPROGRAMAR = "REPROGRAMAR"
     NO_VALIDAR = "NO_VALIDAR"
     PENDIENTE_MORA = "PENDIENTE_MORA"
     REVISION_MANUAL = "REVISION_MANUAL"
     OPTIONS = [
         VALIDAR,
-        VALIDAR_PARCIAL,
         PENDIENTE_MORA,
         REPROGRAMAR,
         NO_VALIDAR,
@@ -352,7 +347,6 @@ class EstadoLinea:
 
 _LEGACY_ESTADO_TO_PAIR: dict[str, tuple[str, str]] = {
     EstadoLinea.VALIDAR: (EstadoPago.NORMAL, ValidarPago.SI),
-    EstadoLinea.VALIDAR_PARCIAL: (EstadoPago.INCOMPLETO, ValidarPago.SI),
     EstadoLinea.REPROGRAMAR: (EstadoPago.ADELANTADO, ValidarPago.SI),
     EstadoLinea.NO_VALIDAR: (EstadoPago.NORMAL, ValidarPago.NO),
     EstadoLinea.PENDIENTE_MORA: (EstadoPago.ATRASADO, ValidarPago.SI),

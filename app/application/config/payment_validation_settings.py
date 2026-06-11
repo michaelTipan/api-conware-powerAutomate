@@ -39,7 +39,6 @@ DEFAULT_EMAIL_PDF_TEMPLATE_BANCOLOMBIA = "ABONOS BANCO BANCOLOMBIA {fecha}.pdf"
 DEFAULT_CORREOS_FILENAME = "CORREOS.xlsx"
 DEFAULT_IBR_FILENAME = "IBR_DIARIO.xlsx"
 DEFAULT_FOLLOWUP_ADELANTADOS = "pagos_adelantados.xlsx"
-DEFAULT_FOLLOWUP_INCOMPLETOS = "pagos_incompletos.xlsx"
 
 _DEFAULT_BASE_FOLDER = "INFORMACION CREDITOS-CLIENTES/02 COMWARE - VALIDACION PAGOS"
 _DEFAULT_SUBFOLDERS: dict[str, str] = {
@@ -358,11 +357,6 @@ def resolve_followup_workbook_path(filename: str) -> str:
     name = filename.strip()
     if name == DEFAULT_FOLLOWUP_ADELANTADOS:
         for key in ("GRAPH_FOLLOWUP_PAGOS_ADELANTADOS_PATH", "GRAPH_AUDIT_PAGOS_ADELANTADOS_PATH"):
-            p = _strip_env(key)
-            if p:
-                return p
-    elif name == DEFAULT_FOLLOWUP_INCOMPLETOS:
-        for key in ("GRAPH_FOLLOWUP_PAGOS_INCOMPLETOS_PATH", "GRAPH_AUDIT_PAGOS_INCOMPLETOS_PATH"):
             p = _strip_env(key)
             if p:
                 return p

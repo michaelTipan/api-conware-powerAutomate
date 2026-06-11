@@ -1196,7 +1196,6 @@ _FILL_CONTROL_PROCESAR_ROW = PatternFill(fill_type="solid", fgColor="E8EEF5")
 _FILL_PROCESAR_SI = PatternFill(fill_type="solid", fgColor="FF32CD32")
 _FILL_PROCESAR_NO = PatternFill(fill_type="solid", fgColor="FFFF6969")
 _FILL_ESTADO_VALIDAR = PatternFill(fill_type="solid", fgColor="C8E6C9")
-_FILL_ESTADO_VALIDAR_PARCIAL = PatternFill(fill_type="solid", fgColor="BBDEFB")
 _FILL_ESTADO_PENDIENTE_MORA = PatternFill(fill_type="solid", fgColor="FFF9C4")
 _FILL_ESTADO_REPROGRAMAR = PatternFill(fill_type="solid", fgColor="FFE0B2")
 _FILL_ESTADO_NO_VALIDAR = PatternFill(fill_type="solid", fgColor="FFCDD2")
@@ -1278,7 +1277,6 @@ _HLINK_FONT = Font(name="Calibri", color="0563C1", size=11, underline="single")
 _GROUP_BAND_FILLS = (_FILL_GROUP_A, _FILL_GROUP_B)
 _ESTADO_PAGO_FILLS = {
     EstadoPago.NORMAL: _FILL_ESTADO_VALIDAR,
-    EstadoPago.INCOMPLETO: _FILL_ESTADO_VALIDAR_PARCIAL,
     EstadoPago.ATRASADO: _FILL_ESTADO_PENDIENTE_MORA,
     EstadoPago.ADELANTADO: _FILL_ESTADO_REPROGRAMAR,
     EstadoPago.REVISION_MANUAL: _FILL_ESTADO_REVISION_MANUAL,
@@ -1789,7 +1787,6 @@ def _build_resumen_metrics(
         ("Atrasado (mora)", count_estado(EstadoPago.ATRASADO)),
         ("Adelantado", count_estado(EstadoPago.ADELANTADO)),
         ("Normal", count_estado(EstadoPago.NORMAL)),
-        ("Incompleto", count_estado(EstadoPago.INCOMPLETO)),
         ("Revisión manual", count_estado(EstadoPago.REVISION_MANUAL)),
     ]
 

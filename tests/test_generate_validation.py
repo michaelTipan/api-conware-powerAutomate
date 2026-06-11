@@ -603,7 +603,6 @@ def test_generate_output_is_secretary_usable_minimum():
             EstadoPago.NORMAL,
             EstadoPago.ADELANTADO,
             EstadoPago.ATRASADO,
-            EstadoPago.INCOMPLETO,
             EstadoPago.REVISION_MANUAL,
         }
 
@@ -2178,7 +2177,7 @@ def test_generate_adds_visual_formulas_dropdowns_and_hidden_lists_sheet():
     ws_lists = workbook[ReviewSheets.LISTAS]
     control_statuses = [ws_lists[f"A{idx}"].value for idx in range(1, 6)]
     process_values = [ws_lists[f"B{idx}"].value for idx in range(1, 3)]
-    dist_statuses = [ws_lists[f"C{idx}"].value for idx in range(1, 6)]
+    dist_statuses = [ws_lists[f"C{idx}"].value for idx in range(1, 5)]
     validar_vals = [ws_lists[f"D{idx}"].value for idx in range(1, 3)]
     assert control_statuses == ["EN_REVISION", "PROCESANDO", "PROCESADO", "ERROR", "CANCELADO"]
     assert process_values == ["NO", "SI"]
@@ -2195,7 +2194,7 @@ def test_generate_adds_visual_formulas_dropdowns_and_hidden_lists_sheet():
     assert "=_Listas!$B$1:$B$2" in validation_formulas
 
     dist_validation_formulas = [dv.formula1 for dv in ws_dist.data_validations.dataValidation]
-    assert "=_Listas!$C$1:$C$5" in dist_validation_formulas
+    assert "=_Listas!$C$1:$C$4" in dist_validation_formulas
     assert "=_Listas!$D$1:$D$2" in dist_validation_formulas
     assert len(ws_dist.conditional_formatting) > 0
 
@@ -2337,7 +2336,6 @@ def test_generate_visual_control_resumen_listas_adelantados():
         "Atrasado (mora)",
         "Adelantado",
         "Normal",
-        "Incompleto",
         "Revisión manual",
     ):
         assert name in labels, f"Falta métrica en Resumen: {name}"
@@ -2347,7 +2345,7 @@ def test_generate_visual_control_resumen_listas_adelantados():
 
     ws_dist = wb[ReviewSheets.DISTRIBUCION]
     dist_dvs = [dv.formula1 for dv in ws_dist.data_validations.dataValidation]
-    assert any("=_Listas!$C$1:$C$5" in f for f in dist_dvs)
+    assert any("=_Listas!$C$1:$C$4" in f for f in dist_dvs)
     assert any("=_Listas!$D$1:$D$2" in f for f in dist_dvs)
     ctrl = wb[ReviewSheets.CONTROL]
     ctrl_dvs = [dv.formula1 for dv in ctrl.data_validations.dataValidation]

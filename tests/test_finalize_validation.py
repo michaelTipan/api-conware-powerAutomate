@@ -846,7 +846,7 @@ def test_finalize_pendiente_mora_atrasado_can_complete():
     _run(run_test())
 
 
-def test_finalize_validar_parcial_skips_amortization_and_cuadratura():
+def test_finalize_rejects_incompleto_with_clear_code():
     async def run_test():
         set_env_vars()
         client = MockGraphClient()
@@ -854,14 +854,30 @@ def test_finalize_validar_parcial_skips_amortization_and_cuadratura():
             valor_int=80,
             abono_k=0,
             mora=20,
-            estado=EstadoLinea.VALIDAR_PARCIAL,
+            estado="INCOMPLETO",
             observacion="Parcial",
-            # VALIDAR_PARCIAL migra a INCOMPLETO + SI: misma regla de ruta/extracto que líneas validadas.
         )
         client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
-        res = await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
-        assert res["status"] == "success"
-        assert res["amortization_updated"] is False
+        with pytest.raises(ValueError, match="INCOMPLETO_NOT_SUPPORTED"):
+            await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
+
+    _run(run_test())
+
+
+def test_finalize_validar_parcial_legacy_rejected_as_invalid_estado():
+    async def run_test():
+        set_env_vars()
+        client = MockGraphClient()
+        r, _ = make_distrib_row(
+            valor_int=80,
+            abono_k=0,
+            mora=20,
+            estado="VALIDAR_PARCIAL",
+            observacion="Parcial",
+        )
+        client.downloaded_files["revision/val_latest.xlsx"] = create_review_workbook(distrib_specs=[(r, None)])
+        with pytest.raises(ValueError, match="invalid_estado_pago"):
+            await finalize_payment_validation(client, "val_latest.xlsx", process_date=date(2026, 5, 10))
 
     _run(run_test())
 

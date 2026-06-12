@@ -1077,6 +1077,83 @@ def _build_html(
     return f"<html><body>{''.join(parts)}</body></html>"
 
 
+async def record_notify_failure_on_control(
+    graph: GraphApiPort,
+    *,
+    bank_code: str | None,
+    exc: BaseException,
+    job_id: str | None = None,
+) -> None:
+    """
+    Deja rastro operativo en el control sin cambiar FINALIZADO, para permitir reintento del Flujo 2.
+    """
+    from app.application.config.payment_validation_settings import (
+        BANK_CODE_BANCOLOMBIA,
+        BANK_CODE_BOGOTA,
+        validate_bank_code,
+    )
+    from app.application.use_cases.payment_validation_process_control import (
+        read_process_control_snapshot,
+        update_process_control_row2,
+        utc_now_iso,
+    )
+
+    try:
+        ctx = await resolve_sharepoint_from_env(graph)
+        site_id = ctx["site_id"]
+        drive_id = ctx["drive_id"]
+    except Exception:
+        return
+
+    bc = (bank_code or "").strip()
+    if not bc:
+        candidates: list[str] = []
+        for candidate in (BANK_CODE_BOGOTA, BANK_CODE_BANCOLOMBIA):
+            snap_c = await read_process_control_snapshot(
+                graph, site_id, drive_id, bank_code=candidate
+            )
+            if (snap_c.estado_proceso or "").strip() == "FINALIZADO" and snap_c.is_active:
+                candidates.append(candidate)
+        if len(candidates) == 1:
+            bc = candidates[0]
+
+    if not bc:
+        return
+
+    try:
+        validate_bank_code(bc)
+    except ValueError:
+        return
+
+    try:
+        snap = await read_process_control_snapshot(graph, site_id, drive_id, bank_code=bc)
+        estado = (snap.estado_proceso or "").strip()
+        if estado != "FINALIZADO":
+            return
+        code = str(exc).strip().split("|", 1)[0].strip()[:120] or "notify_failed"
+        await update_process_control_row2(
+            graph,
+            site_id,
+            drive_id,
+            bank_code=bc,
+            updates={
+                "LastCompletedStep": "NOTIFY",
+                "LastStepStatus": "FAILED",
+                "LastStepErrorCode": code,
+                "LastErrorUserMessage": str(exc)[:500],
+                "LastErrorNextAction": (
+                    "Corrija el inconveniente indicado y vuelva a ejecutar "
+                    "Finalizar validación de pagos (Flujo 2). No es necesario volver a editar el Excel "
+                    "si la revisión ya se cerró."
+                ),
+                "NotifyJobId": job_id or "",
+                "LastUpdatedAtProceso": utc_now_iso(),
+            },
+        )
+    except Exception:
+        logger.exception("notify: no se pudo registrar fallo en control para banco %s", bc)
+
+
 async def send_validar_extractos_notification_email(
     graph: GraphApiPort,
     *,

@@ -369,8 +369,9 @@ _GLOBAL_ERROR_MESSAGES: dict[str, tuple[str, str]] = {
         "Complete la unión de PDF y verifique que el estado del proceso sea CONSOLIDADO o MERGE_PARCIAL antes de la validación previa.",
     ),
     "control_not_ready_for_merge": (
-        "El control del banco no está en estado FINALIZADO; no es posible unir los PDF todavía.",
-        "Ejecute la finalización de la revisión de ese banco y el envío del correo antes de unir los PDF.",
+        "El control del banco no está listo para consolidar los soportes.",
+        "Ejecute Finalizar validación de pagos (Flujo 2) y confirme que el correo de extractos se envió antes de "
+        "Consolidación de soportes (Flujo 3).",
     ),
     "destination_name_exhausted": (
         "No se encontró un nombre disponible para guardar un PDF consolidado sin sobrescribir otro archivo.",
@@ -494,14 +495,16 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
             )
         if mstripped == "control_not_ready_for_notify":
             return (
-                "El control del banco no está en estado FINALIZADO activo; no se puede notificar.",
-                "Ejecute Finalize para ese banco y vuelva a intentar Notify.",
+                "El control del banco no está listo para enviar el correo de extractos.",
+                "Si la revisión aún no se cerró, ejecute Finalizar validación de pagos (Flujo 2). "
+                "Si el proceso ya avanzó, contacte a soporte.",
                 "control_not_ready_for_notify",
             )
         if mstripped == "already_notified":
             return (
-                "El correo ya estaba registrado como notificado en el control del banco.",
-                "El siguiente paso es ejecutar Merge.",
+                "El correo de extractos ya fue enviado y registrado para este proceso.",
+                "Revise la bandeja de los destinatarios. El siguiente paso es ejecutar "
+                "Consolidación de soportes (Flujo 3).",
                 "already_notified",
             )
         if mstripped == "missing_historical_file_path" or mstripped.startswith(
@@ -510,14 +513,13 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
             return _mapped(
                 "missing_historical_file_path",
                 "No se pudo resolver el histórico para el correo (falta la ruta del Excel cartera_validada).",
-                "Ejecute la finalización de la revisión para ese banco y vuelva a ejecutar el envío del correo. "
-                "Si el error continúa, contacte a soporte.",
+                "Ejecute Finalizar validación de pagos (Flujo 2) para ese banco y, si el error continúa, contacte a soporte.",
             )
         if mstripped.startswith("historical_file_not_found"):
             return (
                 "No se pudo abrir el archivo histórico de validación en SharePoint (no existe, fue movido o sin permiso).",
-                "Confirme que Finalize terminó bien y que el archivo cartera_validada_....xlsx sigue en 02 HISTORICO. "
-                "Si lo borraron o renombraron, vuelva a ejecutar Finalize y reintente el correo con la ruta nueva.",
+                "Confirme que el Flujo 2 terminó correctamente y que el histórico del día sigue en 02 HISTORICO. "
+                "Si fue movido o borrado, contacte a soporte antes de volver a ejecutar el Flujo 2.",
                 "historical_file_not_found",
             )
         if "no hay excel" in mlow and "hist" in mlow:
@@ -585,14 +587,14 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
             return (
                 "El correo no se envió porque no hay destinatarios válidos (columna RECEPTORES vacía o correos mal escritos).",
                 "Abra 00 CONTROL / CORREOS.xlsx: columna RECEPTORES debe tener al menos un correo por fila. "
-                "Si usó destinatarios fijos en Power Automate, revise el campo to del body.",
+                "Guarde el archivo y vuelva a ejecutar Finalizar validación de pagos (Flujo 2).",
                 "recipients_not_configured",
             )
         if "emisor" in mlow or "receptores" in mlow or "correos" in mlow or "remitente" in mlow:
             return (
                 "Falta configurar quién envía o quién recibe el correo en CORREOS.xlsx (EMISOR y RECEPTORES).",
                 "En 00 CONTROL / CORREOS.xlsx complete EMISOR (un correo) y RECEPTORES (uno o más correos). "
-                "Guarde el archivo en SharePoint y reintente.",
+                "Guarde el archivo en SharePoint y vuelva a ejecutar Finalizar validación de pagos (Flujo 2).",
                 "recipients_not_configured",
             )
         if "no hay columna fecha" in mlow and "banco" in mlow:
@@ -633,9 +635,9 @@ def _notify_merge_string_mapping(job_type: str, msg: str) -> tuple[str, str, str
             )
         if "sendmail" in mlow or ("graph" in mlow and ("401" in msg or "403" in msg or "error" in mlow)):
             return (
-                "Microsoft no aceptó el envío del correo (permisos del buzón, remitente o destinatarios).",
-                "Verifique en CORREOS.xlsx que EMISOR sea un buzón autorizado para enviar. "
-                "Confirme que los destinatarios son correos válidos. Si persiste, contacte soporte con la hora del fallo.",
+                "No fue posible enviar el correo de extractos (permisos del buzón, remitente o destinatarios).",
+                "Verifique en CORREOS.xlsx que EMISOR sea un buzón autorizado y que RECEPTORES tenga correos válidos. "
+                "Luego vuelva a ejecutar Finalizar validación de pagos (Flujo 2). Si persiste, contacte a soporte.",
                 "graph_sendmail_failed",
             )
 
@@ -976,13 +978,13 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 "El correo de movimientos bancarios se envió correctamente. Los pagos incluyeron sus extractos "
                 "y los abonos se reportaron sin extracto, según corresponde.",
                 "Revise la bandeja de los destinatarios (y correo no deseado). Cargue los asientos en las carpetas del soporte; "
-                "cuando termine, ejecute la unión de PDFs.",
+                "cuando termine, ejecute Consolidación de soportes (Flujo 3).",
                 "success",
             )
         return (
             "El correo de abonos del banco se envió correctamente con la tabla del día y los extractos configurados.",
             "Revise la bandeja de los destinatarios (y correo no deseado). Cargue los asientos en las carpetas del soporte; "
-            "cuando termine, ejecute la unión de PDFs.",
+            "cuando termine, ejecute Consolidación de soportes (Flujo 3).",
             "success",
         )
     if job_type == "merge_composite_validado_pdfs":
@@ -999,7 +1001,7 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 f"La unión de PDFs terminó sin generar ningún archivo: los {skip_count or len(skipped)} pago(s) "
                 "requieren documentos faltantes (asiento contable, extracto u otro requisito).",
                 "Revise Asientos_Pendientes y cargue los PDF en ASIENTOS CONTABLES de cada crédito según el soporte de asientos. "
-                "Corrija y vuelva a ejecutar la unión de PDF.",
+                "Corrija y vuelva a ejecutar Consolidación de soportes (Flujo 3).",
                 "warning",
             )
         incomplete_count = int(result.get("incomplete_groups_count") or 0)
@@ -1007,7 +1009,7 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
             return (
                 f"La consolidación quedó incompleta: {incomplete_count} grupo(s) con documentos obligatorios faltantes.",
                 "Revise Asientos_Pendientes y la carpeta de extractos del crédito. Cargue los asientos o extractos faltantes "
-                "y vuelva a ejecutar la unión de PDF antes de la validación previa.",
+                "y vuelva a ejecutar Consolidación de soportes (Flujo 3) antes del Flujo 4.",
                 "warning",
             )
         if isinstance(outputs, list) and len(outputs) > 0:
@@ -1015,7 +1017,8 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 return (
                     f"Se unieron {out_count or len(outputs)} grupo(s) completo(s); "
                     f"quedan {skip_count or len(skipped)} omisión(es) documentales.",
-                    "Revise Asientos_Pendientes y cargue los documentos pendientes. Vuelva a ejecutar la unión de PDF.",
+                    "Revise Asientos_Pendientes y cargue los documentos pendientes. "
+                    "Vuelva a ejecutar Consolidación de soportes (Flujo 3).",
                     "warning",
                 )
             abono_out = int(result.get("abono_outputs_count") or 0)
@@ -1023,15 +1026,15 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 return (
                     "La consolidación generó los soportes de pagos y abonos. Los abonos se consolidaron con sus "
                     "asientos contables, sin exigir extractos.",
-                    "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS. Ejecute la validación previa de amortización "
-                    "y, si todo cuadra, la aplicación de pagos y abonos.",
+                    "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS y, cuando confirme que los PDF "
+                    "consolidados están completos, ejecute Llenar tabla de amortización (Flujo 4).",
                     "success",
                 )
             return (
-                "La unión de PDFs terminó correctamente: cada pago validado quedó en un solo PDF "
-                "(correo del día + asientos + extractos). Los asientos contables permanecen en sus carpetas.",
-                "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS. Siguiente paso: ejecute "
-                "dry-run de amortización para revisar el impacto y luego apply para aplicar los cambios.",
+                "La consolidación de soportes terminó correctamente: cada pago validado quedó en un solo PDF "
+                "(correo del día + asientos + extractos).",
+                "Revise en SharePoint la carpeta 06 ASIENTO CONTABLES GENERADOS y, cuando confirme que los PDF "
+                "consolidados están completos, ejecute Llenar tabla de amortización (Flujo 4).",
                 "success",
             )
         return (
@@ -1106,8 +1109,9 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
                 return (custom_um, custom_na, "success")
         if str(result.get("status") or "") == "preflight_failed":
             return (
-                "La validación previa detectó errores; no se modificó ninguna tabla.",
-                "Revise los errores de la validación previa y corríjalos antes de volver a aplicar pagos y abonos.",
+                "No fue posible actualizar las tablas de amortización porque se detectaron errores en la revisión interna.",
+                "Revise los documentos y tablas indicados, corrija el inconveniente y vuelva a ejecutar "
+                "Llenar tabla de amortización (Flujo 4).",
                 "warning",
             )
         if str(result.get("status") or "") in ("ok", "partial"):

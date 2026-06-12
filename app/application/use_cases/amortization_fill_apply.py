@@ -1101,7 +1101,10 @@ async def run_amortization_fill_apply(
                         "LastStepStatus": "FAILED",
                         "LastStepErrorCode": "ERROR_APPLY",
                         "LastErrorUserMessage": str(exc)[:500],
-                        "LastErrorNextAction": "Revise el preflight y corrija antes de reintentar apply.",
+                        "LastErrorNextAction": (
+                            "Revise los documentos indicados, corrija el inconveniente y vuelva a ejecutar "
+                            "Llenar tabla de amortización (Flujo 4)."
+                        ),
                         "LastUpdatedAtProceso": utc_now_iso(),
                     },
                 )

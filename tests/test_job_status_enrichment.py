@@ -81,6 +81,9 @@ def test_merge_completed_job_includes_user_message_next_action_severity():
     out = enrich_job_for_http_response(raw)
     assert out["severity"] == "success"
     assert "pdf" in out["user_message"].lower()
+    assert "Flujo 4" in out["next_action"]
+    assert "dry-run" not in out["next_action"].lower()
+    assert "apply" not in out["next_action"].lower()
 
 
 def test_merge_completed_with_outputs_empty_and_skipped_has_warning_severity():

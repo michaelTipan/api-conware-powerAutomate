@@ -17,6 +17,7 @@ from app.application.use_cases.sharepoint_from_env import (
     upload_configured_file,
 )
 from app.application.use_cases.send_validar_extractos_notification import (
+    record_notify_failure_on_control,
     send_validar_extractos_notification_email,
 )
 from app.application.use_cases.ensure_asientos_contables_folders import ensure_asientos_contables_folders
@@ -114,6 +115,14 @@ async def _run_notify_validar_extractos_job(
         )
         logger.info("job %s: notify_validar_extractos completado", job_id)
     except Exception as exc:
+        await record_notify_failure_on_control(
+            graph,
+            bank_code=payload.bank_code,
+            exc=exc,
+            job_id=job_id,
+        )
+        msg = str(exc)
+        code = msg.split("|", 1)[0].strip() if "|" in msg else msg.strip()
         await _set_job(
             job_id,
             {
@@ -121,7 +130,11 @@ async def _run_notify_validar_extractos_job(
                 "finished_at": _utc_now_iso(),
                 "updated_at": _utc_now_iso(),
                 "result": None,
-                "error": str(exc),
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": msg,
+                    "error_code": code,
+                },
             },
         )
         logger.exception("job %s: notify_validar_extractos falló: %s", job_id, exc)

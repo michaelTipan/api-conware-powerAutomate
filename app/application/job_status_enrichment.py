@@ -1112,17 +1112,35 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
             )
         if str(result.get("status") or "") in ("ok", "partial"):
             custom_um = str(result.get("user_message") or "").strip()
+            custom_na = str(result.get("next_action") or "").strip()
+            sev = "success" if result.get("status") == "ok" else "warning"
             if custom_um:
                 return (
                     custom_um,
-                    str(result.get("next_action") or "").strip()
-                    or "Revise el resumen de tablas actualizadas y confirme que los asientos utilizados estén en la carpeta PROCESADOS.",
-                    "success" if result.get("status") == "ok" else "warning",
+                    custom_na
+                    or (
+                        "Abra cada tabla actualizada y confirme que los pagos aplicados y el cronograma "
+                        "quedaron correctos. Este es el último paso automático del proceso."
+                        if result.get("status") == "ok"
+                        else "Revise las tablas pendientes, corrija el inconveniente y vuelva a ejecutar "
+                        "Llenar tabla de amortización (Flujo 4)."
+                    ),
+                    sev,
+                )
+            tables_n = int(result.get("tables_uploaded_count") or 0)
+            if result.get("status") == "partial":
+                return (
+                    f"Se actualizaron {tables_n} tabla(s), pero quedaron tablas pendientes de revisión.",
+                    "Revise las tablas pendientes, corrija el inconveniente y vuelva a ejecutar "
+                    "Llenar tabla de amortización (Flujo 4).",
+                    "warning",
                 )
             return (
-                "La amortización se aplicó en las tablas indicadas.",
-                "Revise el resumen de tablas actualizadas y confirme que los asientos utilizados estén en la carpeta PROCESADOS.",
-                "success" if result.get("status") == "ok" else "warning",
+                "El proceso de validación de pagos finalizó correctamente. "
+                f"Se actualizaron {tables_n} tabla(s) de amortización en SharePoint.",
+                "Abra cada tabla actualizada y confirme que los pagos aplicados y el cronograma "
+                "quedaron correctos. Este es el último paso automático del proceso.",
+                "success",
             )
 
     return "", "", ""

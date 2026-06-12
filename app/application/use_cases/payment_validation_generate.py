@@ -3083,7 +3083,7 @@ async def generate_payment_validation(
     client: GraphApiPort,
     process_date: date,
     *,
-    bank_code: str | None = None,
+    bank_code: str,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     site_search = os.getenv("GRAPH_SHAREPOINT_SITE_SEARCH", "").strip()
@@ -3094,7 +3094,7 @@ async def generate_payment_validation(
 
     from app.application.config.payment_validation_settings import (
         get_payment_validation_paths,
-        normalize_bank_code,
+        require_bank_code,
         resolve_bank_display_name,
         resolve_bank_input_file_path,
     )
@@ -3109,8 +3109,7 @@ async def generate_payment_validation(
         build_payment_validation_process_key,
     )
 
-    bank_code = normalize_bank_code(bank_code)
-    validate_bank_code(bank_code)
+    bank_code = require_bank_code(bank_code)
 
     paths = get_payment_validation_paths()
     if not review_path:

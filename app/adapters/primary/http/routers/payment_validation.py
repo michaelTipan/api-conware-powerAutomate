@@ -5,7 +5,7 @@ from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.adapters.primary.http.deps import GraphClientDep
 from app.application.job_status_enrichment import enrich_job_for_http_response
@@ -24,7 +24,7 @@ from app.application.use_cases.setup_merge_control_workbook import (
     MergeControlSetupError,
     setup_merge_control_workbook,
 )
-from app.application.config.payment_validation_settings import normalize_bank_code
+from app.application.config.payment_validation_settings import validate_bank_code
 from app.application.use_cases.amortization_fill_apply import run_amortization_fill_apply
 from app.application.use_cases.amortization_fill_dry_run import run_amortization_fill_dry_run
 from app.domain.exceptions import GraphConfigError
@@ -40,10 +40,18 @@ def _utc_now_iso() -> str:
 # ─── Request Bodies ──────────────────────────────────────────────────────────
 
 class GenerateRequest(BaseModel):
+    bank_code: str = Field(..., min_length=1, description="banco_bogota | banco_bancolombia")
     process_date: str | None = None
     source_file_path: str | None = None
     force: bool = False
-    bank_code: str | None = None
+
+    @field_validator("bank_code")
+    @classmethod
+    def _bank_code_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("bank_code es obligatorio")
+        return stripped
 
 class FinalizeRequest(BaseModel):
     validation_file: str | None = None
@@ -70,7 +78,7 @@ class AmortizationDryRunRequest(BaseModel):
 # ─── Background Tasks ─────────────────────────────────────────────────────────
 
 async def _run_generate_job(
-    job_id: str, graph: GraphClientDep, process_date: date, bank_code: str | None
+    job_id: str, graph: GraphClientDep, process_date: date, bank_code: str
 ) -> None:
     jm = JobManager()
     await jm.set_job(job_id, {
@@ -82,7 +90,7 @@ async def _run_generate_job(
     started = perf_counter()
     try:
         result = await generate_payment_validation(
-            graph, process_date, bank_code=normalize_bank_code(bank_code), job_id=job_id
+            graph, process_date, bank_code=bank_code, job_id=job_id
         )
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         await jm.set_job(job_id, {
@@ -335,11 +343,12 @@ async def _run_amortization_apply_job(
 async def queue_generate(
     graph: GraphClientDep,
     background_tasks: BackgroundTasks,
-    body: GenerateRequest = None,
+    body: GenerateRequest,
 ) -> dict[str, Any]:
     """
     Encola la generación del Excel de revisión de pagos.
-    Power Automate debe llamar este endpoint y luego consultar /jobs/{job_id}.
+    Power Automate debe llamar este endpoint con bank_code obligatorio
+    y luego consultar /jobs/{job_id}.
     """
     jm = JobManager()
     if not jm.try_start_generate():
@@ -348,7 +357,15 @@ async def queue_generate(
             detail="Ya existe un proceso generate o finalize activo. Consulta /jobs/{job_id}."
         )
 
-    body = body or GenerateRequest()
+    try:
+        validate_bank_code(body.bank_code)
+    except ValueError:
+        jm.finish_generate()
+        raise HTTPException(
+            status_code=422,
+            detail="bank_code inválido. Use banco_bogota o banco_bancolombia.",
+        )
+
     try:
         pd_str = body.process_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         process_date = date.fromisoformat(pd_str)

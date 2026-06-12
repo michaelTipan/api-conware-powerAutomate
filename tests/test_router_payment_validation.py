@@ -116,26 +116,45 @@ def test_finalize_queue_accepts_process_date(client, monkeypatch):
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. POST /generate/queue devuelve 202, job_id y status queued
 # ──────────────────────────────────────────────────────────────────────────────
+GENERATE_QUEUE_JSON = {"bank_code": "banco_bogota"}
+
+
 def test_generate_queue_returns_202(client):
-    res = client.post("/graph/sharepoint/payment-validation/generate/queue")
+    res = client.post(
+        "/graph/sharepoint/payment-validation/generate/queue",
+        json=GENERATE_QUEUE_JSON,
+    )
     assert res.status_code == 202
     body = res.json()
     assert "job_id" in body
     assert body["status"] == "queued"
 
 
-def test_generate_queue_accepts_empty_body(client):
+def test_generate_queue_rejects_missing_bank_code(client):
     res = client.post(
         "/graph/sharepoint/payment-validation/generate/queue",
-        json={}
+        json={},
     )
-    assert res.status_code == 202
+    assert res.status_code == 422
+
+
+def test_generate_queue_rejects_invalid_bank_code(client):
+    res = client.post(
+        "/graph/sharepoint/payment-validation/generate/queue",
+        json={"bank_code": "banco_xyz"},
+    )
+    assert res.status_code == 422
 
 
 def test_generate_queue_accepts_optional_overrides(client):
     res = client.post(
         "/graph/sharepoint/payment-validation/generate/queue",
-        json={"process_date": "2026-05-10", "source_file_path": None, "force": False}
+        json={
+            "bank_code": "banco_bancolombia",
+            "process_date": "2026-05-10",
+            "source_file_path": None,
+            "force": False,
+        },
     )
     assert res.status_code == 202
     body = res.json()
@@ -182,7 +201,10 @@ def test_finalize_rejects_invalid_process_date(client):
 # ──────────────────────────────────────────────────────────────────────────────
 def test_get_job_returns_job_state(client):
     # Primero crear un job
-    res = client.post("/graph/sharepoint/payment-validation/generate/queue")
+    res = client.post(
+        "/graph/sharepoint/payment-validation/generate/queue",
+        json=GENERATE_QUEUE_JSON,
+    )
     assert res.status_code == 202
     job_id = res.json()["job_id"]
 
@@ -278,7 +300,10 @@ def test_generate_completed_job_still_includes_user_message_next_action_severity
 # ──────────────────────────────────────────────────────────────────────────────
 def test_router_uses_shared_job_manager(client):
     """El job creado por el endpoint debe ser visible en el Singleton JobManager."""
-    res = client.post("/graph/sharepoint/payment-validation/generate/queue")
+    res = client.post(
+        "/graph/sharepoint/payment-validation/generate/queue",
+        json=GENERATE_QUEUE_JSON,
+    )
     assert res.status_code == 202
     job_id = res.json()["job_id"]
 
@@ -296,7 +321,10 @@ def test_generate_returns_immediately_without_heavy_logic(client):
     El job se encola en background — el request no debe bloquear."""
     import time
     t0 = time.monotonic()
-    res = client.post("/graph/sharepoint/payment-validation/generate/queue")
+    res = client.post(
+        "/graph/sharepoint/payment-validation/generate/queue",
+        json=GENERATE_QUEUE_JSON,
+    )
     elapsed = time.monotonic() - t0
     # El endpoint debe responder rápidamente (no espera que el job termine)
     # TestClient ejecuta el background task igualmente, pero la respuesta 202 se emite antes
@@ -312,7 +340,10 @@ def test_generate_returns_409_if_already_active(client):
     jm = JobManager()
     jm._generate_active = True  # Simular proceso activo
 
-    res = client.post("/graph/sharepoint/payment-validation/generate/queue")
+    res = client.post(
+        "/graph/sharepoint/payment-validation/generate/queue",
+        json=GENERATE_QUEUE_JSON,
+    )
     assert res.status_code == 409
 
 
@@ -331,6 +362,6 @@ def test_finalize_returns_409_if_generate_active(client):
 def test_generate_rejects_invalid_process_date(client):
     res = client.post(
         "/graph/sharepoint/payment-validation/generate/queue",
-        json={"process_date": "not-a-date"}
+        json={"bank_code": "banco_bogota", "process_date": "not-a-date"},
     )
     assert res.status_code == 422

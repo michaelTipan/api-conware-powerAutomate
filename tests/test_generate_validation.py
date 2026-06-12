@@ -262,7 +262,7 @@ def set_env_vars():
 
 def setup_client_structure(client, include_web_urls=False):
     # Control oficial por banco (Phase 1): Generate ahora lo lee siempre.
-    # Para los tests, basta con el control de Bogotá porque bank_code default = banco_bogota.
+    # Para los tests, basta con el control de Bogotá (bank_code explícito en cada llamada).
     client.downloaded_files[resolve_bank_control_file_path(BANK_CODE_BOGOTA)] = (
         _build_process_control_workbook_bytes("banco_bogota", "Banco de Bogotá")
     )
@@ -421,7 +421,7 @@ def run_generate(bank_rows, process_date, include_web_urls=False):
             "app.application.use_cases.payment_validation_generate.extract_fecha_limite_pago_from_pdf",
             side_effect=fake_fecha,
         ):
-            result = await generate_payment_validation(client, process_date)
+            result = await generate_payment_validation(client, process_date, bank_code="banco_bogota")
         workbook = load_generated_workbook(client)
         return client, result, workbook
 
@@ -438,7 +438,7 @@ def test_generate_review_folder_not_empty():
         client.children = [{"name": "archivo_viejo.xlsx"}]
 
         with pytest.raises(ValueError, match="review_folder_not_empty"):
-            await generate_payment_validation(client, date(2026, 5, 10))
+            await generate_payment_validation(client, date(2026, 5, 10), bank_code="banco_bogota")
 
     asyncio.run(run_test())
 
@@ -460,7 +460,7 @@ def test_generate_ignores_temp_files():
         setup_client_structure(client)
         client.downloaded_files["banco.xlsx"] = create_bank_excel( [])
 
-        result = await generate_payment_validation(client, date(2026, 5, 10))
+        result = await generate_payment_validation(client, date(2026, 5, 10), bank_code="banco_bogota")
         assert result["process_id"] is not None
         assert any(endpoint.endswith("/banco.xlsx:/content") for endpoint in client.requested_endpoints)
         assert any(
@@ -522,7 +522,7 @@ def test_generate_monto_banco_not_duplicated_with_three_credit_candidates():
                 side_effect=_fake_fecha_limite_from_marker_bytes(),
             ),
         ):
-            await generate_payment_validation(client, date(2025, 12, 23))
+            await generate_payment_validation(client, date(2025, 12, 23), bank_code="banco_bogota")
 
         workbook = load_generated_workbook(client)
         ws = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
@@ -717,7 +717,7 @@ def test_generate_workbook_headers_compatible_with_finalize():
         setup_client_structure(client)
         client.downloaded_files["banco.xlsx"] = create_bank_excel( [])
 
-        await generate_payment_validation(client, date(2026, 5, 10))
+        await generate_payment_validation(client, date(2026, 5, 10), bank_code="banco_bogota")
         workbook = load_generated_workbook(client)
 
         assert ReviewSheets.CONTROL in workbook.sheetnames
@@ -844,7 +844,7 @@ def test_generate_proposes_all_pending_installments_geoexcon():
         # En el setup, geoexcon tiene creditos 254 y 231 (fechas limite 23/12/2025)
         # por lo que ambas deberian ser PENDIENTE_MORA con mora=7
         with _run_with_pdf_mock(client):
-            res = await generate_payment_validation(client, date(2026, 1, 1))
+            res = await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         
         wb = load_generated_workbook(client)
         ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
@@ -914,7 +914,7 @@ def test_generate_proposes_all_future_installments_equinorte():
         )
 
         with _run_with_pdf_mock(client):
-            res = await generate_payment_validation(client, date(2026, 1, 1))
+            res = await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         
         wb = load_generated_workbook(client)
         ws_dist = wb[ReviewSheets.DISTRIBUCION_PAGOS]
@@ -950,7 +950,7 @@ def test_generate_does_not_filter_by_amount_or_date():
         )
 
         with _run_with_pdf_mock(client):
-            result = await generate_payment_validation(client, date(2026, 1, 1))
+            result = await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
 
         workbook = load_generated_workbook(client)
         dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])
@@ -993,7 +993,7 @@ def test_generate_no_pending_installment_error_for_realistic_hbi_table():
         )
 
         with _run_with_pdf_mock(client):
-            result = await generate_payment_validation(client, date(2026, 1, 1))
+            result = await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
 
         workbook = load_generated_workbook(client)
         dist_rows = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])
@@ -1024,7 +1024,7 @@ def test_generate_does_not_use_mora_from_amortization_table():
         )
 
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
 
         workbook = load_generated_workbook(client)
         row = sheet_to_dicts(workbook[ReviewSheets.DISTRIBUCION_PAGOS])[0]
@@ -1107,7 +1107,7 @@ def test_generate_extract_value_from_pdf_total_a_pagar_credit_231():
         _make_single_client_setup(client, "231", tabla_cuota=19540684.91, pdf_total_str="18.826.879",
                                    due_date=date(2025, 12, 23), banco_date=date(2025, 12, 30))
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
@@ -1126,7 +1126,7 @@ def test_generate_extract_value_from_pdf_total_a_pagar_credit_254():
         _make_single_client_setup(client, "254", tabla_cuota=6734920.07, pdf_total_str="6.500.739",
                                    due_date=date(2025, 12, 23), banco_date=date(2025, 12, 30))
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
@@ -1145,7 +1145,7 @@ def test_generate_pdf_amount_overrides_table_amount():
         _make_single_client_setup(client, "100", tabla_cuota=99999.0, pdf_total_str="12.345",
                                    due_date=date(2025, 12, 23), banco_date=date(2025, 12, 30))
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
@@ -1165,7 +1165,7 @@ def test_generate_no_table_amount_fallback_when_pdf_amount_missing():
         _make_single_client_setup(client, "555", tabla_cuota=50000.0, pdf_total_str="",
                                    due_date=date(2025, 12, 23), banco_date=date(2025, 12, 30))
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr_d = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
@@ -1192,7 +1192,7 @@ def test_generate_extract_not_found_when_pdf_missing():
         client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 30), 100000, "NOPDF", ""]])
         # Este test no necesita mock de PDF porque no hay PDF — testea extract_not_found
-        await generate_payment_validation(client, date(2026, 1, 1))
+        await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr_d = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
@@ -1255,7 +1255,7 @@ def test_phase1_extractos_subfolder_priority_over_parent_pdf():
             [[date(2025, 12, 23), 100000, "MIXCLI", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -1299,7 +1299,7 @@ def test_phase1_empty_extractos_fallback_to_credit_folder():
             [[date(2025, 6, 1), 500000, "FALLB", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -1336,7 +1336,7 @@ def test_generate_flat_acimor_style_writes_ruta_for_root_extract():
             [[date(2026, 4, 1), 100000, "ACIMRU", "pago"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         hdr = _header_row_index(wb[ReviewSheets.DISTRIBUCION_PAGOS], DistribucionCols.ID_PAGO)
         dr = hdr + 1
@@ -1367,7 +1367,7 @@ def test_phase1_strict_name_rejects_pdf_without_extracto_in_name():
             [[date(2025, 12, 23), 100000, "STRICT", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         err_rows = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
@@ -1405,7 +1405,7 @@ def test_phase1_selects_extract_with_max_fecha_limite():
             [[date(2025, 12, 15), 100000, "MAXDT", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -1448,7 +1448,7 @@ def test_phase1_no_selection_when_fecha_limite_unreadable():
             "app.application.use_cases.payment_validation_generate.extract_fecha_limite_pago_from_pdf",
             return_value=None,
         ):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err_rows = sheet_to_dicts(wb[ReviewSheets.ERRORES])
@@ -1489,7 +1489,7 @@ def test_phase1_tie_max_fecha_limite_does_not_pick_silently():
             [[date(2025, 12, 15), 100000, "TIECL", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err_rows = sheet_to_dicts(wb[ReviewSheets.ERRORES])
@@ -1523,7 +1523,7 @@ def test_phase1_possibly_finalized_observation_on_folder_name():
             [[date(2025, 12, 1), 500000, "PFCLI", "concepto-trx"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert "Revisión" not in wb.sheetnames
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
@@ -1558,7 +1558,7 @@ def test_phase11_flat_client_without_credit_subfolders_acimor_style():
             [[date(2026, 4, 1), 100000, "ACIMOR", "pago acimor"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert "Revisión" not in wb.sheetnames
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
@@ -1599,7 +1599,7 @@ def test_phase11_mixed_candidates_one_illegible_fecha_still_selects_max():
             [[date(2025, 12, 15), 100000, "MIXRO", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
@@ -1638,7 +1638,7 @@ def test_phase11_fecha_limite_unreadable_in_errores_includes_payment_context():
             [[date(2025, 12, 15), 100000, "NODTE2", "ref-banco-123"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert "Revisión" not in wb.sheetnames
         assert not sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
@@ -1709,7 +1709,7 @@ def test_errores_extract_not_found_friendly_message_and_code_column():
         client.downloaded_files["banco.xlsx"] = create_bank_excel(
             [[date(2025, 12, 30), 100000, "NOPDF", ""]],
         )
-        await generate_payment_validation(client, date(2026, 1, 1))
+        await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         errs = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert len(errs) >= 1
@@ -1750,7 +1750,7 @@ def test_errores_flat_client_extract_not_found_carpeta_hyperlink():
             [[date(2026, 4, 1), 100000, "MINCIVIL", "pago"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         row = next(
             r
@@ -1796,7 +1796,7 @@ def test_errores_flat_client_illegible_extract_both_hyperlinks():
             [[date(2026, 4, 1), 100000, "MINCIVIL2", "pago"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert any(
             r.get(ErroresCols.CODIGO_TECNICO) == "fecha_limite_extracto_not_readable"
@@ -1841,7 +1841,7 @@ def test_errores_sin_url_no_muestra_ver_carpeta_enganoso():
             [[date(2026, 4, 1), 100000, "NOURL", "pago"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws_e = wb[ReviewSheets.ERRORES]
         dr = _first_data_row(ws_e, ErroresCols.ID_PAGO)
@@ -1874,7 +1874,7 @@ def test_errores_extract_tie_max_fecha_friendly_message():
             [[date(2025, 12, 15), 100000, "TIECLX", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         row = sheet_to_dicts(wb[ReviewSheets.ERRORES])[0]
         assert row[ErroresCols.CODIGO_TECNICO] == "extract_tie_max_fecha_limite"
@@ -1907,7 +1907,7 @@ def test_phase12_v2_fecha_limite_column_comes_from_pdf_not_amortization_table():
             [[date(2026, 8, 10), 100000, "PDFLIM", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -1943,7 +1943,7 @@ def test_phase12_valid_extract_ambiguous_excel_tables_still_distrib_and_warns():
             [[date(2026, 2, 1), 100000, "AMBIV", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
@@ -1975,7 +1975,7 @@ def test_phase12_valid_extract_without_excel_table_still_distrib_and_warns():
             [[date(2026, 3, 15), 50000, "NOTAB", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -2008,7 +2008,7 @@ def test_phase12_acimor_pdf_informativo_no_interfiere_con_tabla_xlsx():
             [[date(2026, 4, 1), 100000, "ACIMOR2", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -2042,7 +2042,7 @@ def test_phase12_flat_client_ambiguous_tables_valid_extract_distrib():
             [[date(2026, 5, 10), 50000, "FLAMB", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -2074,7 +2074,7 @@ def test_phase12_flat_infer_credito_from_pdf_obligacion_gb():
             [[date(2026, 4, 1), 5000, "ROOT82", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -2111,7 +2111,7 @@ def test_phase12_auxiliary_compare_fecha_limite_vs_last_fecha_pago_observations(
             [[pdf_fecha, 50000, "CMPRV", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -2148,7 +2148,7 @@ def test_phase12_auxiliary_compare_extract_fecha_before_last_pay_warns():
             [[pdf_fecha, 50000, "CMPBF", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
@@ -2184,7 +2184,7 @@ def test_phase12_auxiliary_compare_when_extract_after_last_pay_no_compare_warnin
             [[pdf_fecha, 50000, "CMPAF", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
@@ -2213,7 +2213,7 @@ def test_phase1_feature_flag_v2_false_still_generates():
                 banco_date=date(2025, 12, 23),
             )
             with _run_with_pdf_mock(client):
-                await generate_payment_validation(client, date(2026, 1, 1))
+                await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
             wb = load_generated_workbook(client)
             assert len(sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])) == 1
         finally:
@@ -2233,7 +2233,7 @@ def test_generate_does_not_use_intereses_mora_column():
         _make_single_client_setup(client, "300", tabla_cuota=10000.0, pdf_total_str="15.000",
                                    due_date=date(2025, 12, 23), banco_date=date(2025, 12, 30))
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws_d = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws_d, DistribucionCols.ID_PAGO)
@@ -2315,7 +2315,7 @@ def test_generate_pendiente_mora_keeps_total_blank_and_saldo_formula():
         )
 
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
 
         workbook = load_generated_workbook(client)
         ws = workbook[ReviewSheets.DISTRIBUCION_PAGOS]
@@ -2350,7 +2350,7 @@ def test_generate_pendiente_mora_still_blank_mora_total():
         _make_single_client_setup(client, "500", tabla_cuota=50000.0, pdf_total_str="45.000",
                                    due_date=date(2025, 12, 23), banco_date=date(2025, 12, 30))
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws, DistribucionCols.ID_PAGO)
@@ -3055,7 +3055,7 @@ def test_generate_result_includes_validation_file_url_when_graph_returns_weburl(
             "app.application.use_cases.payment_validation_generate.extract_fecha_limite_pago_from_pdf",
             side_effect=fake_fecha,
         ):
-            result = await generate_payment_validation(client, date(2026, 5, 10))
+            result = await generate_payment_validation(client, date(2026, 5, 10), bank_code="banco_bogota")
         assert result["validation_file_url"] == expected_url
 
     asyncio.run(run_test())
@@ -3083,7 +3083,7 @@ def test_generate_result_sets_validation_file_url_null_when_graph_does_not_retur
             "app.application.use_cases.payment_validation_generate.extract_fecha_limite_pago_from_pdf",
             side_effect=fake_fecha,
         ):
-            result = await generate_payment_validation(client, date(2026, 5, 10))
+            result = await generate_payment_validation(client, date(2026, 5, 10), bank_code="banco_bogota")
         assert result.get("validation_file_url") is None
 
     asyncio.run(run_test())
@@ -3118,7 +3118,7 @@ def test_credit_unit_inversiones_empty_credit_root_extract():
             [[date(2026, 4, 1), 100000, "INVPRO", "pago"]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
@@ -3163,7 +3163,7 @@ def test_credit_unit_agrecar_root_and_credit_folders():
             [[date(2026, 3, 1), 500000, "AGRECAR", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 2
@@ -3196,7 +3196,7 @@ def test_credit_unit_ericcol_non_standard_folder_infers_credit():
             [[date(2026, 4, 1), 100000, "AGRECAR", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         assert len(dist) == 1
@@ -3234,7 +3234,7 @@ def test_infra_extractos_folder_not_credit_unit():
             [[date(2026, 1, 1), 100000, "ONLYX", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         err = sheet_to_dicts(wb[ReviewSheets.ERRORES])
         assert not any(str(r.get(ErroresCols.CREDITO)) == "EXTRACTOS" for r in err)
@@ -3263,7 +3263,7 @@ def test_credit_folder_vigente_no_terminal_observation():
             [[date(2026, 4, 1), 100000, "VIGCLI", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
@@ -3293,7 +3293,7 @@ def test_credit_folder_pagado_terminal_observation():
             [[date(2026, 4, 1), 100000, "PAGCLI", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         dist = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         obs = str(dist[0].get(DistribucionCols.OBSERVACION, ""))
@@ -3389,7 +3389,7 @@ def test_distrib_observation_warning_fill_only_on_observation_cell():
             [[date(2026, 4, 1), 100000, "WARNCLI", ""]],
         )
         with _run_with_pdf_mock(client):
-            await generate_payment_validation(client, date(2026, 1, 1))
+            await generate_payment_validation(client, date(2026, 1, 1), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         dr = _first_data_row(ws)

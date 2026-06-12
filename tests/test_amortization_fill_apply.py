@@ -70,6 +70,7 @@ class MockGraphApply(MockGraphDryRun):
                 "size": len(blob),
                 "lastModifiedDateTime": "2026-04-23T12:00:00Z",
                 "name": path.rsplit("/", 1)[-1],
+                "webUrl": f"https://sharepoint.test/{path}",
             }
         return await super().get(endpoint, params)
 
@@ -602,6 +603,15 @@ def test_apply_post_upload_verification_ok_includes_tables_summary(monkeypatch):
     assert ts["verification_status"] == "ok"
     assert ts["upload_status"] == "uploaded"
     assert ts["eventos_aplicados"] == 1
+    assert out["tables_updated_links"] == [
+        {
+            "label": "amort.xlsx",
+            "file_url": "https://sharepoint.test/TABLAS/amort.xlsx",
+        }
+    ]
+    assert "amort.xlsx" in out["tables_updated_links_html"]
+    assert out["report_date_iso"] == "2026-04-23"
+    assert "finalizó correctamente" in out["user_message"]
 
 
 def test_apply_post_upload_verification_formula_mismatch(monkeypatch):

@@ -69,7 +69,7 @@ def test_bank_header_tipo_aplicacion_normalized_variants(header):
             [[date(2025, 12, 23), 25443565, "GEOEXCON", "PAGO", "tx-1"]],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            result = await generate_payment_validation(client, date(2026, 5, 26))
+            result = await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert result["pagos_detectados"] == 1
         wb = load_generated_workbook(client)
         assert ReviewSheets.DISTRIBUCION_PAGOS in wb.sheetnames
@@ -90,7 +90,7 @@ def test_bank_header_missing_tipo_aplicacion_fails_before_workbook():
         )
         with pytest.raises(ValueError, match="tipo_aplicacion_column_missing"):
             with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-                await generate_payment_validation(client, date(2026, 5, 26))
+                await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert not client.uploaded_files
 
     asyncio.run(_run())
@@ -106,7 +106,7 @@ def test_bank_header_duplicate_tipo_aplicacion_fails():
             [[date(2025, 12, 23), 1000, "GEOEXCON", "PAGO", "PAGO", "tx"]],
         )
         with pytest.raises(ValueError, match="tipo_aplicacion_column_duplicate"):
-            await generate_payment_validation(client, date(2026, 5, 26))
+            await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert not client.uploaded_files
 
     asyncio.run(_run())
@@ -124,7 +124,7 @@ def test_transaccion_column_can_be_in_position_e():
             [[date(2025, 12, 23), 25443565, "GEOEXCON", "PAGO", "REF-99"]],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            result = await generate_payment_validation(client, date(2026, 5, 26))
+            result = await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         casos = sheet_to_dicts(wb[ReviewSheets.CASOS_PAGO])
         assert len(casos) >= 1
@@ -165,7 +165,7 @@ def test_row_empty_tipo_fails_fast():
         )
         with pytest.raises(ValueError, match="tipo_aplicacion_required"):
             with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-                await generate_payment_validation(client, date(2026, 5, 26))
+                await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert not client.uploaded_files
 
     asyncio.run(_run())
@@ -182,7 +182,7 @@ def test_row_generic_abono_fails_fast():
         )
         with pytest.raises(ValueError, match="generic_abono_not_supported"):
             with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-                await generate_payment_validation(client, date(2026, 5, 26))
+                await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert not client.uploaded_files
 
     asyncio.run(_run())
@@ -199,7 +199,7 @@ def test_row_invalid_tipo_fails_fast():
         )
         with pytest.raises(ValueError, match="tipo_aplicacion_invalid"):
             with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-                await generate_payment_validation(client, date(2026, 5, 26))
+                await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert not client.uploaded_files
 
     asyncio.run(_run())
@@ -223,7 +223,7 @@ def test_blank_and_format_rows_do_not_trigger_tipo_errors():
         wb.save(buf)
         client.downloaded_files["banco.xlsx"] = buf.getvalue()
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            result = await generate_payment_validation(client, date(2026, 5, 26))
+            result = await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert result["summary"]["transacciones_banco"] == 1
 
     asyncio.run(_run())
@@ -240,7 +240,7 @@ def test_abono_creates_distribucion_abonos_sheet():
             default_tipo="ABONO CAPITAL",
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            result = await generate_payment_validation(client, date(2026, 5, 26))
+            result = await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert ReviewSheets.DISTRIBUCION_ABONOS in wb.sheetnames
         assert ReviewSheets.DISTRIBUCION_PAGOS in wb.sheetnames
@@ -272,7 +272,7 @@ def test_mixed_pago_and_abono_workbook():
             ],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            result = await generate_payment_validation(client, date(2026, 5, 26))
+            result = await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         pago_rows = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         abono_rows = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_ABONOS])
@@ -297,7 +297,7 @@ def test_distribucion_sheet_keeps_23_columns():
             [[date(2025, 12, 23), 25443565, "GEOEXCON", "PAGO", "tx"]],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            await generate_payment_validation(client, date(2026, 5, 26))
+            await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         ws = wb[ReviewSheets.DISTRIBUCION_PAGOS]
         hr = 3
@@ -317,7 +317,7 @@ def test_abono_sheet_always_created_even_without_abono_rows():
             [[date(2025, 12, 23), 25443565, "GEOEXCON", "PAGO", "tx"]],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            await generate_payment_validation(client, date(2026, 5, 26))
+            await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert ReviewSheets.DISTRIBUCION_ABONOS in wb.sheetnames
         abono_rows = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_ABONOS])

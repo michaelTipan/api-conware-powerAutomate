@@ -92,7 +92,14 @@ def test_generate_invalid_bank_code_fails():
         asyncio.run(generate_payment_validation(client, date(2026, 6, 1), bank_code="otro_banco"))
 
 
-def test_generate_without_bank_code_defaults_bogota_writes_revision_creada():
+def test_generate_without_bank_code_raises_required():
+    _set_env()
+    client = MockGraphClientProcessControl()
+    with pytest.raises(ValueError, match="bank_code_required"):
+        asyncio.run(generate_payment_validation(client, date(2026, 6, 1), bank_code=""))
+
+
+def test_generate_with_bank_code_writes_revision_creada():
     _set_env()
     client = MockGraphClientProcessControl()
     client.children = []
@@ -102,7 +109,7 @@ def test_generate_without_bank_code_defaults_bogota_writes_revision_creada():
         "banco_bogota", "Banco de Bogotá"
     )
 
-    res = asyncio.run(generate_payment_validation(client, date(2026, 6, 1)))
+    res = asyncio.run(generate_payment_validation(client, date(2026, 6, 1), bank_code="banco_bogota"))
     assert res["bank_code"] == "banco_bogota"
     assert res["process_control_updated"] is True
     assert res["process_control_estado"] == "REVISION_CREADA"
@@ -130,7 +137,7 @@ def test_generate_idempotency_reuses_when_same_process_key_and_validation_path_p
     finally:
         wb.close()
 
-    res = asyncio.run(generate_payment_validation(client, date(2026, 6, 1)))
+    res = asyncio.run(generate_payment_validation(client, date(2026, 6, 1), bank_code="banco_bogota"))
     assert res["already_generated"] is True
     assert res["file_action"] == "reused"
     assert res["validation_file_path"] == "revision/existing.xlsx"
@@ -158,5 +165,5 @@ def test_generate_blocks_when_active_process_exists():
         wb.close()
 
     with pytest.raises(ValueError, match="active_process_exists\\|payment-validation\\|banco_bogota\\|2026-05-31"):
-        asyncio.run(generate_payment_validation(client, date(2026, 6, 1)))
+        asyncio.run(generate_payment_validation(client, date(2026, 6, 1), bank_code="banco_bogota"))
 

@@ -98,6 +98,18 @@ def test_normalize_bank_code_default() -> None:
     assert pvs.normalize_bank_code("") == pvs.BANK_CODE_BOGOTA
 
 
+def test_require_bank_code_rejects_missing() -> None:
+    with pytest.raises(ValueError, match="bank_code_required"):
+        pvs.require_bank_code(None)
+    with pytest.raises(ValueError, match="bank_code_required"):
+        pvs.require_bank_code("   ")
+
+
+def test_require_bank_code_accepts_valid_codes() -> None:
+    assert pvs.require_bank_code("banco_bogota") == pvs.BANK_CODE_BOGOTA
+    assert pvs.require_bank_code(" banco_bancolombia ") == pvs.BANK_CODE_BANCOLOMBIA
+
+
 def test_validate_bank_code_invalid() -> None:
     with pytest.raises(ValueError, match="invalid_bank_code"):
         pvs.validate_bank_code("banco_xyz")

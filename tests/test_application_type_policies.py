@@ -50,7 +50,7 @@ def test_bank_accepts_visible_application_types(tipo):
             default_tipo=tipo,
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            await generate_payment_validation(client, date(2026, 5, 26))
+            await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert client.uploaded_files
 
     asyncio.run(_run())
@@ -68,7 +68,7 @@ def test_bank_rejects_generic_abono():
         )
         with pytest.raises(ValueError, match="generic_abono_not_supported"):
             with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-                await generate_payment_validation(client, date(2026, 5, 26))
+                await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert not client.uploaded_files
 
     asyncio.run(_run())
@@ -91,7 +91,7 @@ def test_generate_creates_distribucion_pagos_not_legacy_distribucion():
             [[date(2025, 12, 23), 25443565, "GEOEXCON", "PAGO", "tx"]],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            result = await generate_payment_validation(client, date(2026, 5, 26))
+            result = await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert ReviewSheets.DISTRIBUCION_PAGOS in wb.sheetnames
         assert ReviewSheets.DISTRIBUCION not in wb.sheetnames
@@ -111,7 +111,7 @@ def test_generate_creates_distribucion_abonos():
             default_tipo="ABONO CAPITAL",
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            await generate_payment_validation(client, date(2026, 5, 26))
+            await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         assert ReviewSheets.DISTRIBUCION_ABONOS in wb.sheetnames
 
@@ -147,7 +147,7 @@ def test_generate_routes_by_application_type(tipo, expected_sheet):
             default_tipo=tipo,
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            await generate_payment_validation(client, date(2026, 5, 26))
+            await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         wb = load_generated_workbook(client)
         pagos = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_PAGOS])
         abonos = sheet_to_dicts(wb[ReviewSheets.DISTRIBUCION_ABONOS])
@@ -208,7 +208,7 @@ def test_generate_response_lists_supported_types():
             ],
         )
         with _run_with_pdf_mock(client)[0], _run_with_pdf_mock(client)[1]:
-            result = await generate_payment_validation(client, date(2026, 5, 26))
+            result = await generate_payment_validation(client, date(2026, 5, 26), bank_code="banco_bogota")
         assert result["application_types_supported"] == list(APPLICATION_TYPES_SUPPORTED)
         assert "Distribucion_Pagos" in result.get("user_message", "")
         assert "Distribucion_Abonos" in result.get("user_message", "")

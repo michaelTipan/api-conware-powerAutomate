@@ -178,6 +178,15 @@ def validate_bank_code(bank_code: str) -> None:
         raise ValueError("invalid_bank_code")
 
 
+def require_bank_code(bank_code: str | None) -> str:
+    """Exige bank_code explícito (sin default histórico a Bogotá)."""
+    bc = (bank_code or "").strip()
+    if not bc:
+        raise ValueError("bank_code_required")
+    validate_bank_code(bc)
+    return bc
+
+
 def _heuristic_bancolombia_from_bogota_path(bogota_path: str) -> str:
     if bogota_path.endswith("/BANCO_BOGOTA.xlsx"):
         return bogota_path.rsplit("/", 1)[0] + "/" + DEFAULT_INPUT_FILENAME_BANCOLOMBIA

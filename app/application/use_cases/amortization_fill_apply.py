@@ -4,6 +4,7 @@ Apply real: escribe tablas de amortización en SharePoint tras preflight (dry-ru
 
 from __future__ import annotations
 
+import html
 import io
 import json
 import logging
@@ -70,6 +71,7 @@ from app.application.services.accounting_pdf_processed_move import (
 )
 from app.application.use_cases.validate_payment_report import (
     _graph_download_by_path,
+    _graph_get_item_metadata_by_path,
     _graph_upload_by_path,
 )
 from app.domain.ports.graph import GraphApiPort
@@ -112,6 +114,88 @@ class AmortizationApplySafetyError(ValueError):
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _table_display_name_from_path(path: str) -> str:
+    normalized = str(path or "").replace("\\", "/").strip().strip("/")
+    if not normalized:
+        return "Tabla de amortización"
+    return normalized.rsplit("/", 1)[-1]
+
+
+async def _build_tables_updated_links(
+    graph: GraphApiPort,
+    site_id: str,
+    drive_id: str,
+    table_paths: list[str],
+) -> list[dict[str, str]]:
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_path in table_paths:
+        path = str(raw_path or "").strip().strip("/")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        meta = await _graph_get_item_metadata_by_path(graph, site_id, drive_id, path)
+        file_url = str(meta.get("webUrl") or "").strip() if isinstance(meta, dict) else ""
+        links.append(
+            {
+                "label": _table_display_name_from_path(path),
+                "file_url": file_url,
+            }
+        )
+    return links
+
+
+def _render_tables_updated_links_html(links: list[dict[str, str]]) -> str:
+    if not links:
+        return (
+            '<p style="margin: 8px 0; color: #4b5563;">'
+            "No se registraron tablas nuevas en esta ejecución."
+            "</p>"
+        )
+    parts: list[str] = []
+    for link in links:
+        label = html.escape(str(link.get("label") or "Tabla de amortización"))
+        file_url = str(link.get("file_url") or "").strip()
+        if file_url:
+            safe_url = html.escape(file_url, quote=True)
+            parts.append(
+                '<p style="margin: 8px 0;">'
+                f'<a href="{safe_url}" style="display: inline-block; background-color: #0b2f6b; '
+                f'color: #ffffff; text-decoration: none; padding: 8px 12px; border-radius: 4px; '
+                f'font-weight: bold;">{label}</a>'
+                "</p>"
+            )
+        else:
+            parts.append(f'<p style="margin: 8px 0; color: #4b5563;">{label}</p>')
+    return "".join(parts)
+
+
+def _apply_result_operational_messages(
+    *,
+    status: str,
+    tables_uploaded_count: int,
+    apply_errors_count: int,
+    existing_user_message: str = "",
+) -> tuple[str, str]:
+    if existing_user_message.strip():
+        return existing_user_message.strip(), ""
+    if status == "ok":
+        return (
+            "El proceso de validación de pagos finalizó correctamente. "
+            f"Se actualizaron {tables_uploaded_count} tabla(s) de amortización en SharePoint.",
+            "Abra cada tabla actualizada y confirme que los pagos aplicados, el IBR y el cronograma "
+            "quedaron correctos. Este es el último paso automático del proceso.",
+        )
+    if status == "partial":
+        return (
+            f"Se actualizaron {tables_uploaded_count} tabla(s), pero "
+            f"{apply_errors_count} tabla(s) requieren revisión antes de dar por cerrado el proceso.",
+            "Revise las tablas pendientes (cierre Excel si estaba abierto), corrija el inconveniente "
+            "y vuelva a ejecutar Llenar tabla de amortización (Flujo 4).",
+        )
+    return "", ""
 
 
 def validate_amortization_preflight(dry_run: dict[str, Any]) -> None:
@@ -755,11 +839,14 @@ def _build_already_applied_result(
         "manifest_path": manifest_rel,
         "preflight": None,
         "user_message": (
-            "La amortización de este proceso ya fue aplicada; no se repite dry-run ni movimiento de asientos."
+            "La amortización de este proceso ya fue aplicada anteriormente. "
+            "No fue necesario volver a modificar las tablas."
         ),
         "next_action": (
-            "Si requiere un nuevo corte, ejecute la generación del archivo de revisión para ese banco y fecha."
+            "Si requiere un nuevo corte del día, inicie nuevamente desde la generación del archivo de revisión (Flujo 1)."
         ),
+        "tables_updated_links": [],
+        "tables_updated_links_html": _render_tables_updated_links_html([]),
         **empty_accounting_pdf_move_summary(),
     }
 
@@ -1295,9 +1382,32 @@ async def run_amortization_fill_apply(
         }
         if abono_applied and status == "ok":
             result_payload["user_message"] = (
-                "Los abonos se registraron en nuevas filas de Aplicación de Pagos. "
-                "El IBR no fue modificado, según la regla definida para ABONO."
+                "El proceso de validación de pagos finalizó correctamente. "
+                "Los abonos se registraron en nuevas filas de Aplicación de Pagos; "
+                "el IBR no fue modificado, según la regla definida para ABONO."
             )
+
+        apply_um, apply_na = _apply_result_operational_messages(
+            status=status,
+            tables_uploaded_count=tables_uploaded_count,
+            apply_errors_count=len(apply_errors),
+            existing_user_message=str(result_payload.get("user_message") or ""),
+        )
+        if apply_um:
+            result_payload["user_message"] = apply_um
+        if apply_na and not str(result_payload.get("next_action") or "").strip():
+            result_payload["next_action"] = apply_na
+
+        tables_updated_links = await _build_tables_updated_links(
+            graph, site_id, drive_id, tables_uploaded
+        )
+        result_payload["tables_updated_links"] = tables_updated_links
+        result_payload["tables_updated_links_html"] = _render_tables_updated_links_html(
+            tables_updated_links
+        )
+        result_payload["report_date_iso"] = str(
+            dry_run.get("report_date_iso") or resolved_date or report_date_iso or ""
+        ).strip()
 
         if status in ("ok", "partial"):
             try:

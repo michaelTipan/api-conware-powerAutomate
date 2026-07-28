@@ -896,18 +896,26 @@ def _merge_completed_enrichment(job_type: str, result: dict[str, Any]) -> tuple[
     if job_type == "generate":
         custom_um = str(result.get("user_message") or "").strip()
         custom_na = str(result.get("next_action") or "").strip()
+        estado_control = str(result.get("process_control_estado") or "")
+        sev = "warning" if estado_control == "REVISION_REQUIERE_CORRECCION" else "success"
         if custom_um:
             return (
                 custom_um,
                 custom_na
                 or "Abra el Excel en 01 REVISION, complete las hojas de distribución y en Control ponga Procesar = SI.",
-                "success",
+                sev,
+            )
+        if estado_control == "REVISION_REQUIERE_CORRECCION":
+            return (
+                "Se generó el archivo de revisión, pero la hoja Errores contiene registros que requieren atención.",
+                "Revise la hoja Errores, corrija los datos bancarios o documentos, y vuelva a ejecutar la generación.",
+                sev,
             )
         return (
             "Se generó el archivo de revisión del día. Ya puede abrirlo en la carpeta 01 REVISION de SharePoint.",
             "Abra ese Excel, complete Distribucion_Pagos (Estado Pago y Validar Pago en cada fila) y en la hoja Control "
             "marque Procesar = SI cuando termine. Luego ejecute la finalización de la revisión.",
-            "success",
+            sev,
         )
     if job_type == "finalize":
         custom_um = str(result.get("user_message") or "").strip()

@@ -1763,6 +1763,9 @@ async def finalize_payment_validation(
     if snap.is_active and estado_control and (estado_control not in terminal) and (snap.process_key or "").strip() != process_key:
         raise ValueError(f"active_process_exists|{snap.process_key}|{estado_control}")
 
+    if estado_control == "REVISION_REQUIERE_CORRECCION":
+        raise ValueError("revision_requires_correction")
+
     # Resolver archivo de revisión: body override (validation_file_path o validation_file) > control.
     if not (validation_file_path or "").strip() and not (validation_file or "").strip():
         if estado_control != "REVISION_CREADA" or not snap.is_active:
@@ -1793,6 +1796,12 @@ async def finalize_payment_validation(
 
     if ReviewSheets.CONTROL not in wb_rev.sheetnames:
         raise ValueError("missing_control_sheet")
+        
+    if ReviewSheets.ERRORES in wb_rev.sheetnames:
+        ws_err = wb_rev[ReviewSheets.ERRORES]
+        for idx, row in enumerate(ws_err.iter_rows(values_only=True)):
+            if idx > 0 and any(str(c).strip() for c in row if c is not None):
+                raise ValueError("revision_has_blocking_errors")
     try:
         ws_dist = find_distribucion_pagos_sheet(wb_rev)
     except ValueError:

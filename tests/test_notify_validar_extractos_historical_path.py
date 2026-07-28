@@ -197,7 +197,9 @@ def test_notify_failed_explicit_history_missing_returns_standard_error():
         e = out["error"]
         assert e["error_code"] == "historical_file_not_found"
         assert e["user_message"]
-        assert "finalize" in e["next_action"].lower() or "sharepoint" in e["next_action"].lower()
+        assert "flujo 2" in e["next_action"].lower()
+        assert "historico" in e["next_action"].lower() or "histórico" in e["next_action"].lower()
+        assert "soporte" in e["next_action"].lower()
 
     asyncio.run(run())
 

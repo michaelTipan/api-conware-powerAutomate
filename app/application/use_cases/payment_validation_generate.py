@@ -3145,25 +3145,30 @@ async def generate_payment_validation(
         "ERROR_APPLY",
     }
     estado = (snap.estado_proceso or "").strip()
+    is_retry = (estado == "REVISION_REQUIERE_CORRECCION" and snap.process_key == process_key)
+
     if snap.process_key and snap.process_key == process_key and snap.validation_file_path:
-        already_generated = True
-        file_action = "reused"
-        return {
-            "process_id": "",
-            "validation_file": snap.validation_file_path.rsplit("/", 1)[-1],
-            "validation_file_path": snap.validation_file_path,
-            "validation_file_url": None,
-            "summary": {"pagos_banco": 0, "errores": 0, "conditional_formatting": "n/a"},
-            "bank_code": bank_code,
-            "bank_name": bank_name,
-            "process_key": process_key,
-            "process_control_file_path": process_control_file_path,
-            "process_control_updated": False,
-            "process_control_estado": estado or "REVISION_CREADA",
-            "already_generated": True,
-            "file_action": file_action,
-            "generate_idempotency_key": process_key,
-        }
+        if not is_retry:
+            already_generated = True
+            file_action = "reused"
+            return {
+                "process_id": "",
+                "validation_file": snap.validation_file_path.rsplit("/", 1)[-1],
+                "validation_file_path": snap.validation_file_path,
+                "validation_file_url": None,
+                "summary": {"pagos_banco": 0, "errores": 0, "conditional_formatting": "n/a"},
+                "bank_code": bank_code,
+                "bank_name": bank_name,
+                "process_key": process_key,
+                "process_control_file_path": process_control_file_path,
+                "process_control_updated": False,
+                "process_control_estado": estado or "REVISION_CREADA",
+                "already_generated": True,
+                "file_action": file_action,
+                "generate_idempotency_key": process_key,
+            }
+        else:
+            file_action = "overwritten"
 
     if snap.is_active and (estado not in terminal) and snap.process_key and snap.process_key != process_key:
         raise ValueError(f"active_process_exists|{snap.process_key}|{estado}")
@@ -3175,6 +3180,11 @@ async def generate_payment_validation(
     valid_children = [
         item for item in review_children.get("value", []) if not item.get("name", "").startswith("~$")
     ]
+
+    if is_retry and snap.validation_file_path:
+        expected_file_name = snap.validation_file_path.rsplit("/", 1)[-1]
+        valid_children = [item for item in valid_children if item.get("name") != expected_file_name]
+
     if valid_children:
         raise ValueError("review_folder_not_empty")
 
@@ -3463,7 +3473,7 @@ async def generate_payment_validation(
         "BankName": bank_name,
         "ProcessId": process_id,
         "ValidationFilePath": upload_path.strip().strip("/"),
-        "EstadoProceso": "REVISION_CREADA",
+        "EstadoProceso": "REVISION_REQUIERE_CORRECCION" if error_records else "REVISION_CREADA",
         "IsActive": True,
         "GenerateIdempotencyKey": process_key,
         "GenerateJobId": job_id or "",
@@ -3508,7 +3518,7 @@ async def generate_payment_validation(
         "process_key": process_key,
         "process_control_file_path": process_control_file_path,
         "process_control_updated": control_updated,
-        "process_control_estado": "REVISION_CREADA",
+        "process_control_estado": "REVISION_REQUIERE_CORRECCION" if error_records else "REVISION_CREADA",
         "already_generated": already_generated,
         "file_action": file_action,
         "generate_idempotency_key": process_key,
